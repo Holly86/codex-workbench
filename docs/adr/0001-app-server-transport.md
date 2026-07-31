@@ -22,8 +22,8 @@ initialize/initialized handshake, allocates process-generation request ids, corr
 handles server requests, reduces notifications, and exposes only Workbench APIs.
 
 There is no shell invocation, no public app-server socket, and no direct browser-to-Codex channel.
-Only one backend worker owns the child. The concrete supervisor is intentionally disabled until the
-authenticated session boundary exists.
+Only one backend worker owns the child. Productive startup is enabled only after the authenticated
+session boundary initializes successfully.
 
 Generated schemas from the exact installed CLI version are checked into the repository and form the
 protocol contract.

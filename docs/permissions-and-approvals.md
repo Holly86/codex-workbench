@@ -27,26 +27,25 @@ one-turn-only promise. A later one-turn UX would need an explicit, reconciled re
 
 Selecting Full Access is a two-stage operation:
 
-1. The normal selector shows Read-only, Workspace Write, and Full Access as separate cards. Full
-   Access is never preselected, inherited as a global default, or activated by keyboard movement
-   alone.
+1. The normal selector shows Read-only, Workspace Write, and Full Access. Full Access is never a
+   hidden default or activated by keyboard movement alone.
 2. Selecting it opens a focused warning dialog that names the repository, explains that filesystem
    and command sandboxing is removed, requires a confirmation checkbox, and exposes a final button
    labelled “Full Access for this thread”. Escape and the default button cancel.
 
 After activation, the thread header and composer show a persistent high-contrast “Full Access”
 badge. The badge is included in reconnect snapshots and cannot be hidden while the effective mode
-is active. Starting another thread returns to the configured non-full-access default; Full Access
-is not written to global preferences.
+is active. A new Full Access thread always requires a new scope-bound confirmation even when the
+selector still displays the prior choice; no grant is written to global preferences.
 
 ## Server-side confirmation capability
 
-Frontend state is never authority. The future backend flow is:
+Frontend state is never authority. The implemented backend flow is:
 
 1. An authenticated, Origin- and CSRF-checked request asks to prepare a permission selection.
 2. For Full Access only, the backend issues a high-entropy, short-lived confirmation id bound to
-   session id, repository id, thread id or pending thread start, requested sandbox mode, approval
-   policy, and expiry.
+   session id (and therefore the single configured user), repository id, exact thread or random
+   pending-thread scope, sandbox mode, approval policy, and expiry.
 3. The confirmation request repeats the exact choice and consumes that id atomically. Missing,
    expired, reused, cross-session, cross-thread, or altered confirmations fail closed.
 4. The backend resolves the repository again, builds the protocol policy itself, records a coarse
@@ -66,18 +65,21 @@ Command and file requests are directly represented in 0.146.0. Command decisions
 
 Workbench maps a native server request id to an independent random browser-facing id. The record is
 bound to session, process generation, method, thread, turn, item, available decisions, and expiry.
-Only one atomic presented-to-deciding transition may respond. Session grants and policy amendments
-are visually separated from one-time acceptance and require an additional confirmation. Decline is
-the safe default. Turn completion, interrupt, `serverRequest/resolved`, connection loss, process
-restart, and timeout invalidate outstanding authority.
+Only one atomic presented-to-deciding transition may respond. Decision labels distinguish
+one-time, session, policy-amendment, decline, and cancel semantics. Decline is the safe default.
+Turn completion, `serverRequest/resolved`, session expiry/Logout, connection loss, process restart,
+and timeout invalidate outstanding authority.
 
-Permission requests and experimental user-input/MCP elicitation variants are never treated as
-ordinary command approvals. Unsupported variants receive a typed safe refusal/cancel response when
-the protocol defines one; they are never implicitly accepted.
+Permission requests use a dedicated permission projection and permit only accept or decline; accept
+returns at most the exact server-retained network/filesystem request for turn scope. Experimental
+user-input, MCP elicitation, dynamic-tool and unknown variants are not treated as approvals and
+receive a typed safe refusal/cancel/error response when defined; they are never implicitly accepted.
 
 ## Defaults and open verification
 
-Until the managed app-server phase ships, no permission selection reaches Codex. The proposed new
-thread default is Workspace Write with network disabled and `on-request`, subject to the documented
-runtime probe and product testing. If the adapter cannot construct and verify that exact effective
-policy, it falls back to Read-only or refuses the turn. Full Access is never a fallback.
+The new-thread default is Workspace Write limited to the selected repository, with network disabled
+in the constructed turn sandbox policy, and `on-request`. The backend accepts only the three exact
+sandbox strings and three exact approval strings; invalid shapes fail validation. Full Access is
+never a fallback. The explicit `danger-full-access` plus `never` combination is supported after
+confirmation and correctly produces no per-action Workbench approvals unless Codex nevertheless
+sends a server request.

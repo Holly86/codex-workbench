@@ -75,6 +75,11 @@ async def auth_status(request: Request, response: Response) -> AuthStateResponse
             csrfToken=authentication.session.csrf_token,
             expiresAt=authentication.session.expires_at,
         )
+    if authentication.expired_session_id is not None:
+        runtime = getattr(request.app.state, "runtime", None)
+        invalidate = getattr(runtime, "invalidate_session", None)
+        if invalidate is not None:
+            await invalidate(authentication.expired_session_id)
     if raw_token is not None:
         clear_session_cookie(response, security.settings)
         return AuthStateResponse(state="unauthenticated", reason="session_expired")
@@ -148,6 +153,9 @@ async def logout(
     response: Response,
 ) -> AuthStateResponse:
     security: SecurityService = request.app.state.security
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is not None:
+        await runtime.invalidate_session(request.state.authenticated_session.id)
     raw_token = request.cookies.get(security.settings.session_cookie_name)
     security.require_sessions().revoke(raw_token)
     clear_session_cookie(response, security.settings)

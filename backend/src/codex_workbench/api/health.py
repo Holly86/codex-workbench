@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from codex_workbench import __version__
 from codex_workbench.config import Settings
+from codex_workbench.runtime import WorkbenchRuntime
 from codex_workbench.security.service import SecurityService
 
 router = APIRouter(prefix="/api/health", tags=["health"])
@@ -38,6 +39,10 @@ async def live() -> HealthResponse:
 async def ready(request: Request, response: Response) -> HealthResponse:
     settings: Settings = request.app.state.settings
     security: SecurityService = request.app.state.security
+    runtime = getattr(request.app.state, "runtime", None)
+    app_server_ready = not settings.app_server_start_enabled or (
+        isinstance(runtime, WorkbenchRuntime) and runtime.app_server_ready
+    )
     checks = {
         "workspace": _directory_ready(settings.workspace_root),
         "repositories": _directory_ready(settings.repositories_root),
@@ -47,7 +52,7 @@ async def ready(request: Request, response: Response) -> HealthResponse:
             else True
         ),
         "security": security.ready,
-        "app_server_safe_default": not settings.app_server_start_enabled,
+        "app_server": app_server_ready,
     }
     if not all(checks.values()):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE

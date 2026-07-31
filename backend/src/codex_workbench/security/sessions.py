@@ -38,6 +38,7 @@ class AuthenticatedSession:
 class SessionAuthentication:
     status: SessionValidation
     session: AuthenticatedSession | None = None
+    expired_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +134,7 @@ class SessionManager:
         now = int(self._clock())
         if record.idle_expires_at <= now or record.absolute_expires_at <= now:
             self._repository.revoke_by_id(record.id, now=now)
-            return SessionAuthentication(SessionValidation.EXPIRED)
+            return SessionAuthentication(SessionValidation.EXPIRED, expired_session_id=record.id)
 
         idle_expires_at = min(now + self._idle_timeout, record.absolute_expires_at)
         self._repository.touch(record.id, now=now, idle_expires_at=idle_expires_at)

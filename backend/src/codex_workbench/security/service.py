@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 from codex_workbench.config import Settings
 from codex_workbench.persistence.database import Database
+from codex_workbench.persistence.metadata import MetadataRepository
 from codex_workbench.persistence.sessions import SessionRepository
 from codex_workbench.security.passwords import PasswordStore
 from codex_workbench.security.rate_limit import LoginRateLimiter
@@ -39,6 +40,7 @@ class SecurityService:
         self._database = Database(settings.database_path)
         self._wall_clock = wall_clock
         self.sessions: SessionManager | None = None
+        self.metadata: MetadataRepository | None = None
         self.ready = False
         self.initialization_error: str | None = None
 
@@ -57,6 +59,7 @@ class SecurityService:
         self._database.initialize()
         secret = load_session_secret(self.settings.session_secret_file)
         repository = SessionRepository(self._database)
+        self.metadata = MetadataRepository(self._database)
         repository.revoke_expired(now=int(self._wall_clock()))
         self.sessions = SessionManager(
             repository,
@@ -79,6 +82,11 @@ class SecurityService:
         if not self.ready or self.sessions is None:
             raise RuntimeError("security service is unavailable")
         return self.sessions
+
+    def require_metadata(self) -> MetadataRepository:
+        if not self.ready or self.metadata is None:
+            raise RuntimeError("metadata repository is unavailable")
+        return self.metadata
 
     async def initialize_password(self, password: str) -> bool:
         return await asyncio.to_thread(self.passwords.initialize, password)

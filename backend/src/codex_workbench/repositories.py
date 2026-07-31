@@ -43,6 +43,19 @@ class RepositoryDiscovery:
             raise ValueError("selection is not a discovered Git repository")
         return candidate
 
+    def resolve_repository_id(self, repository_id: str) -> tuple[RepositorySummary, Path]:
+        """Resolve an opaque browser id against a fresh direct-child discovery."""
+
+        if len(repository_id) != 16 or any(
+            character not in "0123456789abcdef" for character in repository_id
+        ):
+            raise ValueError("repository id is invalid")
+        for summary in self._list_repositories_sync():
+            if summary.id == repository_id:
+                # Re-resolve immediately before returning to close discovery/use races.
+                return summary, self.resolve_repository(summary.relative_path)
+        raise ValueError("repository is unavailable")
+
     def _list_repositories_sync(self) -> tuple[RepositorySummary, ...]:
         root = self._root.resolve(strict=True)
         repositories: list[RepositorySummary] = []

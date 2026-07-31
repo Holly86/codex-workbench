@@ -1,0 +1,1 @@
+"""Sanitized realtime event delivery."""

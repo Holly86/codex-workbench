@@ -24,13 +24,16 @@ def test_protocol_derived_permission_values_are_exact() -> None:
         "on-request",
         "never",
     ]
-    assert GranularApprovalPolicy(
-        sandbox_approval=True,
-        rules=False,
-        skill_approval=True,
-        request_permissions=False,
-        mcp_elicitations=True,
-    ).sandbox_approval is True
+    assert (
+        GranularApprovalPolicy(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=True,
+            request_permissions=False,
+            mcp_elicitations=True,
+        ).sandbox_approval
+        is True
+    )
 
 
 def test_activity_states_are_explicit_workbench_aggregations() -> None:

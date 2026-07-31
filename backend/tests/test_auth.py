@@ -156,6 +156,26 @@ def test_request_validation_never_echoes_password(tmp_path: Path) -> None:
     assert password[:5] not in malformed.text
 
 
+def test_actual_chunked_json_bytes_are_limited_without_content_length(
+    tmp_path: Path,
+) -> None:
+    base = build_settings(tmp_path)
+    values = base.model_dump()
+    values["max_json_request_bytes"] = 1024
+    settings = Settings(_env_file=None, **values)
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/auth/login",
+            content=iter([b'{"password":"', b"x" * 1200, b'"}']),
+            headers={
+                "Origin": settings.canonical_public_origin,
+                "Content-Type": "application/json",
+            },
+        )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "request_too_large"
+
+
 def test_logout_requires_origin_and_csrf_then_revokes_session(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     with TestClient(create_app(settings)) as client:
@@ -337,7 +357,7 @@ def test_websocket_handshake_uses_same_session_and_origin_boundary(tmp_path: Pat
             pass
         assert unauthenticated.value.code == 4401
 
-        _setup(client, settings)
+        setup = _setup(client, settings)
         with (
             pytest.raises(WebSocketDisconnect) as cross_site,
             client.websocket_connect(
@@ -352,4 +372,13 @@ def test_websocket_handshake_uses_same_session_and_origin_boundary(tmp_path: Pat
             "/ws/events",
             headers={"Origin": settings.canonical_public_origin},
         ) as websocket:
-            assert websocket.receive_json() == {"type": "connection.boundary_ready"}
+            websocket.send_json(
+                {
+                    "type": "subscribe",
+                    "csrfToken": setup["csrfToken"],
+                    "lastSequence": 0,
+                }
+            )
+            snapshot = websocket.receive_json()
+            assert snapshot["type"] == "connection.snapshot"
+            assert snapshot["snapshot"]["connection"]["state"] == "disconnected"

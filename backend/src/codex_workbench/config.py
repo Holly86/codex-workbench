@@ -43,9 +43,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/var/lib/codex-workbench")
     uploads_dir: Path = Path("/var/lib/codex-workbench/uploads")
     database_path: Path = Path("/var/lib/codex-workbench/security/workbench.sqlite3")
-    password_verifier_file: Path = Path(
-        "/var/lib/codex-workbench/security/password.argon2id"
-    )
+    password_verifier_file: Path = Path("/var/lib/codex-workbench/security/password.argon2id")
     session_secret_file: Path = Path("/run/secrets/workbench/session.key")
     session_idle_timeout_seconds: int = Field(default=12 * 60 * 60, ge=300, le=30 * 24 * 60 * 60)
     session_absolute_timeout_seconds: int = Field(
@@ -62,8 +60,35 @@ class Settings(BaseSettings):
     login_rate_limit_window_seconds: int = Field(default=5 * 60, ge=10, le=24 * 60 * 60)
     login_failure_delay_seconds: float = Field(default=0.25, ge=0, le=2)
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1, le=100 * 1024 * 1024)
+    max_json_request_bytes: int = Field(default=1024 * 1024, ge=1024, le=10 * 1024 * 1024)
+    max_uploads_per_turn: int = Field(default=8, ge=1, le=32)
+    max_uploads_per_session: int = Field(default=64, ge=1, le=512)
+    max_upload_session_bytes: int = Field(default=100 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024)
+    upload_ttl_seconds: int = Field(default=24 * 60 * 60, ge=300, le=30 * 24 * 60 * 60)
+    upload_max_dimension: int = Field(default=12000, ge=256, le=50000)
+    upload_max_pixels: int = Field(default=40_000_000, ge=65_536, le=250_000_000)
+    upload_max_frames: int = Field(default=1, ge=1, le=100)
     codex_executable: str = "codex"
+    expected_codex_version: str = "0.146.0"
     app_server_start_enabled: bool = False
+    app_server_request_timeout_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
+    app_server_shutdown_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
+    app_server_max_line_bytes: int = Field(
+        default=4 * 1024 * 1024, ge=64 * 1024, le=32 * 1024 * 1024
+    )
+    app_server_restart_limit: int = Field(default=5, ge=0, le=50)
+    app_server_restart_window_seconds: int = Field(default=300, ge=10, le=3600)
+    app_server_backoff_initial_seconds: float = Field(default=0.5, ge=0.05, le=60)
+    app_server_backoff_max_seconds: float = Field(default=30.0, ge=0.1, le=300)
+    realtime_history_size: int = Field(default=512, ge=16, le=10000)
+    realtime_client_queue_size: int = Field(default=128, ge=8, le=2048)
+    realtime_heartbeat_seconds: int = Field(default=20, ge=5, le=120)
+    approval_ttl_seconds: int = Field(default=300, ge=15, le=1800)
+    full_access_confirmation_ttl_seconds: int = Field(default=120, ge=15, le=600)
+    mutation_rate_limit_requests: int = Field(default=120, ge=10, le=5000)
+    mutation_rate_limit_global_requests: int = Field(default=1000, ge=10, le=20000)
+    mutation_rate_limit_window_seconds: int = Field(default=60, ge=10, le=3600)
+    max_command_output_bytes: int = Field(default=256 * 1024, ge=1024, le=4 * 1024 * 1024)
     readiness_require_data_dir: bool = True
 
     @model_validator(mode="after")
@@ -77,9 +102,7 @@ class Settings(BaseSettings):
             self.password_verifier_file
         )
         # Preserve the configured final path so the key loader can reject a symlink itself.
-        self.session_secret_file = _absolute_without_resolving_symlinks(
-            self.session_secret_file
-        )
+        self.session_secret_file = _absolute_without_resolving_symlinks(self.session_secret_file)
 
         _require_nested(self.repositories_root, self.workspace_root, "repositories_root")
         _require_nested(self.uploads_dir, self.data_dir, "uploads_dir")
@@ -104,6 +127,16 @@ class Settings(BaseSettings):
             raise ValueError("public_origin must be an HTTP origin without credentials or URL data")
         if not self.codex_executable.strip():
             raise ValueError("codex_executable must not be empty")
+        if "\x00" in self.codex_executable:
+            raise ValueError("codex_executable contains NUL")
+        if self.expected_codex_version != "0.146.0":
+            raise ValueError("this build supports exactly Codex 0.146.0")
+        if self.app_server_backoff_initial_seconds > self.app_server_backoff_max_seconds:
+            raise ValueError("initial app-server backoff must not exceed its maximum")
+        if self.max_upload_bytes > self.max_upload_session_bytes:
+            raise ValueError("per-file upload limit must not exceed the session byte limit")
+        if self.mutation_rate_limit_global_requests < self.mutation_rate_limit_requests:
+            raise ValueError("global mutation rate limit must be at least the per-session limit")
         if self.session_absolute_timeout_seconds < self.session_idle_timeout_seconds:
             raise ValueError(
                 "session_absolute_timeout_seconds must be at least session_idle_timeout_seconds"

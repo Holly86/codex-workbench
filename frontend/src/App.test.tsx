@@ -47,7 +47,7 @@ test("renders the protected accessible shell after session validation", async ()
     screen.getByRole("heading", { level: 1, name: "Codex Workbench" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("main")).toHaveAttribute("id", "conversation");
-  expect(screen.getByRole("main")).toHaveFocus();
+  await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
   expect(screen.getByRole("form", { name: "Nachricht verfassen" })).toBeInTheDocument();
   expect(await screen.findByText("Backend bereit")).toBeInTheDocument();
 });
@@ -71,7 +71,7 @@ test("completes first-start setup and clears password fields", async () => {
   expect(await screen.findByRole("heading", { name: "Workbench einrichten" })).toBeInTheDocument();
   const password = screen.getByLabelText("Passwort");
   const confirmation = screen.getByLabelText("Passwort bestätigen");
-  expect(password).toHaveFocus();
+  await waitFor(() => expect(password).toHaveFocus());
   fireEvent.change(password, { target: { value: "correct horse battery staple" } });
   fireEvent.change(confirmation, { target: { value: "correct horse battery staple" } });
   fireEvent.submit(screen.getByRole("form", { name: "Workbench einrichten" }));
@@ -97,7 +97,7 @@ test("shows the session-expired login state with useful focus", async () => {
 
   expect(await screen.findByText("Deine Sitzung ist abgelaufen. Bitte melde dich erneut an."))
     .toBeInTheDocument();
-  expect(screen.getByLabelText("Passwort")).toHaveFocus();
+  await waitFor(() => expect(screen.getByLabelText("Passwort")).toHaveFocus());
 });
 
 test("renders login rate limiting without exposing submitted credentials", async () => {

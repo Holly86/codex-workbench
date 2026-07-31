@@ -3,7 +3,15 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { Composer } from "./Composer";
 
 test("enables sending only when the draft contains text", () => {
-  render(<Composer />);
+  render(
+    <Composer
+      csrfToken="csrf"
+      disabled={false}
+      working={false}
+      onSend={() => Promise.resolve(true)}
+      onStop={() => Promise.resolve()}
+    />,
+  );
 
   const input = screen.getByRole("textbox", { name: "Nachricht an Codex" });
   const submit = screen.getByRole("button", { name: "Senden" });
@@ -13,4 +21,4 @@ test("enables sending only when the draft contains text", () => {
   expect(submit).toBeEnabled();
   fireEvent.change(input, { target: { value: "   " } });
   expect(submit).toBeDisabled();
-})
+});

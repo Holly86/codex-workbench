@@ -30,6 +30,11 @@ async def authenticate_websocket(
     raw_token = websocket.cookies.get(security.settings.session_cookie_name)
     authentication = security.require_sessions().authenticate(raw_token)
     if authentication.status is not SessionValidation.VALID or authentication.session is None:
+        if authentication.expired_session_id is not None:
+            runtime = getattr(websocket.app.state, "runtime", None)
+            invalidate = getattr(runtime, "invalidate_session", None)
+            if invalidate is not None:
+                await invalidate(authentication.expired_session_id)
         logger.info("security_websocket_session_rejected")
         await websocket.close(code=4401)
         return None

@@ -21,6 +21,7 @@ interface AuthBoundaryProps {
     session: { csrfToken: string; expiresAt: number },
     performLogout: () => Promise<void>,
     logoutPending: boolean,
+    expireSession: () => void,
   ) => ReactNode;
 }
 
@@ -148,7 +149,9 @@ export function AuthBoundary({ children }: AuthBoundaryProps) {
   }
 
   if (state.kind === "authenticated") {
-    return children(state, performLogout, logoutPending);
+    return children(state, performLogout, logoutPending, () => {
+      setState({ kind: "login", expired: true });
+    });
   }
 
   return (

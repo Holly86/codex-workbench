@@ -39,6 +39,8 @@ Run all locally available checks:
 
     make verify
 
+`make verify` also enforces that the pinned generated Codex 0.146.0 schema tree is unchanged.
+
 Individual checks:
 
     make backend-test
@@ -61,5 +63,9 @@ Docker Compose validation, when Docker is installed:
   responsive layouts.
 - Do not log prompts, uploaded file contents, authentication material, cookies, CSRF tokens, or raw
   app-server environment variables.
+- Keep one Uvicorn worker: one Workbench runtime owns exactly one app-server child and its in-memory
+  correlation, approval, projection, and realtime state.
+- Add fake-child coverage before extending any protocol method or event. A real smoke test must use
+  a temporary repository and Codex home contained in this repository.
 - Finish with the relevant tests, secret-pattern scan, and git diff --check.
 - The repository currently has no selected license. Do not add a LICENSE without an owner decision.

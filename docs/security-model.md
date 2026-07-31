@@ -61,6 +61,9 @@ All current state-changing HTTP methods except first Setup/Login require:
 3. a high-entropy CSRF token bound to the session and supplied in a custom header;
 4. a supported content type and Fetch Metadata checks where available.
 
+An outer ASGI boundary counts actual body bytes independently of `Content-Length`; oversized
+declared, chunked, or falsely declared JSON/multipart requests receive a safe 413 response.
+
 The CSRF token is an HMAC derived from the opaque cookie token, is returned only after authenticated
 status, and is held in page memory. SameSite is defense in depth, not the sole control. Setup/Login
 check exact Origin, same-origin Fetch Metadata when present, and JSON content type.
@@ -71,11 +74,11 @@ must precede any future use of those headers.
 
 ## WebSocket policy
 
-The `/ws/events` placeholder already requires the valid session cookie and exact Origin before
-acceptance. Missing, null, multiple, malformed, or unexpected origins are rejected. It emits only
-a boundary-ready message and closes; no productive stream exists. The next phase must recheck
-authorization for subscriptions/inbound commands, close on expiry/revocation, and bound frame size,
-message rate, subscription count, and outbound queue.
+`/ws/events` requires the valid session cookie and exact Origin before acceptance. Its first frame
+is a bounded `subscribe` command containing the in-memory session CSRF token and optional last
+sequence; tokens never enter the URL. The server sends a normalized snapshot, then safe replay and
+incremental events. Heartbeats revalidate session state, frames and per-client queues are bounded,
+and expired, malformed, sequence-gapped, or slow clients are closed.
 
 Codex app-server WebSocket transport is not exposed. The backend uses private stdio. The browser
 WebSocket carries only sanitized Workbench events.
@@ -99,19 +102,20 @@ exceed that repository unless the user approves a clearly rendered expansion.
 ## Upload policy
 
 The reverse proxy caps request bodies at 21 MiB; the application default permits at most 20 MiB per
-file and applies per-session count and aggregate quotas. Uploads stream to a private temporary
-directory and never trust Content-Length alone.
+file and applies per-session count and aggregate quotas. Uploads stream to an exclusively created
+private file and never trust Content-Length alone.
 
-Original names are Unicode-normalized, length-limited, stripped of separators/control characters,
-and retained only as display metadata. Storage names are random. Allowed types begin with PNG,
+Original names are Unicode-normalized and length-limited; separators/control characters are
+rejected. Names are retained only as display metadata. Storage names are random. Allowed types are PNG,
 JPEG, WebP, and GIF images plus an explicit later document allowlist. Both magic-byte detection and
 safe decoding are required; declared MIME is advisory. Image width, height, decoded pixel count,
-frame count, and decompression ratio are bounded. SVG and HTML are rejected initially.
+and frame count are bounded. Pillow's decompression-bomb protection remains active. SVG and HTML
+are rejected.
 
 Accepted files are mode 0600, non-executable, outside the static web root, tied to session and
-expiry, and served only through an authenticated download route with nosniff and attachment
-headers. Files are never interpreted as configuration. Malware scanning can be inserted before the
-accepted state.
+expiry, and are not exposed by any download or static route. Their storage identity, mode,
+containment, size and digest are rechecked before the backend creates a `localImage` input. Files
+are never interpreted as configuration. Malware scanning can be inserted before `ready`.
 
 ## Approval integrity
 
@@ -120,21 +124,21 @@ alternatives are expired, invalidated, or failed. The record binds a random brow
 authenticated session, app-server process generation, exact server request id, method, thread id,
 turn id, item id, normalized action summary, available decisions, and deadline.
 
-The UI renders command, cwd, network destination, requested filesystem roots, reason, and whether a
-decision is session-scoped. It never silently upgrades a one-time grant. The backend accepts one
+The UI renders the sanitized command, repository label, requested filesystem-root labels, reason,
+expiry, and exactly the available decisions. It never accepts a free-form response. The backend accepts one
 atomic transition from presented to deciding, verifies that the requested decision was offered,
 sends exactly one protocol response, and records outcome. Disconnect, turn completion/interruption,
-serverRequest/resolved, process restart, or timeout invalidates the record. Replays return the
-recorded terminal status and cannot trigger execution.
+`serverRequest/resolved`, process restart, session expiry/Logout, or timeout invalidates the record.
+Replays return a conflict/unavailable error and cannot trigger execution.
 
-Decline is the safe default. “Accept for session” and policy amendments require separate explicit
-controls. No automatic approval exists in the initial product.
+Decline is the safe default. The UI exposes only decisions retained from the validated server
+request; no Workbench automatic approval exists.
 
 Sandbox and approval policies remain independent. Full Access uses the exact schema value
-`danger-full-access`, but a future browser request cannot activate it directly. The backend must
-issue and atomically consume a short-lived confirmation bound to session, repository, thread, mode,
-and policy. The UI requires an explicit warning confirmation and keeps a persistent thread badge;
-the choice is not a global default. See docs/permissions-and-approvals.md.
+`danger-full-access`. The backend issues and atomically consumes a one-use, short-lived confirmation
+bound to session, repository, new-thread scope or exact thread, mode, and approval policy. The UI
+names the exact selection, requires a checkbox, and keeps a persistent thread badge; it is not a
+global default. See docs/permissions-and-approvals.md.
 
 ## Shell and tool safety
 
@@ -179,16 +183,16 @@ headers, and avoid caching /api or /ws traffic.
 
 Health and the narrowly defined authentication status/Setup/Login routes are public. Every other
 HTTP API route fails closed through the central session boundary; mutations require Origin and
-CSRF. App-server startup remains disabled and there are no repository/chat/upload/approval/tool
-endpoints. The authenticated WebSocket route currently proves only its handshake boundary.
+CSRF. Repository, thread, turn, upload, Full Access, and approval routes are narrow typed
+operations, not generic proxies. The managed app-server is reachable only over backend stdio.
 
 The public first-start Setup window allows the first same-origin LAN visitor to claim an
 unconfigured instance. Operators must initialize on a trusted network before broader exposure; a
 future recovery/bootstrap-token design remains open. Per-address login limits currently see the
 direct proxy peer until narrow trusted-forwarded-header support is implemented, while the global
-limit still applies. Sessions are not yet proactively pushed closed over a long-lived WebSocket
-because the productive stream does not exist.
+limit still applies. WebSocket heartbeat authentication and every later HTTP request detect expiry;
+expiry and Logout invalidate session-bound Full Access confirmations and pending approvals.
 
-The frontend CSP permits ws and wss for the future same-origin stream, whose server-side exact
-Origin check is already implemented. Container images are tag-pinned but not digest-pinned, and
+The frontend CSP permits only same-origin connections; the server independently enforces exact
+WebSocket Origin. Container images are tag-pinned but not digest-pinned, and
 Docker validation depends on a Docker-capable host.

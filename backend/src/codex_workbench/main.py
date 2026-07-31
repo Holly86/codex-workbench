@@ -15,9 +15,12 @@ from codex_workbench import __version__
 from codex_workbench.api.auth import router as auth_router
 from codex_workbench.api.health import router as health_router
 from codex_workbench.api.realtime import router as realtime_router
+from codex_workbench.api.uploads import router as uploads_router
+from codex_workbench.api.workbench import router as workbench_router
 from codex_workbench.config import Settings, get_settings
 from codex_workbench.logging import configure_logging
-from codex_workbench.middleware import ApiBoundaryMiddleware
+from codex_workbench.middleware import ApiBoundaryMiddleware, RequestBodyLimitMiddleware
+from codex_workbench.runtime import WorkbenchRuntime
 from codex_workbench.security.http import SecurityBoundaryMiddleware, api_error
 from codex_workbench.security.service import SecurityService
 
@@ -39,7 +42,8 @@ def create_app(
     )
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(lifespan_app: FastAPI) -> AsyncIterator[None]:
+        runtime: WorkbenchRuntime | None = None
         try:
             security.initialize()
         except RuntimeError as exc:
@@ -48,6 +52,16 @@ def create_app(
                 "security_initialization_failed",
                 extra={"error_type": type(exc).__name__},
             )
+        if security.ready:
+            try:
+                runtime = WorkbenchRuntime(effective_settings, security.require_metadata())
+                lifespan_app.state.runtime = runtime
+                await runtime.start()
+            except Exception as exc:
+                logger.error(
+                    "runtime_initialization_failed",
+                    extra={"error_type": type(exc).__name__},
+                )
         logger.info(
             "application_started",
             extra={
@@ -57,6 +71,8 @@ def create_app(
             },
         )
         yield
+        if runtime is not None:
+            await runtime.stop()
         logger.info("application_stopped")
 
     app = FastAPI(
@@ -69,11 +85,15 @@ def create_app(
     )
     app.state.settings = effective_settings
     app.state.security = security
+    app.state.runtime = None
     app.add_middleware(SecurityBoundaryMiddleware)
     app.add_middleware(ApiBoundaryMiddleware)
+    app.add_middleware(RequestBodyLimitMiddleware)
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(realtime_router)
+    app.include_router(uploads_router)
+    app.include_router(workbench_router)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_: Request, __: RequestValidationError) -> JSONResponse:

@@ -34,6 +34,58 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON sessions(revoked_at, idle_expires_at, absolute_expires_at);
         """,
     ),
+    (
+        2,
+        """
+        CREATE TABLE workbench_threads (
+            thread_id TEXT PRIMARY KEY,
+            repository_id TEXT NOT NULL,
+            repository_relative_path TEXT NOT NULL,
+            last_session_id TEXT NOT NULL,
+            sandbox_mode TEXT NOT NULL CHECK(
+                sandbox_mode IN ('read-only', 'workspace-write', 'danger-full-access')
+            ),
+            approval_policy TEXT NOT NULL CHECK(
+                approval_policy IN ('untrusted', 'on-request', 'never')
+            ),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX workbench_threads_repository_idx
+            ON workbench_threads(repository_id, updated_at DESC);
+
+        CREATE TABLE uploads (
+            id TEXT PRIMARY KEY,
+            owner_session_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            storage_name TEXT NOT NULL UNIQUE,
+            detected_mime TEXT,
+            size_bytes INTEGER,
+            bytes_received INTEGER NOT NULL DEFAULT 0,
+            sha256 TEXT,
+            state TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            consumed_at INTEGER,
+            error_code TEXT,
+            CHECK(bytes_received >= 0),
+            CHECK(size_bytes IS NULL OR size_bytes >= 0)
+        );
+
+        CREATE INDEX uploads_owner_state_idx
+            ON uploads(owner_session_id, state, expires_at);
+
+        CREATE TABLE security_audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            session_id TEXT,
+            thread_id TEXT,
+            repository_id TEXT,
+            occurred_at INTEGER NOT NULL
+        );
+        """,
+    ),
 )
 
 

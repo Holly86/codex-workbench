@@ -11,9 +11,8 @@ is the binding protocol authority for the first implementation. The official loc
     codex app-server generate-ts
     codex app-server generate-json-schema
 
-The selected application transport is the default stdio listener. Daemon, proxy, Unix socket, and
-experimental WebSocket modes are not used. The current authentication/capability phase still does
-not start a child process or make an app-server request.
+The selected transport is explicit `--stdio`. Daemon, proxy, Unix socket, and app-server WebSocket
+modes are not used. One managed child starts only after the Workbench security service is ready.
 
 ## Generated schemas
 
@@ -42,13 +41,14 @@ The update script refuses to generate when the installed and recorded versions d
 ## Wire protocol
 
 Codex 0.146.0 uses bidirectional JSON-RPC-shaped messages with the jsonrpc member omitted. Stdio is
-newline-delimited JSON: exactly one JSON value per line on stdin/stdout. Requests have method,
-params, and id; responses echo id with result or error; notifications have method and params but no
-id. Server-initiated approval/tool requests also carry an id and require a client response.
+newline-delimited JSON: exactly one JSON value per line on stdin/stdout. Requests have method and
+id, plus `params` only when their generated request variant defines it; responses echo id with
+result or error; notifications have method and usually params but no id. Server-initiated
+approval/tool requests also carry an id and require a client response.
 
-Stdout is protocol-only. Stderr is captured independently as bounded diagnostic output and never
-parsed as JSON. The concrete reader will cap line size, decode UTF-8 strictly, parse one object,
-validate its envelope, and route it without blocking the stream.
+Stdout is protocol-only. Stderr is drained independently, line-bounded and logged only as a
+content-free redacted diagnostic marker plus byte count. The reader caps line size, decodes UTF-8
+strictly, parses one object, validates its envelope, and routes it through a bounded queue.
 
 ## Connection initialization
 
@@ -72,7 +72,7 @@ experimental, derived, or pending a runtime probe, is in docs/app-server-capabil
 ## Request correlation
 
 A process-generation-scoped counter allocates integer ids. The pending-call registry maps ids to
-method, response type, owning operation, deadline, and a future. Sending and registry insertion are
+method, owning operation, generation, and a future; the awaiting call enforces its deadline. Sending and registry insertion are
 serialized so an immediate response cannot race registration.
 
 Result and error settle the future once. Unknown, duplicate, malformed, and late responses are
@@ -86,15 +86,14 @@ capabilities bound to authenticated state and never expose authority through raw
 
 ## Core method use
 
-Initial production scope uses only reviewed stable methods:
+This production phase uses only reviewed methods:
 
-- model/list for a server-derived model picker;
 - thread/list and thread/read for discovery/read projections;
 - thread/start and thread/resume for conversation ownership;
 - turn/start for text and localImage input;
 - turn/interrupt for explicit cancellation;
 - approval server requests and their typed responses;
-- account/rateLimits/read and account/usage/read as strictly separated projections.
+- account/rateLimits/read for the account-limit projection.
 
 Potentially destructive or broad methods such as thread/delete, filesystem writes,
 thread/shellCommand, command/exec, config writes, marketplace/plugin operations, and experimental
@@ -169,9 +168,11 @@ amendment variant as well as a typed network-policy amendment variant. File deci
 accept, acceptForSession, decline, and cancel. Session scope and policy amendments need visibly
 stronger UI treatment.
 
-`item/permissions/requestApproval` is present, but the local feature list marks its associated
-request-permissions tool under development. `item/tool/requestUserInput` is explicitly experimental.
-Neither is enabled until a runtime probe and dedicated safe response path are complete.
+`item/permissions/requestApproval` has a dedicated conservative projection: the browser can accept
+or decline, and acceptance returns only the server-retained permission object for turn scope.
+`item/tool/requestUserInput` remains experimental and is safely answered with no answers. MCP
+elicitation, dynamic tool calls, attestation/token-related and unknown requests are declined or
+errored using a method-specific safe response; none is implicitly accepted.
 
 ## Usage, limits, and compaction
 
@@ -187,25 +188,33 @@ docs/usage-and-rate-limits.md.
 
 ## Child supervision and shutdown
 
-The concrete supervisor will use asyncio.create_subprocess_exec, never a shell. Startup inherits a
+The supervisor uses asyncio.create_subprocess_exec, never a shell. Startup inherits a
 minimal allowlist including HOME and required runtime variables; no browser-controlled environment
 or CLI option is accepted. A dedicated task owns stdin writes. Graceful application shutdown stops
 new turns, cancels or resolves pending requests safely, closes stdin, waits briefly, then terminates
 the child process group if required.
 
-Unexpected EOF/exit changes readiness to failed, marks active projections disconnected, invalidates
-pending approvals, and retries with capped exponential backoff plus jitter. After initialization,
+Unexpected EOF/exit changes readiness to failed, marks active projections reconnecting, invalidates
+pending approvals, and retries with capped exponential backoff and a bounded restart window. After initialization,
 reconciliation uses read/list calls and does not claim in-flight work completed.
 
-## Compatibility tests planned
+## Compatibility tests
 
-The implementation phase must add:
+The deterministic fake executable implements the exact version and app-server argument startup, handshake,
+out-of-order responses, assistant/reasoning/plan/command/file/usage/rate notifications, approvals,
+completion, interrupt, malformed JSON, clean EOF and crash scenarios. Tests cover request timeout
+and cancellation, unknown ids, generation restart/restart limit, version mismatch, normalized
+snapshots/replay/gaps/slow clients, approval replay/invalidation, Full Access binding, upload
+validation/cancellation/symlink replacement, and authoritative terminal activity. Generated schema
+directories are separately required to remain byte-for-byte unchanged in normal verification.
 
-- fixture validation against checked-in JSON schemas;
-- initialize/initialized golden exchange;
-- concurrent out-of-order response correlation;
-- server-request response and invalidation cases;
-- partial line, invalid UTF-8, malformed JSON, oversized line, EOF, and stderr flood cases;
-- child crash/restart generation isolation;
-- event reducer tests for deltas versus authoritative completed items;
-- localImage path containment and turn interruption.
+## Repository-contained real runtime smoke
+
+`PYTHONPATH=backend/src backend/.venv/bin/python scripts/smoke-app-server.py` forces `HOME`,
+`CODEX_HOME`, `TMPDIR`, and its Git repository into an automatically removed temporary directory
+below this repository. It never uses the operator's existing Codex home. Against the installed
+0.146.0 executable it verified version, initialize/initialized and thread/start. Account and rate
+limits were unavailable because the isolated Codex home intentionally had no credentials; the
+read-only `never` turn started but could not reach authoritative completion and was reported as
+`unavailable_without_repository_local_auth`. An authenticated completed-turn smoke therefore
+remains a release-host check using a dedicated test Codex home, not the operator's live home.

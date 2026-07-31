@@ -48,9 +48,11 @@ process make a single active backend replica the explicit topology.
 | realtime | Authenticated WebSocket delivery and backpressure | Expose raw secrets or process handles |
 | persistence | SQLite migrations and digest-only session/metadata transactions | Become authority for Codex threads |
 
-Authentication, its SQLite session migration, the WebSocket handshake boundary, and the disabled
-transport contract now exist. App-server client, realtime fan-out, and thread reducers remain
-extension points, not placeholder replacements.
+These boundaries are concrete. `app_server.supervisor` owns process generations,
+`app_server.transport` owns bounded JSONL I/O, `app_server.correlation` owns pending calls,
+`app_server.protocol` constructs reviewed 0.146.0 shapes, `domain.projection` owns sanitized state,
+and `realtime.broker` owns per-session sequence/history/subscriber queues. No layer forwards a raw
+app-server envelope to HTTP or WebSocket delivery.
 
 ## Frontend boundaries
 
@@ -142,7 +144,7 @@ interrupting, completed, failed, and disconnected. Codex notifications remain au
 - A server request pauses only the associated action and creates an approval record.
 - turn/interrupt is idempotently requested from running or waiting_for_approval. Final state changes
   only on turn/completed with interrupted status or a terminal failure.
-- thread/status/changed and thread/closed update loaded state. Reconnect uses thread/read or resume.
+- `thread/status/changed` updates loaded state. Reconnect uses `thread/read` or resume.
 
 A backend restart marks in-memory running projections disconnected. It starts a fresh app-server,
 initializes once, loads persisted Workbench references, and reconciles each visible thread with
@@ -150,7 +152,7 @@ thread/read/list. It never fabricates a successful terminal event.
 
 ## App-server process model
 
-The future supervisor uses asyncio.create_subprocess_exec with an argument vector equivalent to
+The supervisor uses asyncio.create_subprocess_exec with an argument vector equivalent to
 codex app-server --stdio. It never uses a shell. It supplies an allowlisted environment, fixed home,
 separate stdin/stdout/stderr pipes, a bounded outbound queue, line and message limits, and graceful
 shutdown followed by time-bounded termination.
@@ -158,8 +160,8 @@ shutdown followed by time-bounded termination.
 Startup states are stopped, starting, initializing, ready, draining, failed, and backoff. Ready
 requires a live child and successful initialize/initialized handshake. Unexpected exit fails all
 pending requests with a typed transport error, invalidates approvals, emits a connection event, and
-uses capped exponential backoff with jitter. A crash loop makes readiness fail and requires an
-operator-visible reason.
+uses capped exponential backoff. A bounded restart window stops a crash loop, makes readiness fail,
+and exposes an operator-visible reason.
 
 Only one process generation may own the transport. Every pending call and server request carries
 that generation so late messages from an old process cannot resolve new state.
@@ -168,7 +170,7 @@ that generation so late messages from an old process cannot resolve new state.
 
 The app-server wire format omits the jsonrpc member and uses one JSON object per stdout line.
 Workbench allocates monotonically increasing integer ids per process generation. A pending map
-records id, method, creation deadline, expected response validator, and owning operation.
+records id, generation, method, owning operation, and future; the awaiting caller owns the timeout.
 
 - A result or error with an unknown id is logged as protocol anomaly without user data.
 - Duplicate responses cannot settle a future twice.
@@ -182,17 +184,17 @@ records id, method, creation deadline, expected response validator, and owning o
 ## Persistence model
 
 Codex-home remains the authority for Codex authentication and thread rollout/history. Workbench
-SQLite uses WAL mode and explicit forward migrations. It currently contains schema versions and
-server-side sessions; later migrations may contain:
+SQLite uses WAL mode and explicit forward migrations. It contains:
 
 - schema version and instance metadata;
 - server-side session rows containing only keyed token digests, timestamps, revocation, and keyed
-  client-metadata digests (implemented);
-- repository selection and UI preferences;
-- Codex thread-id cross-reference and last observed projection metadata;
-- approval audit transitions without secrets or full command output;
-- upload metadata and expiry;
-- idempotency keys and coarse operational audit events.
+  client-metadata digests;
+- Codex thread-id/repository/session cross-references and selected permission metadata;
+- upload ownership, lifecycle, digest, size and expiry metadata;
+- coarse Full Access and approval audit events without prompts, secrets, or full output.
+
+Approvals and realtime history remain in memory because their authority is generation/session-bound
+and must die on process or session loss.
 
 Password verifier, session HMAC key, Codex credentials, API keys, and uploaded content are not
 stored in SQLite. Browser storage contains no secrets; drafts remain in memory unless a later
@@ -204,24 +206,22 @@ Malformed JSON, oversized lines, schema mismatch, EOF, and child exit are explic
 failures. API errors use stable machine codes plus safe messages and request ids. Logs omit prompts,
 file contents, cookies, authorization headers, secrets, and full environment dumps.
 
-SQLite transactions protect state transitions. Uploads use temporary files plus atomic rename.
-Startup currently runs session migrations, validates restrictive session-key/verifier files, and
-revokes expired sessions before security readiness succeeds. Future power-loss reconciliation also
-expires approvals/uploads and reconciles Codex threads. Codex requests are not blindly
+SQLite transactions protect state transitions. Uploads use exclusive random mode-0600 files and
+explicit staging/validation states. Startup runs migrations, validates restrictive
+session-key/verifier/upload paths, cleans expired uploads, and initializes the child before
+readiness succeeds. Child restart invalidates approvals and reconciles persisted Codex thread
+references. Codex requests are not blindly
 retried: read-only methods may retry; thread/turn mutations require an idempotency/reconciliation
 strategy.
 
 ## Implemented boundary and extension points
 
-- Implemented: Auth/session, JSON content-type, exact Origin/Fetch Metadata, CSRF middleware, and
-  WebSocket pre-accept authentication.
-- Concrete supervised stdio client generated-schema conformance tests.
-- Repository API and thread projection service.
-- Upload scanner and localImage adapter.
-- Git read service, then diff viewer and explicit write operations.
-- File service using the same allowed-root resolver.
-- Lazy Monaco and xterm.js panels with separately authorized capabilities.
-- Reverse proxy trust configuration for HTTPS, without changing application trust boundaries.
+- Implemented: authentication/CSRF, supervisor/transport/correlation/protocol adapter, repository
+  and thread/turn APIs, upload scanner/localImage adapter, approval registry, domain projection,
+  realtime broker/WebSocket, and conversation UI.
+- Next safe extension: bounded Git read/status/diff and file-read services using the same resolver.
+- Later explicit capabilities: file writes, Monaco, PTY/xterm and reviewed Git mutations.
+- Operations extension: HTTPS trusted-proxy configuration, telemetry, retention and restore.
 
 Permission, streaming, usage, and upload contracts are specified in
 docs/permissions-and-approvals.md, docs/streaming-and-activity-model.md,

@@ -2,33 +2,34 @@
 
 ## Normalized event boundary
 
-One future app-server reader validates JSONL envelopes and routes responses, server requests, and
+One app-server reader validates JSONL envelopes and routes responses, server requests, and
 notifications separately. A domain reducer then emits stable Workbench events. The browser never
 subscribes to raw JSON-RPC payloads or generated Codex unions.
 
-Every browser event has a connection-local monotonic sequence, observation time, normalized type,
+Every browser event has a per-Workbench-session monotonic sequence, observation time, normalized type,
 and optional thread/turn/item identity. The typed event family in
-`backend/src/codex_workbench/domain/events.py` currently defines assistant/reasoning deltas, plan
-replacement, tool activity, approval lifecycle, usage, activity, turn lifecycle, connection state,
-errors, and compatibility-unknown events.
+`domain.projection` and `realtime.broker` define assistant/reasoning deltas, plan replacement, item
+activity, approval lifecycle, usage, activity, turn lifecycle, connection state, errors, and
+compatibility-unknown events.
 
 | Codex input | Normalized output | Reducer rule |
 | --- | --- | --- |
-| `item/agentMessage/delta` | `assistant_text_delta` | Append as provisional display content. |
-| reasoning summary events | `reasoning_summary_delta` | Preserve summary index; only show delivered text. |
-| `turn/plan/updated` | `plan_updated` | Replace the plan snapshot. |
-| `item/started` / `item/completed` | tool/activity or timeline events | Started is provisional; completed item is authoritative. |
-| command output delta | bounded tool output update | Append in order; never log or replay as security metadata. |
-| file patch and turn diff updates | editing/diff update | Replace current patch/diff projection. |
-| approval server request / resolved notification | approval requested/resolved | Browser sees only sanitized random approval id. |
-| token usage update | `usage_updated` | Replace named usage sub-snapshots. |
-| `turn/completed` | `turn_lifecycle` | Terminal authority: completed, failed, or cancelled. |
+| `item/agentMessage/delta` | `assistant.delta` | Append as provisional display content. |
+| reasoning summary events | `reasoning.summary_delta` | Preserve summary index; show only delivered text. |
+| `turn/plan/updated` | `plan.updated` | Replace the plan snapshot. |
+| `item/started` / `item/completed` | `item.started` / `item.completed` | Started is provisional; completed is authoritative. |
+| command output delta | `command.output_delta` | Append bounded output; never log it as security metadata. |
+| file patch and turn diff updates | `file_change.updated` / `diff.updated` | Replace patch/diff projection. |
+| approval server request / resolved notification | `approval.requested` / `approval.resolved` | Browser sees only a random id. |
+| token usage update | `usage.updated` | Replace named usage sub-snapshots. |
+| `turn/completed` | `turn.completed` plus `thread.snapshot` | Terminal authority: completed, failed, or cancelled. |
 | `error` | `error` | Keep retry flag; deduplicate against failed completion. |
-| unknown union variant | `compatibility_unknown` | Retain method identity and count; do not forward raw payload. |
+| unknown union variant | `compatibility.unknown` | Retain method identity; do not forward raw payload. |
 
-Slow WebSocket clients are disconnected rather than receiving an unbounded queue. A reconnect asks
-for a fresh authenticated thread projection. Deltas are display hints and are not promised as a
-durable replay log.
+Slow WebSocket clients are disconnected rather than receiving an unbounded queue. Each session
+retains a bounded event history. Reconnect always receives a fresh authenticated snapshot and, when
+the supplied sequence remains in history, the incremental replay. An older sequence is explicitly
+reported as missed and the snapshot replaces it. Deltas are display hints, not a durable audit log.
 
 ## Activity aggregation
 
@@ -66,7 +67,7 @@ is produced.
 
 ## Tests and builds
 
-Codex 0.146.0 has no first-class test or build event. The future classifier may recognize an
+Codex 0.146.0 has no first-class test or build event. The classifier recognizes an
 allowlisted executable/subcommand from the parsed command and command actions. This changes only
 the UI label to `testing`; it does not change authorization, approval, or terminal success. Exit
 status and completed command item remain authoritative. An unrecognized command stays
@@ -75,7 +76,7 @@ status and completed command item remain authoritative. An unrecognized command 
 ## Connection and error semantics
 
 Transport `connecting`, `connected`, `reconnecting`, `disconnected`, and `failed` are Workbench
-states emitted by the future supervisor. Unexpected EOF fails pending calls, invalidates approvals,
+states emitted by supervisor/domain projection. Unexpected EOF fails pending calls, invalidates approvals,
 marks active projections disconnected, and starts capped backoff. The frontend displays the stale
 snapshot as stale and waits for reconciliation via thread read/resume. It never interprets silence
 as completion.

@@ -47,14 +47,19 @@ def exact_origin_matches(request: Request, expected: str) -> bool:
     return len(origins) == 1 and origins[0] == expected
 
 
-def mutation_metadata_is_safe(request: Request, expected_origin: str) -> bool:
+def mutation_metadata_is_safe(
+    request: Request,
+    expected_origin: str,
+    *,
+    allowed_content_types: frozenset[str] = frozenset({"application/json"}),
+) -> bool:
     if not exact_origin_matches(request, expected_origin):
         return False
     fetch_site = request.headers.get("sec-fetch-site")
     if fetch_site is not None and fetch_site != "same-origin":
         return False
     content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    return content_type == "application/json"
+    return content_type in allowed_content_types
 
 
 class SecurityBoundaryMiddleware(BaseHTTPMiddleware):
@@ -97,6 +102,11 @@ class SecurityBoundaryMiddleware(BaseHTTPMiddleware):
         raw_token = request.cookies.get(security.settings.session_cookie_name)
         authentication = security.require_sessions().authenticate(raw_token)
         if authentication.status is not SessionValidation.VALID or authentication.session is None:
+            if authentication.expired_session_id is not None:
+                runtime = getattr(request.app.state, "runtime", None)
+                invalidate = getattr(runtime, "invalidate_session", None)
+                if invalidate is not None:
+                    await invalidate(authentication.expired_session_id)
             logger.info(
                 "security_unauthenticated_request_rejected",
                 extra={"path": request.url.path},
@@ -111,8 +121,15 @@ class SecurityBoundaryMiddleware(BaseHTTPMiddleware):
 
         request.state.authenticated_session = authentication.session
         if request.method not in _SAFE_METHODS:
+            allowed_content_types = (
+                frozenset({"multipart/form-data"})
+                if request.method == "POST" and request.url.path == "/api/uploads"
+                else frozenset({"application/json"})
+            )
             if not mutation_metadata_is_safe(
-                request, security.settings.canonical_public_origin
+                request,
+                security.settings.canonical_public_origin,
+                allowed_content_types=allowed_content_types,
             ):
                 logger.warning(
                     "security_origin_or_metadata_rejected",
