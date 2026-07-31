@@ -12,7 +12,8 @@ is the binding protocol authority for the first implementation. The official loc
     codex app-server generate-json-schema
 
 The selected application transport is the default stdio listener. Daemon, proxy, Unix socket, and
-experimental WebSocket modes are not used by the Workbench foundation.
+experimental WebSocket modes are not used. The current authentication/capability phase still does
+not start a child process or make an app-server request.
 
 ## Generated schemas
 
@@ -65,6 +66,9 @@ capability remains false by default. It may only be enabled after a reviewed use
 schema coverage. Notification opt-out is not initially used because the reducer needs complete
 lifecycle information.
 
+The version-specific feature classification, including capabilities that are excluded,
+experimental, derived, or pending a runtime probe, is in docs/app-server-capability-matrix.md.
+
 ## Request correlation
 
 A process-generation-scoped counter allocates integer ids. The pending-call registry maps ids to
@@ -89,7 +93,8 @@ Initial production scope uses only reviewed stable methods:
 - thread/start and thread/resume for conversation ownership;
 - turn/start for text and localImage input;
 - turn/interrupt for explicit cancellation;
-- approval server requests and their typed responses.
+- approval server requests and their typed responses;
+- account/rateLimits/read and account/usage/read as strictly separated projections.
 
 Potentially destructive or broad methods such as thread/delete, filesystem writes,
 thread/shellCommand, command/exec, config writes, marketplace/plugin operations, and experimental
@@ -107,6 +112,11 @@ Inputs in 0.146.0 include text, image URL, localImage path, skill, mention, and 
 variants. Pasted or uploaded image bytes are staged server-side and sent as localImage with an
 absolute path accessible only inside the backend/app-server container. The browser cannot submit
 that path directly.
+
+`turn/start` accepts a `SandboxPolicy`, while thread start/resume use the exact `SandboxMode` enum.
+Approval policy is a separate `AskForApproval` value at both levels. Schema comments state that
+turn overrides continue into subsequent turns. The adapter and UI must preserve those semantics;
+see docs/permissions-and-approvals.md.
 
 turn/interrupt is requested with both threadId and turnId. Success means the request was accepted;
 the UI remains interrupting until turn/completed reports interrupted or another terminal status.
@@ -132,6 +142,9 @@ A bounded internal fan-out creates sanitized Workbench events for authenticated 
 Backpressure disconnects slow clients. Reconnect reconstructs state with thread/read/resume rather
 than replaying raw stdout.
 
+The normalized event and activity contract is specified in docs/streaming-and-activity-model.md.
+Testing, thinking, and reconnecting are Workbench aggregations, not protocol statuses.
+
 ## Approval flow
 
 In 0.146.0, command approvals arrive through
@@ -155,6 +168,22 @@ Command decisions include accept, acceptForSession, decline, cancel, and a typed
 amendment variant as well as a typed network-policy amendment variant. File decisions include
 accept, acceptForSession, decline, and cancel. Session scope and policy amendments need visibly
 stronger UI treatment.
+
+`item/permissions/requestApproval` is present, but the local feature list marks its associated
+request-permissions tool under development. `item/tool/requestUserInput` is explicitly experimental.
+Neither is enabled until a runtime probe and dedicated safe response path are complete.
+
+## Usage, limits, and compaction
+
+`thread/tokenUsage/updated` supplies exact token counters for latest and total usage plus an
+optional model context window. It does not name an official current-context-used counter or a
+complete turn aggregate. `contextCompaction` items are the primary compaction lifecycle signal;
+`thread/compacted` is deprecated.
+
+`account/rateLimits/read` supplies official primary/secondary windows, reset times, credits,
+spend-control state, and typed exhaustion reasons; its update notification is sparse. These values
+are account limits and must never be synthesized from token usage. Exact projection rules are in
+docs/usage-and-rate-limits.md.
 
 ## Child supervision and shutdown
 

@@ -26,6 +26,7 @@ body {
 }
 
 button,
+input,
 textarea {
   font: inherit;
 }
@@ -35,6 +36,7 @@ button {
 }
 
 button:focus-visible,
+input:focus-visible,
 textarea:focus-visible,
 a:focus-visible {
   outline: 3px solid var(--focus);
@@ -100,6 +102,97 @@ button:disabled {
   gap: 0.55rem;
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 1.5rem;
+  padding: 1.5rem;
+  background:
+    radial-gradient(circle at 50% 30%, rgb(52 211 153 / 8%), transparent 28rem),
+    #0b0d10;
+}
+
+.auth-brand {
+  text-align: center;
+}
+
+.auth-brand h1 {
+  margin: 0.3rem 0 0;
+  font-size: clamp(1.55rem, 5vw, 2.3rem);
+}
+
+.auth-card {
+  width: min(100%, 29rem);
+  padding: clamp(1.25rem, 5vw, 2rem);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--surface-raised);
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 28%);
+}
+
+.auth-card h2 {
+  margin: 0 0 0.6rem;
+}
+
+.auth-card > p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.auth-card form {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1.25rem;
+}
+
+.auth-card label {
+  color: #d5dbe3;
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.auth-card input {
+  width: 100%;
+  min-height: 2.85rem;
+  padding: 0.65rem 0.75rem;
+  color: #f3f5f8;
+  border: 1px solid #3a4551;
+  border-radius: 0.55rem;
+  background: #0c1014;
+}
+
+.auth-card .primary-action {
+  margin-top: 0.5rem;
+}
+
+.auth-notice {
+  padding: 0.75rem;
+  color: #d9fbee !important;
+  border: 1px solid #305044;
+  border-radius: 0.55rem;
+  background: rgb(16 38 31 / 68%);
+}
+
+.form-error {
+  margin: 0.25rem 0 0;
+  color: #fecdd3;
+}
+
+.auth-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--muted);
 }
 
 .status-dot {
@@ -275,6 +368,12 @@ button:disabled {
     max-width: 9rem;
     justify-content: flex-end;
     text-align: right;
+  }
+
+  .topbar-actions {
+    align-items: flex-end;
+    flex-direction: column;
+    gap: 0.5rem;
   }
 
   .workspace-layout {

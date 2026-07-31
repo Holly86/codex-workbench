@@ -10,8 +10,8 @@ if [ ! -f .env ]; then
     printf '%s\n' "Created .env. Set CODEX_HOME_PATH and WORKBENCH_PUBLIC_ORIGIN before Compose."
 fi
 
-mkdir -p data/state/uploads data/secrets
-chmod 700 data data/state data/state/uploads data/secrets
+mkdir -p data/state/uploads data/state/security data/secrets
+chmod 700 data data/state data/state/uploads data/state/security data/secrets
 
 if [ ! -f data/secrets/session.key ]; then
     if command -v openssl >/dev/null 2>&1; then

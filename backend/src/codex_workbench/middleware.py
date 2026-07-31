@@ -14,7 +14,9 @@ logger = logging.getLogger("codex_workbench.http")
 
 class ApiBoundaryMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        request_id = request.headers.get("x-request-id", str(uuid4()))[:128]
+        # Never reflect or log an untrusted header that may contain sensitive data.
+        request_id = str(uuid4())
+        request.state.request_id = request_id
         started = monotonic()
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id

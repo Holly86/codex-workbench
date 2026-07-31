@@ -17,8 +17,9 @@ commit, or push unless a later user request explicitly asks for it.
 - SQLite is for Workbench metadata only. Codex remains the authority for Codex threads.
 - Every path originating at an API boundary is relative to a configured root, canonicalized, and
   checked after symlink resolution.
-- New privileged endpoints require the authenticated-session and CSRF/Origin boundary described in
-  docs/security-model.md. Until that boundary exists, remain fail-closed.
+- Every privileged endpoint must use the implemented authenticated-session and CSRF/Origin boundary
+  described in docs/security-model.md. Only the documented health and authentication bootstrap
+  routes may be unauthenticated.
 - Shell or tool actions always require explicit protocol methods and visible approval state. Never
   add a generic shell HTTP endpoint.
 

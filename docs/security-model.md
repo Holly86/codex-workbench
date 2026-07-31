@@ -29,46 +29,53 @@ service, and reverse-proxy misconfiguration.
 
 ## Authentication design
 
-The next implementation phase bootstraps exactly one account. The password is processed with
-Argon2id using a maintained password-hashing library and a per-hash salt. The encoded verifier is
-stored in a mode-0600 secret file outside the image, not in SQLite or environment variables.
-Initialization accepts password input interactively or from a one-shot secret file and never logs
-it. There is no default password.
+First-start Setup now bootstraps exactly one account. The password is processed by argon2-cffi as
+Argon2id with a random per-hash salt, 64 MiB memory cost, three iterations, four lanes, and a
+32-byte hash. The encoded verifier is exclusively created in a mode-0600 file below the writable
+Workbench state mount, outside the image and outside SQLite/environment values. Setup has no
+default password, requires at least 12 characters, and closes permanently when that file exists.
+Validation errors are replaced with a generic response so FastAPI never echoes password input.
 
-Login responses use uniform errors and timing-safe verification. Per-address and global
-token-bucket limits plus increasing delays constrain guessing. Successful login rotates the session
-identifier; password change invalidates all sessions.
+Login responses use one generic credential error and Argon2 verification. Per-direct-peer and
+process-global sliding-window limits plus bounded increasing failure delays constrain guessing.
+Successful Setup/Login rotates any presented session. Password change/recovery is not implemented;
+its future design must invalidate all sessions.
 
-The browser receives a high-entropy opaque session cookie. SQLite stores only a keyed digest of the
-token with creation, idle expiry, absolute expiry, last-use, and revocation state. The cookie is
+The browser receives a high-entropy opaque session cookie. SQLite stores only an HMAC-SHA-256
+digest of the token with creation, idle expiry, absolute expiry, last-use, revocation, and keyed
+client metadata digests. The HMAC key is a restrictive external file. The cookie is
 HttpOnly, SameSite=Strict, Path=/, has no Domain attribute, and uses the __Host- prefix when Secure.
-Secure is mandatory behind HTTPS. An explicitly configured LAN-only HTTP development mode may omit
-Secure and must emit a prominent startup warning; it is not a production setting.
+Secure is mandatory behind HTTPS. Configuration rejects HTTPS with an insecure cookie and rejects
+HTTP unless both insecure-cookie and degraded-HTTP settings are explicit. Degraded mode emits a
+startup warning and is not an internet-facing production setting.
 
 No session, password, CSRF token, Codex token, or upload capability is stored in localStorage or
 sessionStorage.
 
 ## CSRF and origin policy
 
-All state-changing HTTP methods require:
+All current state-changing HTTP methods except first Setup/Login require:
 
 1. a valid server-side session cookie;
 2. exact Origin match against the configured canonical public origin;
 3. a high-entropy CSRF token bound to the session and supplied in a custom header;
 4. a supported content type and Fetch Metadata checks where available.
 
-The CSRF token is obtained after login and held only in page memory. SameSite is defense in depth,
-not the sole control. Login itself checks Origin and rejects cross-site form content types.
+The CSRF token is an HMAC derived from the opaque cookie token, is returned only after authenticated
+status, and is held in page memory. SameSite is defense in depth, not the sole control. Setup/Login
+check exact Origin, same-origin Fetch Metadata when present, and JSON content type.
 
-CORS is disabled because browser access is same-origin. Reverse-proxy headers are trusted only from
-the known internal proxy hop, never directly from arbitrary clients.
+CORS is disabled because browser access is same-origin. The current authentication boundary does
+not use forwarded client-address headers as authority. Narrow proxy trust and tested extraction
+must precede any future use of those headers.
 
 ## WebSocket policy
 
-The WebSocket upgrade requires the valid session cookie and an exact Origin match before
-acceptance. Missing, null, multiple, malformed, or unexpected origins are rejected. Authorization
-is rechecked for subscriptions and every inbound command. Session expiry or revocation closes the
-connection. Frame size, message rate, subscription count, and outbound queue are bounded.
+The `/ws/events` placeholder already requires the valid session cookie and exact Origin before
+acceptance. Missing, null, multiple, malformed, or unexpected origins are rejected. It emits only
+a boundary-ready message and closes; no productive stream exists. The next phase must recheck
+authorization for subscriptions/inbound commands, close on expiry/revocation, and bound frame size,
+message rate, subscription count, and outbound queue.
 
 Codex app-server WebSocket transport is not exposed. The backend uses private stdio. The browser
 WebSocket carries only sanitized Workbench events.
@@ -123,6 +130,12 @@ recorded terminal status and cannot trigger execution.
 Decline is the safe default. “Accept for session” and policy amendments require separate explicit
 controls. No automatic approval exists in the initial product.
 
+Sandbox and approval policies remain independent. Full Access uses the exact schema value
+`danger-full-access`, but a future browser request cannot activate it directly. The backend must
+issue and atomically consume a short-lived confirmation bound to session, repository, thread, mode,
+and policy. The UI requires an explicit warning confirmation and keeps a persistent thread badge;
+the choice is not a global default. See docs/permissions-and-approvals.md.
+
 ## Shell and tool safety
 
 There is no generic HTTP shell endpoint and no use of shell=True. The managed app-server child is
@@ -137,9 +150,10 @@ disabled, subject to product testing. Elevated permissions are never a hidden de
 ## Secret handling and logging
 
 The Codex-home mount is visible only to the backend container and app-server child. It is never
-served, indexed, copied into images, returned by config APIs, or included in diagnostics. Workbench
-secrets arrive as files in /run/secrets/workbench. Secrets are not committed, put in .env, SQLite,
-browser storage, URLs, command arguments, or logs.
+served, indexed, copied into images, returned by config APIs, or included in diagnostics. The
+session HMAC key arrives as a file in `/run/secrets/workbench`; the encoded password verifier is in
+the writable state security directory. Secrets are not committed, put in `.env`, SQLite, browser
+storage, URLs, command arguments, or logs.
 
 Structured logs include timestamps, safe event names, request ids, status, duration, protocol
 method, and opaque thread/item ids. They exclude prompt text, raw tool output, uploaded bytes,
@@ -161,14 +175,20 @@ and forwarded-header trust must be configured
 narrowly. HTTPS must set HSTS at the edge after validation, preserve WebSocket Origin and Upgrade
 headers, and avoid caching /api or /ws traffic.
 
-## Foundation posture and residual risks
+## Current posture and residual risks
 
-Today only static UI assets and minimal health probes are public. App-server startup is disabled,
-there are no repository/chat/upload/approval endpoints, and no authentication endpoint exists.
-This is fail-closed for agent access. The Compose shell should not be treated as a functional
-production release until authentication, CSRF, WebSocket Origin enforcement, session revocation,
-and concrete transport tests land.
+Health and the narrowly defined authentication status/Setup/Login routes are public. Every other
+HTTP API route fails closed through the central session boundary; mutations require Origin and
+CSRF. App-server startup remains disabled and there are no repository/chat/upload/approval/tool
+endpoints. The authenticated WebSocket route currently proves only its handshake boundary.
 
-The frontend CSP currently permits ws and wss for the future same-origin stream; the application
-must still enforce exact server-side Origin. Container images are tag-pinned but not digest-pinned,
-and Docker validation was unavailable on the inspected host.
+The public first-start Setup window allows the first same-origin LAN visitor to claim an
+unconfigured instance. Operators must initialize on a trusted network before broader exposure; a
+future recovery/bootstrap-token design remains open. Per-address login limits currently see the
+direct proxy peer until narrow trusted-forwarded-header support is implemented, while the global
+limit still applies. Sessions are not yet proactively pushed closed over a long-lived WebSocket
+because the productive stream does not exist.
+
+The frontend CSP permits ws and wss for the future same-origin stream, whose server-side exact
+Origin check is already implemented. Container images are tag-pinned but not digest-pinned, and
+Docker validation depends on a Docker-capable host.

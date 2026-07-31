@@ -21,10 +21,14 @@ logic. Its privileged integration point is the official version-pinned codex app
 ## Container boundaries
 
 The frontend container is the only externally published service. It serves immutable static assets,
-security headers, /healthz, and proxies /api and the future /ws endpoint to an internal network.
+security headers, `/healthz`, and proxies `/api` and `/ws` to an internal network.
 The backend is not host-published. It runs as a non-root user with a read-only container root,
 temporary /tmp, a read/write /workspace bind mount, a Workbench data mount, a read/write targeted
 Codex-home mount, and a read-only Workbench secrets mount.
+
+The read-only secrets mount currently supplies the high-entropy session HMAC key. The Argon2id
+password verifier is created by first-start Setup below the writable Workbench state mount at a
+configured mode-0600 path. Neither value is an environment secret or SQLite column.
 
 The backend container will run exactly one supervised app-server child. Horizontal backend scaling
 is disallowed until process ownership and event fan-out are redesigned; SQLite and one child
@@ -35,21 +39,22 @@ process make a single active backend replica the explicit topology.
 | Module | Responsibility | Must not do |
 | --- | --- | --- |
 | config | Parse and validate non-secret environment configuration | Read browser input or secret contents |
-| security | Authenticate, authorize, validate origins, paths, uploads | Start tools |
+| security | Argon2id setup, sessions, login throttling, Origin/CSRF/WebSocket and path controls | Start tools |
 | repositories | Discover and resolve allowed repositories | Traverse arbitrary roots |
 | app_server.transport | Move validated JSON-RPC envelopes over stdio | Interpret UI state |
 | app_server.client | Initialize, allocate ids, correlate responses and requests | Serve WebSockets directly |
 | domain | Thread, turn, item, approval, and connection state machines | Read raw process streams |
 | api | HTTP validation and projections | Bypass domain authorization |
 | realtime | Authenticated WebSocket delivery and backpressure | Expose raw secrets or process handles |
-| persistence | Workbench metadata transactions | Become authority for Codex threads |
+| persistence | SQLite migrations and digest-only session/metadata transactions | Become authority for Codex threads |
 
-Only the transport contract and fail-closed implementation exist in the foundation. The remaining
-modules are extension points, not placeholder replacements.
+Authentication, its SQLite session migration, the WebSocket handshake boundary, and the disabled
+transport contract now exist. App-server client, realtime fan-out, and thread reducers remain
+extension points, not placeholder replacements.
 
 ## Frontend boundaries
 
-The UI is feature-oriented: application shell, repositories, conversation/event timeline,
+The UI is feature-oriented: authentication gate, application shell, repositories, conversation/event timeline,
 composer/attachments, approvals, and later files/diff/terminal. A typed API client and normalized
 event reducer will isolate protocol-derived types from presentation. Monaco Editor and xterm.js
 will be lazy-loaded into dedicated panels so their weight and lifecycle do not affect the core
@@ -58,7 +63,25 @@ conversation route.
 The browser receives stable Workbench DTOs. Generated Codex TypeScript bindings are reference and
 backend integration inputs; raw protocol objects are not a public browser contract.
 
+The authentication gate owns only in-memory CSRF/session presentation state. It renders loading,
+Setup, Login, rate-limit, error, Session Expired, and Logout transitions before mounting the app
+shell. Password and CSRF values are never written to browser storage.
+
 ## Primary data flows
+
+### First-start setup and session
+
+1. Public `GET /api/auth/status` reports Setup required, unauthenticated, or authenticated. It never
+   returns verifier, session key, cookie token, account record, or Codex auth state.
+2. Setup and Login accept JSON only and require the exact configured Origin plus compatible Fetch
+   Metadata. Setup creates one Argon2id verifier file with exclusive creation; the file's existence
+   permanently closes Setup.
+3. Successful Setup/Login revokes any presented session, creates a new opaque token, stores only
+   its keyed SHA-256 digest and expiry metadata in SQLite, and sends an HttpOnly cookie.
+4. Authenticated status returns an HMAC-derived session-bound CSRF token to page memory. Every
+   privileged mutation requires it in `X-CSRF-Token` in addition to session and Origin.
+5. Logout revokes the database row and clears the cookie. Idle/absolute expiry is checked and
+   persisted server-side. A WebSocket is accepted only after the same cookie and exact Origin pass.
 
 ### Repository selection
 
@@ -158,20 +181,22 @@ records id, method, creation deadline, expected response validator, and owning o
 
 ## Persistence model
 
-Codex-home remains the authority for authentication and Codex thread rollout/history. Workbench
-SQLite, in WAL mode with explicit migrations and a single-writer discipline, will contain:
+Codex-home remains the authority for Codex authentication and thread rollout/history. Workbench
+SQLite uses WAL mode and explicit forward migrations. It currently contains schema versions and
+server-side sessions; later migrations may contain:
 
 - schema version and instance metadata;
-- password-verifier reference and server-side session rows containing only token digests;
+- server-side session rows containing only keyed token digests, timestamps, revocation, and keyed
+  client-metadata digests (implemented);
 - repository selection and UI preferences;
 - Codex thread-id cross-reference and last observed projection metadata;
 - approval audit transitions without secrets or full command output;
 - upload metadata and expiry;
 - idempotency keys and coarse operational audit events.
 
-Password hash, session-signing key, Codex credentials, API keys, and uploaded content are not stored
-in SQLite. Browser storage contains no secrets; drafts remain in memory unless a later encrypted
-server-side design is accepted.
+Password verifier, session HMAC key, Codex credentials, API keys, and uploaded content are not
+stored in SQLite. Browser storage contains no secrets; drafts remain in memory unless a later
+encrypted server-side design is accepted.
 
 ## Failure and recovery
 
@@ -180,14 +205,16 @@ failures. API errors use stable machine codes plus safe messages and request ids
 file contents, cookies, authorization headers, secrets, and full environment dumps.
 
 SQLite transactions protect state transitions. Uploads use temporary files plus atomic rename.
-After power loss, startup reconciliation expires stale sessions/approvals/uploads, verifies mounted
-roots, runs safe migrations, and only then reports readiness. Codex requests are not blindly
+Startup currently runs session migrations, validates restrictive session-key/verifier files, and
+revokes expired sessions before security readiness succeeds. Future power-loss reconciliation also
+expires approvals/uploads and reconciles Codex threads. Codex requests are not blindly
 retried: read-only methods may retry; thread/turn mutations require an idempotency/reconciliation
 strategy.
 
-## Extension points
+## Implemented boundary and extension points
 
-- Auth/session and CSRF middleware before privileged routes.
+- Implemented: Auth/session, JSON content-type, exact Origin/Fetch Metadata, CSRF middleware, and
+  WebSocket pre-accept authentication.
 - Concrete supervised stdio client generated-schema conformance tests.
 - Repository API and thread projection service.
 - Upload scanner and localImage adapter.
@@ -195,3 +222,7 @@ strategy.
 - File service using the same allowed-root resolver.
 - Lazy Monaco and xterm.js panels with separately authorized capabilities.
 - Reverse proxy trust configuration for HTTPS, without changing application trust boundaries.
+
+Permission, streaming, usage, and upload contracts are specified in
+docs/permissions-and-approvals.md, docs/streaming-and-activity-model.md,
+docs/usage-and-rate-limits.md, and docs/uploads-and-image-inputs.md.

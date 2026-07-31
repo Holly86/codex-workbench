@@ -1,4 +1,4 @@
-.PHONY: bootstrap backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build verify schemas
+.PHONY: bootstrap backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build audit verify schemas
 
 bootstrap:
 	./scripts/bootstrap-backend.sh
@@ -24,6 +24,9 @@ frontend-typecheck:
 
 frontend-build:
 	cd frontend && npm run build
+
+audit:
+	./scripts/audit-dependencies.sh
 
 verify:
 	./scripts/verify.sh

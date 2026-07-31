@@ -18,14 +18,26 @@ extra. The frontend script uses npm ci, so package-lock.json is authoritative.
 
 ## Run
 
+Initialize ignored local state once (this creates a session key, not a password):
+
+    ./scripts/init-deployment.sh
+
 Terminal 1:
 
     cd backend
+    export WORKBENCH_PUBLIC_ORIGIN=http://127.0.0.1:5173
+    export WORKBENCH_SESSION_COOKIE_SECURE=false
+    export WORKBENCH_ALLOW_INSECURE_HTTP=true
+    export WORKBENCH_DATA_DIR=../data/state
+    export WORKBENCH_UPLOADS_DIR=../data/state/uploads
+    export WORKBENCH_DATABASE_PATH=../data/state/security/workbench.sqlite3
+    export WORKBENCH_PASSWORD_VERIFIER_FILE=../data/state/security/password.argon2id
+    export WORKBENCH_SESSION_SECRET_FILE=../data/secrets/session.key
     .venv/bin/uvicorn codex_workbench.main:app --reload --host 127.0.0.1 --port 8000
 
 For a local checkout outside /workspace, either create the expected directories or provide
-WORKBENCH_WORKSPACE_ROOT, WORKBENCH_REPOSITORIES_ROOT, WORKBENCH_DATA_DIR, and
-WORKBENCH_UPLOADS_DIR. All configured child roots must remain inside their corresponding parent.
+`WORKBENCH_WORKSPACE_ROOT` and `WORKBENCH_REPOSITORIES_ROOT`. All configured child roots, database,
+and verifier paths must remain inside their corresponding parent.
 
 Terminal 2:
 
@@ -33,6 +45,8 @@ Terminal 2:
     npm run dev
 
 Only loopback listeners are used by development defaults. Vite proxies same-origin API requests.
+Open `http://127.0.0.1:5173` and complete first-start Setup. Do not reuse the explicit insecure HTTP
+mode for an internet-facing deployment.
 
 ## Checks
 
@@ -54,16 +68,17 @@ Frontend:
 Repository:
 
     ./scripts/check-secrets.sh
+    ./scripts/audit-dependencies.sh
     git diff --check
 
 Or run all of the above with `./scripts/verify.sh`; `make verify` is an optional equivalent.
 
 ## Configuration principles
 
-Configuration uses WORKBENCH_ environment variables. Secrets are deliberately excluded from the
-Pydantic settings model and must eventually arrive through files under /run/secrets/workbench.
-Do not place credentials in .env. The application does not use cross-origin browser calls; the
-frontend proxy is the only public ingress.
+Configuration uses `WORKBENCH_` environment variables. The session-key **path** is configuration;
+the key itself remains in a mode-0600 regular, non-symlink file. The Argon2id verifier is created
+below the state directory. Do not place passwords, credentials, hashes, or keys in `.env`. The
+application does not use cross-origin browser calls; the frontend proxy is the only public ingress.
 
 ## Schema updates
 

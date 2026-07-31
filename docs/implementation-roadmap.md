@@ -2,108 +2,87 @@
 
 ## Delivery rules
 
-Each phase must preserve same-origin access, non-root containers, one backend process owner,
-generated protocol types, safe path roots, fail-closed authorization, and visible approval state.
-A phase is complete only with tests, typing/linting, updated threat model, migration notes, and
-operator documentation.
+Each phase preserves same-origin access, one backend process owner, generated protocol authority,
+safe roots, fail-closed sessions, separate sandbox/approval controls, normalized browser DTOs, and
+visible approval state. A phase is complete only with tests, strict typing/linting, threat-model
+updates, dependency/secret scans, migration notes, and operator documentation.
 
-## Phase 0 — architecture and foundation
+## Phase 0 — Architecture and Foundation
 
-Status: implemented in this change.
+Status: complete at baseline commit `51b8b86a6ff7f3e8e6ea7541cf17eb9e3b07694a`.
 
-- Local CLI/toolchain inspection and Codex 0.146.0 schemas.
-- Architecture, security, integration, deployment, roadmap, and ADRs.
-- Backend config/logging/health/path/repository/transport boundaries.
-- Accessible responsive frontend shell and tests.
-- Compose/Docker/init/verification foundation.
+- Codex 0.146.0 generated schemas and version authority.
+- Architecture, transport, safe paths, repository discovery, health, deployment, and UI shell.
+- Disabled fail-closed app-server transport and verification foundation.
 
-Exit gate: all available local checks pass; Docker-only checks are recorded for a capable host.
+## Phase 1 — Authentication Boundary and Protocol Capabilities
 
-## Phase 1 — authenticated single-user boundary
+Status: implemented in the current worktree; not committed.
 
-- One-time password initialization with Argon2id verifier in a secret file.
-- Server-side opaque sessions, token digests, expiry/revocation, login rate limits.
-- Same-origin CSRF token flow, exact Origin/Fetch Metadata validation.
-- Authenticated WebSocket handshake with exact Origin enforcement.
-- SQLite migration framework and session tables.
-- Login/logout/session UI and security audit tests.
+- One-time Setup with an Argon2id verifier file and no default password.
+- Keyed digest-only SQLite sessions with rotation, idle/absolute expiry, revocation, and Logout.
+- HttpOnly/SameSite/Secure-cookie configuration and explicit degraded HTTP opt-in.
+- Exact Origin, JSON content type, Fetch Metadata, CSRF, and authenticated WebSocket handshake.
+- Per-peer/global login throttling, increasing failure delay, generic errors, and safe security
+  events.
+- Accessible Setup, Login, Logout, loading/error/rate-limit/expired states and protected app shell.
+- Codex 0.146.0 capability matrix, permission/approval UX model, normalized streaming/activity
+  model, usage/rate-limit model, and upload/localImage specification.
+- Strict internal domain models. No app-server child and no productive Codex turn.
 
-Exit gate: all non-health API and WebSocket access fails closed without session/CSRF; no agent
-process starts before this gate.
+Exit gate: all non-health and non-bootstrap API surfaces fail closed; all state mutation is
+session/Origin/CSRF protected; local verification passes.
 
-## Phase 2 — supervised app-server technical probe
+## Next phase — Managed App Server, Streaming and Permissions
 
-- Direct asyncio child supervisor and strict stdio JSONL transport.
-- Version check, initialize/initialized handshake, correlation/timeouts/generation isolation.
-- Generated-schema validators/adapters and protocol compatibility fixtures.
-- Bounded stderr logging, queue backpressure, crash/restart state.
-- Read-only model/list probe behind authentication; no turn execution.
+Status: next, not implemented.
 
-Exit gate: deterministic integration tests with a fake child plus an opt-in local Codex smoke test.
+This is one bounded vertical phase with the following required scope:
 
-## Phase 3 — repository and thread read model
+- direct-child `codex app-server --stdio` lifecycle, exact 0.146.0 version check, one
+  initialize/initialized handshake, shutdown, crash backoff, and generation isolation;
+- strict JSONL framing, JSON-RPC request/response/server-request correlation, deadlines, bounded
+  queues/stderr, and fake-child compatibility fixtures;
+- authenticated normalized WebSocket event stream with backpressure and reconnect snapshot;
+- authenticated repository selection plus `thread/start`, `thread/resume`, list/read projections,
+  and text `turn/start`;
+- separate sandbox and approval selection at thread start and supported turn overrides;
+- server-issued, one-use Full Access confirmation and permanent effective-mode warning;
+- deterministic `AgentActivity` reducer with direct versus aggregate status labelling;
+- command/file approval registry first, safe handling of every other server-request variant, and
+  replay/race/invalidation tests;
+- official thread usage, context derivation/compaction, account rate-limit read/update, credits,
+  staleness, and unavailable-value handling;
+- screenshot paste, multi-file picker/drop, authenticated bounded image uploads, previews/progress,
+  server type/decode validation, ownership, expiry, and true `localImage` conversion;
+- `turn/interrupt`, authoritative cancellation, child/WebSocket failure, reconciliation, and
+  reconnect states.
 
-- Authenticated repository list/selection using existing safe discovery.
-- thread/list, thread/read, thread/resume, pagination, and projections.
-- Workbench thread cross-references in SQLite; Codex remains authority.
-- Sanitized event WebSocket, reconnect snapshot, frontend repository/thread navigation.
+Explicit exclusions: `thread/shellCommand`, generic `command/exec` HTTP exposure, arbitrary
+filesystem APIs, config writes, automatic/granular approvals without a runtime decision, terminal,
+editor, Git commit/push, and raw protocol delivery.
 
-Exit gate: restart/reconnect never loses authority boundaries or leaks absolute paths/auth state.
+Exit gate: a fake child deterministically exercises correlation, streaming, approvals, interruption,
+and reconnect; an opt-in local 0.146.0 smoke test verifies the reviewed methods; Full Access cannot
+be activated from manipulated frontend data; uploads cannot escape ownership/root boundaries; no
+terminal state is fabricated after failure.
 
-## Phase 4 — text turns, streaming, and interruption
+## Later — Read-only developer workspace
 
-- New thread plus turn/start with explicit cwd/sandbox/approval settings.
-- Idempotent composer command, agent/item/delta reducers, tool activity timeline.
-- turn/interrupt state and UI.
-- Request/event size and rate bounds.
+- Git status/diff and bounded repository file tree/read APIs.
+- Lazy Monaco viewer, safe search/pagination, binary and large-file handling.
+- Same authenticated root resolver and untrusted-content rendering constraints.
 
-Exit gate: text-only turns stream end to end, terminal states reconcile after disconnect/crash, and
-no approval-required action can be bypassed.
+## Later — Explicit write and terminal capabilities
 
-## Phase 5 — approvals
-
-- Typed command/file/user-input/permission approval registry.
-- Accessible modal/non-modal queue, action detail rendering, focus and keyboard handling.
-- One-time, session-scoped, decline/cancel, expiry/invalidation, concurrent prompts.
-- Atomic audit state and race/replay tests.
-
-Exit gate: every supported server request receives exactly one valid response or a safe
-cancel/decline; unsupported variants cannot execute.
-
-## Phase 6 — attachments and true image inputs
-
-- Authenticated streaming upload endpoints and quotas.
-- Paste, picker, drag/drop, previews, removal, progress, and retry.
-- Magic-byte/decode/pixel validation, random storage names, expiry/purge.
-- Ownership-bound upload ids converted to official localImage turn inputs.
-- Document attachment policy and file-context semantics specified separately.
-
-Exit gate: traversal, MIME spoofing, decompression bombs, cross-session ids, expired files, and
-orphan cleanup are tested.
-
-## Phase 7 — read-only developer workspace
-
-- Git status service and diff viewer.
-- Allowed-root file tree/read APIs with binary/size handling.
-- Lazy Monaco viewer integration without write capability.
-- Search/pagination limits and repository-change refresh.
-
-Exit gate: no filesystem operation escapes the selected repository and untrusted content cannot
-execute in the browser.
-
-## Phase 8 — explicit write and terminal capabilities
-
-- Reviewed file edits and Git operations as named capabilities.
-- Lazy xterm.js with a dedicated PTY lifecycle and strict authorization.
-- No generic silent shell endpoint; exact user intent, session limits, output bounds, and audit.
-- Commit workflow; push remains a separate high-risk product decision.
-
-Exit gate: capability-level threat review, approvals, termination, cleanup, and NAS resource tests.
+- Named file edits and reviewed Git operations.
+- Separately authorized PTY lifecycle and bounded output; no silent generic shell route.
+- Commit workflow; push remains a separate high-risk owner decision.
 
 ## Production readiness
 
 - Docker build/Compose/runtime validation on linux/amd64 Synology-compatible infrastructure.
-- Image digest pinning, SBOM, vulnerability scanning, backup/restore drill, log rotation.
-- HTTPS proxy validation, Secure cookie/HSTS checks, session and WebSocket penetration tests.
-- Load/soak tests for long turns, reconnect, upload cleanup, app-server crash loops, and power loss.
-- Operator runbook and explicit license decision.
+- Image digests, SBOM, vulnerability scanning, backup/restore, migration rollback, log rotation.
+- HTTPS proxy, Secure cookie/HSTS, trusted-forwarded-header, session, CSRF, and WebSocket testing.
+- Soak tests for turns, reconnect, uploads, child crash loops, and power loss.
+- Password recovery/change runbook, retention decisions, and explicit license decision.

@@ -20,5 +20,6 @@ cd "$repository_root"
 )
 
 ./scripts/check-secrets.sh
+./scripts/audit-dependencies.sh
 git diff --check
 printf '%s\n' "All available verification steps passed."

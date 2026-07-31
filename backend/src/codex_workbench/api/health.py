@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from codex_workbench import __version__
 from codex_workbench.config import Settings
+from codex_workbench.security.service import SecurityService
 
 router = APIRouter(prefix="/api/health", tags=["health"])
 
@@ -36,6 +37,7 @@ async def live() -> HealthResponse:
 @router.get("/ready", response_model=HealthResponse)
 async def ready(request: Request, response: Response) -> HealthResponse:
     settings: Settings = request.app.state.settings
+    security: SecurityService = request.app.state.security
     checks = {
         "workspace": _directory_ready(settings.workspace_root),
         "repositories": _directory_ready(settings.repositories_root),
@@ -44,6 +46,7 @@ async def ready(request: Request, response: Response) -> HealthResponse:
             if settings.readiness_require_data_dir
             else True
         ),
+        "security": security.ready,
         "app_server_safe_default": not settings.app_server_start_enabled,
     }
     if not all(checks.values()):
