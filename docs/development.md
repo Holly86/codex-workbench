@@ -1,0 +1,73 @@
+# Local development
+
+## Toolchain
+
+The production target is Python 3.12. The inspected build host supplied Python 3.14.5, Node
+24.18.1, npm 11.12.1, and Codex CLI 0.146.0. Python dependencies live in backend/.venv and frontend
+dependencies in frontend/node_modules. Neither bootstrap script installs global packages.
+
+## Bootstrap
+
+    ./scripts/bootstrap-backend.sh
+    ./scripts/bootstrap-frontend.sh
+
+When Make is installed, `make bootstrap` runs the same scripts.
+
+The backend script creates a virtual environment and installs the backend with the development
+extra. The frontend script uses npm ci, so package-lock.json is authoritative.
+
+## Run
+
+Terminal 1:
+
+    cd backend
+    .venv/bin/uvicorn codex_workbench.main:app --reload --host 127.0.0.1 --port 8000
+
+For a local checkout outside /workspace, either create the expected directories or provide
+WORKBENCH_WORKSPACE_ROOT, WORKBENCH_REPOSITORIES_ROOT, WORKBENCH_DATA_DIR, and
+WORKBENCH_UPLOADS_DIR. All configured child roots must remain inside their corresponding parent.
+
+Terminal 2:
+
+    cd frontend
+    npm run dev
+
+Only loopback listeners are used by development defaults. Vite proxies same-origin API requests.
+
+## Checks
+
+Backend:
+
+    cd backend
+    .venv/bin/ruff check .
+    .venv/bin/mypy
+    .venv/bin/pytest
+
+Frontend:
+
+    cd frontend
+    npm run lint
+    npm run typecheck
+    npm test
+    npm run build
+
+Repository:
+
+    ./scripts/check-secrets.sh
+    git diff --check
+
+Or run all of the above with `./scripts/verify.sh`; `make verify` is an optional equivalent.
+
+## Configuration principles
+
+Configuration uses WORKBENCH_ environment variables. Secrets are deliberately excluded from the
+Pydantic settings model and must eventually arrive through files under /run/secrets/workbench.
+Do not place credentials in .env. The application does not use cross-origin browser calls; the
+frontend proxy is the only public ingress.
+
+## Schema updates
+
+Only update schemas during an explicit Codex CLI upgrade. Update
+schemas/codex-app-server/VERSION, install that exact CLI version, run make schemas, and review
+method, request, response, and notification changes before adapting code. Never hand-edit
+generated files.

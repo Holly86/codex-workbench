@@ -1,0 +1,89 @@
+name: ${COMPOSE_PROJECT_NAME:-codex-workbench}
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/backend.Dockerfile
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.146.0}
+        NODE_VERSION: ${NODE_VERSION:-24.18.1}
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.12.11}
+        WORKBENCH_UID: ${WORKBENCH_UID:-10001}
+        WORKBENCH_GID: ${WORKBENCH_GID:-10001}
+    environment:
+      WORKBENCH_ENVIRONMENT: production
+      WORKBENCH_LOG_LEVEL: INFO
+      WORKBENCH_PUBLIC_ORIGIN: ${WORKBENCH_PUBLIC_ORIGIN:-http://localhost:8080}
+      WORKBENCH_WORKSPACE_ROOT: /workspace
+      WORKBENCH_REPOSITORIES_ROOT: /workspace/repositories
+      WORKBENCH_DATA_DIR: /var/lib/codex-workbench
+      WORKBENCH_UPLOADS_DIR: /var/lib/codex-workbench/uploads
+      WORKBENCH_MAX_UPLOAD_BYTES: "20971520"
+      WORKBENCH_CODEX_EXECUTABLE: /usr/local/bin/codex
+      WORKBENCH_APP_SERVER_START_ENABLED: "false"
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_PATH:-/workspace}
+        target: /workspace
+      - type: bind
+        source: ${WORKBENCH_DATA_PATH:-./data}/state
+        target: /var/lib/codex-workbench
+      - type: bind
+        source: ${CODEX_HOME_PATH:?Set CODEX_HOME_PATH in .env}
+        target: /home/workbench/.codex
+      - type: bind
+        source: ${WORKBENCH_DATA_PATH:-./data}/secrets
+        target: /run/secrets/workbench
+        read_only: true
+    expose:
+      - "8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - internal
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/frontend.Dockerfile
+      args:
+        NODE_VERSION: ${NODE_VERSION:-24.18.1}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WORKBENCH_BIND_ADDRESS:-0.0.0.0}:${WORKBENCH_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=32m,uid=101,gid=101
+      - /var/run:size=4m,uid=101,gid=101
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
