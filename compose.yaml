@@ -1,7 +1,8 @@
-name: ${COMPOSE_PROJECT_NAME:-codex-workbench}
+version: "2.4"
 
 services:
   backend:
+    image: codex-workbench-backend:${WORKBENCH_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: deploy/backend.Dockerfile
@@ -9,11 +10,15 @@ services:
         CODEX_VERSION: ${CODEX_VERSION:-0.146.0}
         NODE_VERSION: ${NODE_VERSION:-24.18.1}
         PYTHON_VERSION: ${PYTHON_VERSION:-3.12.11}
-        WORKBENCH_UID: ${WORKBENCH_UID:-10001}
-        WORKBENCH_GID: ${WORKBENCH_GID:-10001}
+        WORKBENCH_UID: ${PUID:-1026}
+        WORKBENCH_GID: ${PGID:-100}
+    user: "${PUID:-1026}:${PGID:-100}"
     environment:
+      HOME: /home/workbench
+      CODEX_HOME: /home/workbench/.codex
+      TMPDIR: /tmp
       WORKBENCH_ENVIRONMENT: production
-      WORKBENCH_LOG_LEVEL: INFO
+      WORKBENCH_LOG_LEVEL: ${WORKBENCH_LOG_LEVEL:-INFO}
       WORKBENCH_PUBLIC_ORIGIN: "${WORKBENCH_PUBLIC_ORIGIN:?Set WORKBENCH_PUBLIC_ORIGIN in .env}"
       WORKBENCH_SESSION_COOKIE_SECURE: "${WORKBENCH_SESSION_COOKIE_SECURE:?Set WORKBENCH_SESSION_COOKIE_SECURE in .env}"
       WORKBENCH_ALLOW_INSECURE_HTTP: "${WORKBENCH_ALLOW_INSECURE_HTTP:?Set WORKBENCH_ALLOW_INSECURE_HTTP in .env}"
@@ -27,7 +32,7 @@ services:
       WORKBENCH_REPOSITORIES_ROOT: /workspace/repositories
       WORKBENCH_DATA_DIR: /var/lib/codex-workbench
       WORKBENCH_UPLOADS_DIR: /var/lib/codex-workbench/uploads
-      WORKBENCH_DATABASE_PATH: /var/lib/codex-workbench/security/workbench.sqlite3
+      WORKBENCH_DATABASE_PATH: /var/lib/codex-workbench/state/workbench.sqlite3
       WORKBENCH_PASSWORD_VERIFIER_FILE: /var/lib/codex-workbench/security/password.argon2id
       WORKBENCH_SESSION_SECRET_FILE: /run/secrets/workbench/session.key
       WORKBENCH_MAX_JSON_REQUEST_BYTES: ${WORKBENCH_MAX_JSON_REQUEST_BYTES:-1048576}
@@ -59,30 +64,27 @@ services:
       WORKBENCH_MUTATION_RATE_LIMIT_WINDOW_SECONDS: ${WORKBENCH_MUTATION_RATE_LIMIT_WINDOW_SECONDS:-60}
       WORKBENCH_MAX_COMMAND_OUTPUT_BYTES: ${WORKBENCH_MAX_COMMAND_OUTPUT_BYTES:-262144}
     volumes:
-      - type: bind
-        source: ${WORKSPACE_PATH:-/workspace}
-        target: /workspace
-      - type: bind
-        source: ${WORKBENCH_DATA_PATH:-./data}/state
-        target: /var/lib/codex-workbench
-      - type: bind
-        source: ${CODEX_HOME_PATH:?Set CODEX_HOME_PATH in .env}
-        target: /home/workbench/.codex
-      - type: bind
-        source: ${WORKBENCH_DATA_PATH:-./data}/secrets
-        target: /run/secrets/workbench
-        read_only: true
-    expose:
-      - "8000"
+      - "${WORKSPACE_PATH:?Set WORKSPACE_PATH in .env}:/workspace:rw"
+      - "${WORKBENCH_DATA_PATH:?Set WORKBENCH_DATA_PATH in .env}:/var/lib/codex-workbench:rw"
+      - "${WORKBENCH_UPLOADS_PATH:?Set WORKBENCH_UPLOADS_PATH in .env}:/var/lib/codex-workbench/uploads:rw"
+      - "${WORKBENCH_PASSWORD_PATH:?Set WORKBENCH_PASSWORD_PATH in .env}:/var/lib/codex-workbench/security:rw"
+      - "${CODEX_HOME_PATH:?Set CODEX_HOME_PATH in .env}:/home/workbench/.codex:rw"
+      - "${WORKBENCH_SESSION_SECRET_PATH:?Set WORKBENCH_SESSION_SECRET_PATH in .env}:/run/secrets/workbench:ro"
     read_only: true
     tmpfs:
-      - /tmp:size=128m,mode=1777
+      - "/tmp:size=128m,mode=1777,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.cache:size=256m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.config:size=32m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.local:size=128m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.npm:size=256m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
     init: true
-    stop_grace_period: 20s
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
     restart: unless-stopped
-    mem_limit: ${WORKBENCH_BACKEND_MEMORY_LIMIT:-2g}
-    cpus: ${WORKBENCH_BACKEND_CPU_LIMIT:-2.0}
-    pids_limit: 256
+    mem_limit: ${WORKBENCH_BACKEND_MEMORY_LIMIT:-3g}
+    cpu_period: 100000
+    cpu_quota: ${WORKBENCH_BACKEND_CPU_QUOTA:-200000}
+    pids_limit: 512
     ulimits:
       nofile:
         soft: 4096
@@ -91,6 +93,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test:
         - CMD
@@ -99,38 +106,51 @@ services:
         - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)
       interval: 30s
       timeout: 5s
-      start_period: 15s
-      retries: 3
+      start_period: 20s
+      retries: 5
     networks:
-      - internal
+      - workbench-private
 
   frontend:
+    image: codex-workbench-frontend:${WORKBENCH_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: deploy/frontend.Dockerfile
       args:
         NODE_VERSION: ${NODE_VERSION:-24.18.1}
+    user: "${PUID:-1026}:${PGID:-100}"
     depends_on:
       backend:
         condition: service_healthy
     ports:
-      - "${WORKBENCH_BIND_ADDRESS:-0.0.0.0}:${WORKBENCH_PORT:-8080}:8080"
+      - "127.0.0.1:8085:8080"
     read_only: true
     tmpfs:
-      - /tmp:size=16m,mode=1777
-      - /var/cache/nginx:size=32m,uid=101,gid=101
-      - /var/run:size=4m,uid=101,gid=101
+      - "/tmp:size=16m,mode=1777,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/var/cache/nginx:size=32m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/var/run:size=4m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
     restart: unless-stopped
-    mem_limit: ${WORKBENCH_FRONTEND_MEMORY_LIMIT:-256m}
-    cpus: ${WORKBENCH_FRONTEND_CPU_LIMIT:-0.5}
+    mem_limit: ${WORKBENCH_FRONTEND_MEMORY_LIMIT:-128m}
+    cpu_period: 100000
+    cpu_quota: ${WORKBENCH_FRONTEND_CPU_QUOTA:-50000}
     pids_limit: 64
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
-      - internal
+      workbench-private:
+      backend-net:
 
 networks:
-  internal:
+  workbench-private:
     driver: bridge
+  backend-net:
+    external: true

@@ -15,24 +15,42 @@ COPY backend/src ./src
 RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
-ARG WORKBENCH_UID=10001
-ARG WORKBENCH_GID=10001
+ARG WORKBENCH_UID=1026
+ARG WORKBENCH_GID=100
 
-RUN groupadd --gid ${WORKBENCH_GID} workbench \
-    && useradd --uid ${WORKBENCH_UID} --gid ${WORKBENCH_GID} \
-        --home-dir /home/workbench --create-home --shell /usr/sbin/nologin workbench \
-    && install -d -o workbench -g workbench \
-        /app /var/lib/codex-workbench /var/lib/codex-workbench/uploads /home/workbench/.codex
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        bash \
+        ca-certificates \
+        git \
+        make \
+        openssh-client \
+        procps \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && if ! getent group "${WORKBENCH_GID}" >/dev/null; then \
+        groupadd --gid "${WORKBENCH_GID}" workbench; \
+    fi \
+    && useradd --uid "${WORKBENCH_UID}" --gid "${WORKBENCH_GID}" \
+        --home-dir /home/workbench --create-home --shell /bin/bash workbench \
+    && install -d -o "${WORKBENCH_UID}" -g "${WORKBENCH_GID}" \
+        /app /var/lib/codex-workbench /var/lib/codex-workbench/state \
+        /var/lib/codex-workbench/uploads /var/lib/codex-workbench/security \
+        /home/workbench/.cache /home/workbench/.codex /home/workbench/.config \
+        /home/workbench/.local /home/workbench/.npm /run/secrets/workbench
 
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/bin/codex /usr/local/bin/codex
+COPY --from=codex-cli /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=codex-cli /usr/local/bin/npx /usr/local/bin/npx
 COPY --from=codex-cli /usr/local/lib/node_modules/@openai/codex /usr/local/lib/node_modules/@openai/codex
+COPY --from=codex-cli /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 COPY --from=backend-builder /wheels /wheels
 RUN python -m pip install --no-cache-dir /wheels/* \
     && rm -rf /wheels
 
 WORKDIR /app
-USER workbench:workbench
+USER workbench
 ENV HOME=/home/workbench \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

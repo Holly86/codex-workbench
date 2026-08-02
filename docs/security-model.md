@@ -159,6 +159,19 @@ session HMAC key arrives as a file in `/run/secrets/workbench`; the encoded pass
 the writable state security directory. Secrets are not committed, put in `.env`, SQLite, browser
 storage, URLs, command arguments, or logs.
 
+The Synology deployment bind-mounts the existing Codex home read/write into the backend only. The
+SSH Codex CLI and Workbench app-server are independent processes with no cross-container lock.
+Concurrent token refresh, configuration or thread/index writes are therefore not asserted safe;
+operators must avoid overlapping Codex turns and quiesce both writers for backup/restore. A
+separately authenticated home is required if true concurrent use is needed.
+
+FastAPI, app-server and app-server-launched commands currently share one non-root container UID.
+Consequently, `danger-full-access` code can read every backend mount readable by that UID, including
+Codex authentication, the Workbench session key and password verifier. A read-only secret mount
+prevents mutation but not disclosure. The browser cannot directly request these paths and logs are
+redacted, but prompt/tool compromise remains a privilege-separation risk until secrets are moved
+behind a separate process/credential boundary.
+
 Structured logs include timestamps, safe event names, request ids, status, duration, protocol
 method, and opaque thread/item ids. They exclude prompt text, raw tool output, uploaded bytes,
 cookies, authorization/CSRF headers, password values/hashes, Codex auth, and complete environment
@@ -173,11 +186,13 @@ Downloads use server-supplied safe types and Content-Disposition.
 
 ## Reverse proxy and HTTPS
 
-The application is prepared for TLS termination in front of the frontend service. The canonical
-external origin is explicit and contains no credentials, path, query, or fragment. Proxy IP ranges
-and forwarded-header trust must be configured
-narrowly. HTTPS must set HSTS at the edge after validation, preserve WebSocket Origin and Upgrade
-headers, and avoid caching /api or /ws traffic.
+The Synology deployment publishes the frontend only as `127.0.0.1:8085:8080`; no Workbench service
+has a LAN IP or a host port on `0.0.0.0`/the NAS LAN address. The Synology HTTPS reverse proxy is the
+only production ingress and targets `http://127.0.0.1:8085`. The canonical external origin is
+explicit and contains no credentials, path, query, or fragment. Proxy trust must be configured
+narrowly. The edge preserves the external Host and browser Origin, sets Forwarded-Proto to `https`,
+forwards HTTP/1.1 WebSocket Upgrade/Connection, avoids caching `/api` or `/ws`, and sets HSTS only
+after validation.
 
 ## Current posture and residual risks
 
@@ -194,5 +209,9 @@ limit still applies. WebSocket heartbeat authentication and every later HTTP req
 expiry and Logout invalidate session-bound Full Access confirmations and pending approvals.
 
 The frontend CSP permits only same-origin connections; the server independently enforces exact
-WebSocket Origin. Container images are tag-pinned but not digest-pinned, and
-Docker validation depends on a Docker-capable host.
+WebSocket Origin. HTTP is permitted only as an explicit host-local test at
+`http://127.0.0.1:8085`; regular operation requires the narrowly configured HTTPS reverse proxy.
+DSM ACLs may broaden POSIX mode bits and require a host-side audit.
+Uploads are purged on startup and before later uploads rather than by a periodic timer, so expired
+bytes can remain at rest until one of those triggers. Container images are version-tag-pinned but
+not digest-pinned, and Docker validation depends on the target host.

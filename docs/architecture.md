@@ -20,8 +20,9 @@ logic. Its privileged integration point is the official version-pinned codex app
 
 ## Container boundaries
 
-The frontend container is the only externally published service. It serves immutable static assets,
-security headers, `/healthz`, and proxies `/api` and `/ws` to an internal network.
+The frontend container is the only host-published service, and production publishes it only on
+host loopback for the Synology HTTPS reverse proxy. It serves immutable static assets, security
+headers, `/healthz`, and proxies `/api` and `/ws` to an internal network.
 The backend is not host-published. It runs as a non-root user with a read-only container root,
 temporary /tmp, a read/write /workspace bind mount, a Workbench data mount, a read/write targeted
 Codex-home mount, and a read-only Workbench secrets mount.

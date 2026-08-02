@@ -6,10 +6,10 @@
 
 ## Context
 
-The first deployment is single-user on a LAN, but any browser on that network may be untrusted.
-Agent access can read and change repositories, invoke tools, and consume a ChatGPT-authenticated
-Codex account. Relying on a secret URL, source address, reverse proxy alone, or “single-user” label
-would expose high-impact authority.
+The first deployment is single-user behind a Synology HTTPS reverse proxy, but any browser allowed
+to reach that proxy may be untrusted. Agent access can read and change repositories, invoke tools,
+and consume a ChatGPT-authenticated Codex account. Relying on a secret URL, source address, reverse
+proxy alone, or “single-user” label would expose high-impact authority.
 
 The product must later operate behind HTTPS without moving secrets into browser storage or
 rewriting its session model.
@@ -41,13 +41,13 @@ Benefits:
 - a LAN browser has no implicit agent authority;
 - stolen database contents do not contain reusable session tokens or password material;
 - same-origin CSRF and WebSocket hijacking have explicit controls;
-- TLS migration mainly changes deployment and Secure-cookie enforcement, not the auth model;
+- TLS termination and proxy changes do not replace the application auth model;
 - app-server access can be safely centralized behind one authorization layer.
 
 Costs:
 
 - initialization, recovery, password change, rate limits, expiry, and revocation must be built;
-- plain HTTP LAN operation cannot use Secure cookies and must be an explicit degraded mode;
+- the explicit host-local HTTP test mode cannot use Secure cookies and is not a production mode;
 - exact public-origin and proxy-trust configuration become operational requirements;
 - WebSocket session expiry requires connection management.
 

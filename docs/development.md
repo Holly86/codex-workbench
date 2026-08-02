@@ -18,9 +18,15 @@ extra. The frontend script uses npm ci, so package-lock.json is authoritative.
 
 ## Run
 
-Initialize ignored local state once (this creates a session key, not a password):
+The Synology-only `scripts/init-deployment.sh` must not be used for local development. Initialize
+ignored repository-local state once (this creates a session key, not a password):
 
-    ./scripts/init-deployment.sh
+    mkdir -p data/state/uploads data/state/security data/secrets
+    chmod 700 data data/state data/state/uploads data/state/security data/secrets
+    if [ ! -e data/secrets/session.key ]; then
+        openssl rand -hex 32 > data/secrets/session.key
+    fi
+    chmod 600 data/secrets/session.key
 
 Terminal 1:
 
@@ -46,7 +52,8 @@ Terminal 2:
 
 Only loopback listeners are used by development defaults. Vite proxies same-origin API requests.
 Open `http://127.0.0.1:5173` and complete first-start Setup. Do not reuse the explicit insecure HTTP
-mode for an internet-facing deployment.
+mode outside host-local development; Synology production requires its documented HTTPS reverse
+proxy.
 
 ## Checks
 

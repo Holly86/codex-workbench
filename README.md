@@ -64,20 +64,27 @@ This runs Ruff, strict MyPy, 66 backend tests including the deterministic fake a
 strict TypeScript, 9 frontend tests, the production build, secret scanning, Python/npm audits, the
 generated-schema unchanged check, and `git diff --check`.
 
-On a Docker-capable host additionally run:
+On the Synology deployment host additionally run from the repository after preparing `.env`:
 
-    docker compose --env-file .env.example config --quiet
-    docker compose --env-file .env.example build
+    sudo ./scripts/init-deployment.sh
+    docker-compose config --quiet
+    docker-compose build --pull
 
-Docker is unavailable in the implementation environment, so those two checks remain a deployment
-host gate.
+If Docker is unavailable on a development host, these Docker checks remain a deployment-host gate
+and must not be emulated by exposing another port.
 
 ## Deployment preparation
 
-`./scripts/init-deployment.sh` idempotently creates ignored state/upload/security directories and a
-session key; it does not build or start anything. Set a dedicated `CODEX_HOME_PATH`, review
-`.env.example`, and follow [deployment.md](docs/deployment.md). Compose starts the managed app
-server, but never publishes an app-server or backend host port.
+`./scripts/init-deployment.sh` is an idempotent, Synology-only installer for the fixed
+`/volume1/docker/codex` topology. It validates or creates Workbench state/upload/security/backup
+directories, normalizes `.env` line endings, and creates a session key only when absent; it never
+builds or starts containers and never changes the existing Codex home or workspace. Follow the
+[deployment runbook](docs/deployment.md) and execute the real-host
+[acceptance plan](docs/synology-test-plan.md). Compose starts the managed app server but never
+publishes an app-server or backend host port. The frontend is attached to the existing external
+`backend-net` without a fixed container or LAN IP. Its sole host publication is fixed at
+`127.0.0.1:8085:8080`; production access is exclusively through the Synology HTTPS reverse proxy
+targeting `http://127.0.0.1:8085`.
 
 ## Protocol schemas
 

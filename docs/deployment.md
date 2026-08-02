@@ -1,135 +1,414 @@
-# Deployment
+# Synology-Deployment
 
-## Target topology
+Dieses Runbook gilt ausschließlich für die reale Synology DS918+ unter
+`/volume1/docker/codex`. Alle Befehle werden aus
+`/volume1/docker/codex/workspace/repositories/codex-workbench` ausgeführt. Die Beispiele verwenden
+das auf DSM vorhandene Kommando `docker-compose`, nicht das neuere `docker compose`.
+Falls der DSM-Benutzer keinen direkten Zugriff auf den Docker-Daemon hat, werden die gezeigten
+Docker-/Compose-Befehle mit `sudo` ausgeführt.
 
-Docker Compose builds two images. The frontend Nginx container is the only service with a host
-port. The FastAPI backend is reachable only on the Compose network and owns one
-`codex app-server --stdio` child. This preserves one public web origin while keeping separate
-frontend and backend build stages.
+## Zielarchitektur
 
-The Synology DS918+ target is x86-64 with four CPU cores and 12 GB RAM. The initial topology uses
-one backend replica, bounded queues/uploads, and no resource-intensive editor or terminal bundle in
-the critical path.
+Compose baut zwei linux/amd64-Images und startet genau je einen Container:
 
-## Persistent mounts
+- `frontend` ist ein unprivilegierter Nginx und der einzige Service mit einem veröffentlichten
+  Host-Port. Er liefert die Weboberfläche aus und leitet `/api` und `/ws` in das private Netz weiter.
+- `backend` ist FastAPI mit genau einem Uvicorn-Worker. Es startet Codex CLI 0.146.0 als direktes
+  Kind `codex app-server --stdio`; der App-Server öffnet und exponiert keinen Netzwerkport.
+- `workbench-private` verbindet nur Frontend und Backend und erlaubt dem Backend ausgehende
+  Verbindungen. Es ist absichtlich kein `internal`-Netz, weil Codex den OpenAI-Dienst erreichen muss.
+- Das Frontend hängt zusätzlich am bereits vorhandenen externen Netzwerk `backend-net`. Compose
+  verwaltet dessen Subnetz und IPAM nicht und setzt weder `ipv4_address` noch eine andere feste
+  Container-IP. Das Netz verleiht der Workbench insbesondere keine eigene LAN-IP.
+- Die einzige Host-Portfreigabe ist unveränderlich `127.0.0.1:8085:8080` am Frontend. Sie ist weder
+  über `0.0.0.0` noch über eine NAS-LAN-IP erreichbar. Regulärer Browserzugang erfolgt ausschließlich
+  über den HTTPS Reverse Proxy der Synology; direkte LAN-Freigabe, DSM-Portweiterleitung und
+  Router-NAT für 8085 sind unzulässig.
 
-| Host setting | Container target | Access | Purpose |
+Der bestehende SSH-Codex-Container wird weder ersetzt noch von diesem Compose-Projekt verwaltet.
+
+## Persistente Hostpfade
+
+Es gibt keine benannten oder anonymen Docker-Volumes. Jeder dauerhafte Schreibpfad ist ein absoluter
+Bind-Mount unter `/volume1/docker/codex`.
+
+| Hostpfad | Containerpfad | Zugriff | Inhalt |
 | --- | --- | --- | --- |
-| WORKSPACE_PATH | /workspace | read/write | configured Git repositories available to Codex |
-| WORKBENCH_DATA_PATH/state | /var/lib/codex-workbench | read/write | SQLite, Argon2id verifier, uploads, runtime metadata |
-| CODEX_HOME_PATH | /home/workbench/.codex | read/write | targeted existing Codex authentication/config |
-| WORKBENCH_DATA_PATH/secrets | /run/secrets/workbench | read-only | Workbench session HMAC key |
+| `/volume1/docker/codex/workbench/data` | `/var/lib/codex-workbench` | rw | Workbench-Metadatenroot |
+| `/volume1/docker/codex/workbench/data/state` | wie oben, Unterpfad | rw | SQLite einschließlich WAL/SHM |
+| `/volume1/docker/codex/workbench/uploads` | `/var/lib/codex-workbench/uploads` | rw | temporäre private Uploaddateien |
+| `/volume1/docker/codex/workbench/secrets/password` | `/var/lib/codex-workbench/security` | rw | exklusiv erzeugter Argon2id-Verifier |
+| `/volume1/docker/codex/workbench/secrets/session` | `/run/secrets/workbench` | ro | Sitzungsschlüssel `session.key` |
+| `/volume1/docker/codex/config/.codex` | `/home/workbench/.codex` | rw | bestehende Codex-Anmeldung, Konfiguration und Codex-Threads |
+| `/volume1/docker/codex/workspace` | `/workspace` | rw | Workspace und Repositories |
+| Repository-`.env` | nur Compose auf dem Host | nicht gemountet | Workbench-Konfiguration ohne Credentials |
 
-The Codex-home source must be a dedicated persistent directory with the authenticated CLI state
-needed by this Workbench. Do not mount an entire user home. The frontend receives none of these
-mounts. Host ownership must match WORKBENCH_UID/GID or use an intentional NAS ACL.
+`/volume1/docker/codex/workbench/backups` wird vom Installationsskript als restriktiver
+Backup-Zielordner angelegt, aber nicht in einen Container gemountet. Ein eigener Log-Mount ist nicht
+erforderlich: beide Services schreiben nach stdout/stderr; der Docker-JSON-Logger rotiert pro Service
+bei 10 MiB und behält drei Dateien.
 
-The existing Codex container is unrelated to this Compose project and must not be restarted,
-replaced, joined, or mutated.
+Der Image-Root ist read-only. Schreibbar sind nur die genannten Backend-Bind-Mounts und begrenzte
+tmpfs-Pfade für `/tmp` sowie ephemere Benutzer-Caches. Das Frontend erhält ausschließlich tmpfs für
+Nginx-Laufzeitpfade und überhaupt keine Hostdaten.
 
-## Initialize without deployment
+## Identitäts- und Rechtemodell
 
-    ./scripts/init-deployment.sh
+Build und Compose verwenden standardmäßig UID `1026` und GID `100`. Beide Werte sind über `PUID`
+und `PGID` konfigurierbar, müssen aber mit den Eigentümern beziehungsweise DSM-ACLs des vorhandenen
+Codex-Home und Workspace übereinstimmen. Ein Wechsel der Werte erfordert immer einen Neubau beider
+Images. Der Installer ändert bestehendes Codex-Home und Workspace nicht rekursiv.
 
-This copies `.env.example` to ignored `.env` only when absent, creates ignored
-state/upload/security/secret directories with restrictive permissions, and generates a random
-session key. It does not create a default password, build, or start containers. Set
-`CODEX_HOME_PATH`, canonical public origin, and the explicit cookie/HTTP mode afterward. Never put
-a password, Codex token, API key, or session key in `.env`. The session key must remain a regular,
-non-symlink file readable only by its owner; startup fails closed otherwise.
+Workbench-Verzeichnisse sind Modus 0700, Sitzungsschlüssel, Passwort-Verifier, SQLite-Dateien und
+Uploads Modus 0600. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
+Station oder mit den auf dem NAS verfügbaren ACL-Werkzeugen geprüft werden. Der Runtime-Test in
+[synology-test-plan.md](synology-test-plan.md) ist deshalb verpflichtend.
 
-On first authenticated-boundary startup, browse to the canonical origin and complete Setup. The
-backend exclusively creates `state/security/password.argon2id`; that file closes Setup permanently.
-Back up state and session-key files together. Password recovery/change is not implemented, so loss
-needs an operator recovery decision rather than ad-hoc deletion on a running deployment.
+Beide Container laufen ohne `privileged`, ohne Docker-Socket, ohne Geräte, ohne Host-PID/IPC/Netz,
+mit `no-new-privileges`, sämtlichen gedroppten Linux-Capabilities, PID-/Speicher-/CPU-Limits und
+read-only Root-Filesystem. Full Access hebt die Codex-Sandbox auf, nicht diese Containergrenzen.
 
-## Build and validate
+## Voraussetzung: geteiltes Codex-Home
 
-On a Docker-capable host:
+Das bestehende `/volume1/docker/codex/config/.codex` wird absichtlich mit dem SSH-Codex-Container
+geteilt, damit Anmeldung und Threads erhalten bleiben. Zwei voneinander unabhängige Codex-Prozesse
+können jedoch gleichzeitig Token-Refresh, Konfiguration, Threaddateien oder interne Indizes ändern;
+Workbench implementiert dafür keine prozessübergreifende Sperre.
 
-    docker compose config --quiet
-    docker compose build
+Vor Installation, Backup, Restore, Update und einem Workbench-Turn müssen aktive Codex-CLI-Turns im
+SSH-Container beendet sein. Der SSH-Container selbst muss nicht ersetzt oder neu gestartet werden.
+Für echten Parallelbetrieb ist ein separat authentifiziertes Codex-Home die sichere Alternative;
+ein bloß kopiertes Home kann auslaufende Refresh-Tokens und divergierende Threads erzeugen und ist
+kein belastbares Synchronisationsverfahren.
 
-Before any functional deployment, confirm the image architecture is linux/amd64, codex --version
-inside the backend reports 0.146.0, the non-root uid can write required mounts, and both healthchecks
-pass.
+## Initialinstallation
 
-This repository's inspected environment has no docker executable, so Compose config, image build,
-runtime user, bundled Codex executable, and healthchecks were not executed here.
+1. Als DSM-Administrator per SSH anmelden und den Zielzustand prüfen:
 
-## Hardening
+       cd /volume1/docker/codex/workspace/repositories/codex-workbench
+       pwd -P
+       git status --short --branch
+       git rev-parse HEAD
+       uname -m
+       docker version
+       docker-compose version
+       docker network inspect backend-net
 
-Both services use read-only image filesystems, dropped Linux capabilities, no-new-privileges, and
-non-root runtime users. Temporary paths are size-bounded tmpfs mounts. The backend alone receives
-workspace/data/auth mounts. No Docker socket, host PID/network namespace, devices, privileged mode,
-or broad home mount is present. The Compose network permits backend egress required for Codex model
-access but publishes no backend or app-server host port.
+   `uname -m` und Docker-Architektur müssen `x86_64`/`amd64` entsprechen. Das externe Netzwerk muss
+   existieren. Das Repository darf nicht durch das Deploymentskript aktualisiert oder bereinigt
+   werden.
 
-The gateway limits bodies to 21 MiB while the application limit is 20 MiB. This leaves multipart
-overhead, while streaming byte, dimension, pixel, per-turn and per-session limits remain
-authoritative. Backend /api responses are
-no-store.
+2. Sicherstellen, dass keine aktive SSH-Codex-Sitzung gerade in das gemeinsame Codex-Home schreibt.
+   Vorhandene Authentifizierungsdateien nicht kopieren, umbenennen oder löschen.
 
-Pin base images by digest before a production release and establish dependency/image vulnerability
-scanning. Tags are version-pinned in the foundation but are not immutable digests.
+3. Installer erstmals als root ausführen:
 
-## Health and readiness
+       sudo ./scripts/init-deployment.sh
 
-Frontend `/healthz` proves Nginx can serve. Backend `/api/health/live` proves the process event loop
-can respond. `/api/health/ready` verifies workspace/repository roots, writable data, successful
-SQLite/security initialization, and a live app-server generation after exact CLI version and
-initialize/initialized handshake. A missing password verifier means Setup is required and does not
-make security unready. Liveness remains independent so an orchestrator does not create a restart
-loop merely because the child reached its bounded restart limit.
+   Fehlt `.env`, wird sie aus `.env.example` angelegt. Der erste Lauf legt Workbench-Verzeichnisse
+   und – nur wenn nicht vorhanden – einen Sitzungsschlüssel an. Anschließend endet er absichtlich
+   mit einem Fehler, solange Dokumentationsadressen oder der Image-Tag-Platzhalter enthalten sind.
+   Kein Container wird gebaut oder gestartet.
 
-## Resource guidance
+4. `.env` restriktiv bearbeiten. Mindestens diese Werte setzen:
 
-Use exactly one backend worker because app-server process ownership and in-memory JSON-RPC,
-approval, projection, and event state cannot be shared. Compose defaults for a DS918+-class host
-are 2 CPU and 2 GiB for backend, 0.5 CPU and 256 MiB for frontend, 256/64 PID limits, bounded tmpfs,
-and bounded file descriptors. Treat these as starting points: observe large-context/build turns
-before lowering them and leave headroom for NAS services. Application queue/history/output/upload
-limits remain enforced when container limits are raised.
+       WORKBENCH_IMAGE_TAG=<eindeutige-release-id>
+       WORKBENCH_PUBLIC_ORIGIN=https://<exakter-reverse-proxy-hostname>
+       WORKBENCH_SESSION_COOKIE_SECURE=true
+       WORKBENCH_ALLOW_INSECURE_HTTP=false
+       PUID=1026
+       PGID=100
 
-## HTTPS reverse proxy
+   `WORKBENCH_PUBLIC_ORIGIN` muss exakt dem später im Browser sichtbaren HTTPS-Origin entsprechen,
+   einschließlich eines nicht standardmäßigen öffentlichen Ports, aber ohne Pfad oder abschließenden
+   Slash. Ein reservierter Beispieldomainname wie `.invalid`, `.example.com` oder eine TEST-NET-IP
+   wird vom Installer als Dokumentationsplatzhalter abgewiesen.
 
-For later HTTPS:
+   Nur für einen host-lokalen Test ohne Reverse Proxy ist vorübergehend exakt Folgendes zulässig:
 
-- terminate TLS at a trusted reverse proxy and forward only to the frontend port;
-- set `WORKBENCH_PUBLIC_ORIGIN` to the exact HTTPS origin;
-- set `WORKBENCH_SESSION_COOKIE_SECURE=true` and `WORKBENCH_ALLOW_INSECURE_HTTP=false`;
-- preserve Host, X-Forwarded-Proto, WebSocket Upgrade, and Origin;
-- configure the application to trust forwarded headers only from the internal proxy address;
-- set HSTS at the TLS edge after validation;
-- do not cache /api or /ws;
-- close direct HTTP access or redirect it before using Secure cookies.
+       WORKBENCH_PUBLIC_ORIGIN=http://127.0.0.1:8085
+       WORKBENCH_SESSION_COOKIE_SECURE=false
+       WORKBENCH_ALLOW_INSECURE_HTTP=true
 
-A concrete domain/certificate proxy configuration is intentionally not part of this phase.
+   Dieser HTTP-Modus ist kein regulärer LAN-Betrieb und darf ausschließlich auf dem NAS selbst
+   verwendet werden. Passwörter, Codex-Tokens und Sitzungsschlüssel gehören nicht in `.env`.
+   `WORKBENCH_IMAGE_TAG` ist pro Release eindeutig, zum Beispiel eine freigegebene Commit-ID;
+   dadurch bleiben vorige Images rollbackfähig. Bind-Adresse und Host-Port sind nicht konfigurierbar
+   und deshalb keine `.env`-Variablen.
 
-The sample `.env.example` opts explicitly into degraded localhost HTTP with a non-Secure cookie.
-Application validation refuses implicit HTTP and refuses insecure cookies for an HTTPS origin.
-Compose requires the origin and both mode flags. Do not expose the sample HTTP configuration to the
-internet.
+5. Installer erneut ausführen:
 
-Login's per-address bucket currently sees the backend's direct peer, normally Nginx inside Compose;
-the global bucket remains effective. Do not trust arbitrary forwarded addresses. Narrow proxy
-trust and tested client-address extraction are a production-readiness task.
+       sudo ./scripts/init-deployment.sh
 
-## Upgrade and rollback
+   Er normalisiert eine CRLF-`.env` atomar auf LF, validiert alle sicherheits- und
+   ressourcenrelevanten Werte, prüft die exakten Hostpfade, Eigentümerhinweise, den Schema-/CLI-Pin,
+   das vorhandene `backend-net`, den freien Host-TCP-Port 8085 und das vollständig gerenderte
+   Compose-Modell. Dieses muss genau eine Veröffentlichung `127.0.0.1:8085:8080` am Frontend und
+   keine weitere Portfreigabe enthalten. Bestehende Daten, Secrets, Codex-Authentifizierung und
+   Repositories werden nie gelöscht oder inhaltlich überschrieben. Da der Port frei sein muss,
+   wird der Installer nur bei gestoppter Workbench ausgeführt.
 
-Back up Workbench state and the dedicated Codex home before upgrades. Stop new turns, shut down the
-Workbench Compose project gracefully, build pinned images, run forward-only metadata migrations,
-and verify health. Codex schema upgrades require the documented regeneration/review process.
+6. Den Reverse Proxy wie im folgenden Abschnitt konfigurieren und testen.
 
-A rollback may restore the previous images only when the metadata migration declares backward
-compatibility; otherwise restore the coordinated state backup. Uploaded file and SQLite backups
-must be consistent. Never restore or overwrite the host /workspace repositories as part of an
-application rollback.
+## Synology Reverse Proxy
 
-## Remaining deployment gates
+In DSM unter „Anmeldeportal/Reverse Proxy“ wird eine HTTPS-Regel mit einem gültigen Zertifikat
+angelegt. Verbindliche Werte und Eigenschaften:
 
-Compose enables `WORKBENCH_APP_SERVER_START_ENABLED=true` and pins the image/expected version to
-0.146.0. This implementation host has no Docker executable, so Compose resolution, image build,
-non-root mount ownership, Codex egress/authentication, healthchecks, resource limits, graceful child
-shutdown, and linux/amd64 NAS behavior must be validated on the Docker host before production use.
-Pin image digests and add an SBOM after that validation.
+- Quelle: der Hostname und öffentliche Port aus `WORKBENCH_PUBLIC_ORIGIN`, Protokoll HTTPS.
+- Ziel: `http://127.0.0.1:8085` ohne zusätzlichen Pfad.
+- Der ursprüngliche `Host`-Header wird einschließlich eines gegebenenfalls nicht standardmäßigen
+  Ports weitergereicht; er darf nicht auf `127.0.0.1:8085` umgeschrieben werden.
+- `X-Forwarded-Proto` beziehungsweise Forwarded-Proto wird am Edge auf `https` gesetzt. Das
+  Workbench-Nginx reicht nur die Werte `http` oder `https` an das Backend weiter.
+- WebSocket-Weiterleitung ist aktiviert: HTTP/1.1 sowie `Upgrade` und `Connection` bleiben erhalten.
+  `/ws` und `/api` werden weder gecacht noch gepuffert; lange WebSocket-Verbindungen erhalten einen
+  ausreichend großen Timeout.
+- Der Browser-Header `Origin` wird nicht ersetzt. Sein Wert muss exakt `WORKBENCH_PUBLIC_ORIGIN`
+  sein. Quellregel, Zertifikat, Host-Header und Origin verwenden daher denselben Hostnamen und Port.
+- Auf DSM-Firewall, Router und Compose gibt es keine direkte LAN-Freigabe für TCP 8085. Insbesondere
+  wird kein Port-Forwarding auf 8085 und keine alternative HTTP-Regel angelegt.
+
+Nach erfolgreicher Prüfung kann HSTS am HTTPS-Edge aktiviert werden. Die Frontend-Konfiguration in
+`deploy/nginx.conf` erhält Host, Forwarded-Proto, Clientkette und WebSocket-Header auf dem internen
+Hop; sie macht den Loopback-Port nicht selbst extern erreichbar.
+
+## Konfiguration, Build und Start
+
+Vor Initialinstallation oder einem Start nach Wartungsarbeiten muss TCP 8085 frei sein:
+
+    cd /volume1/docker/codex/workspace/repositories/codex-workbench
+    sudo ./scripts/init-deployment.sh
+    docker-compose config --quiet
+
+Build mit den in `.env` gepinnten Versionen:
+
+    docker-compose build --pull
+
+Der Backend-Build installiert exakt `@openai/codex@0.146.0` und führt `codex --version` aus. Der
+Backend-Start verweigert Readiness, wenn die Laufzeitversion nicht exakt zum generierten
+0.146.0-Schema passt. Node 24.18.1 und Python 3.12.11 werden vom Installer ebenfalls festgehalten.
+
+Vor dem ersten Start die Images prüfen:
+
+    workbench_tag=$(sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env)
+    docker image inspect "codex-workbench-backend:${workbench_tag}"
+    docker image inspect "codex-workbench-frontend:${workbench_tag}"
+
+Start ohne impliziten Neubau:
+
+    docker-compose up -d --no-build --remove-orphans
+    docker-compose ps
+
+Nur `frontend` darf exakt `127.0.0.1:8085->8080/tcp` als Host-Portzuordnung besitzen. `backend` darf
+in `docker-compose ps` keinen veröffentlichten Port zeigen. Insbesondere gibt es keinen Port für den
+als stdio-Kind laufenden Codex App Server.
+
+## Logs und Healthchecks
+
+    docker-compose logs --tail=200 frontend backend
+    docker-compose logs --tail=200 -f backend
+    curl --fail --silent --show-error http://127.0.0.1:8085/healthz
+    curl --fail --silent --show-error http://127.0.0.1:8085/api/health/live
+    curl --fail --silent --show-error http://127.0.0.1:8085/api/health/ready
+
+Diese HTTP-Aufrufe werden ausschließlich in einer Shell auf der Synology ausgeführt. Für den
+regulären Test werden dieselben Pfade zusätzlich über den kanonischen HTTPS-Origin aufgerufen; ein
+Zugriff auf `http://<NAS-LAN-IP>:8085` muss scheitern. `/healthz` prüft Nginx. `live` prüft den
+FastAPI-Prozess. `ready` ist erst 200, wenn Workspace, Repositoryroot, Workbench-Daten,
+SQLite/Security und die initialisierte App-Server-Generation bereit sind. Ein noch fehlender
+Passwort-Verifier ist kein Readiness-Fehler.
+
+Der normale laufende Zustand enthält unter anderem `application_started` und `app_server_ready`,
+aber keine Prompts, Uploadinhalte, Cookies, Token, komplette Hostpfade oder rohen App-Server-Stderr.
+Nginx-Access-Logs sind deaktiviert.
+
+## Erster Bootstrap und Login
+
+Die öffentlich erreichbare Setup-Route ist beim ersten Start offen. Der erste Besucher am exakten
+Origin kann die Einzelbenutzer-Instanz übernehmen. Deshalb:
+
+1. Die HTTPS-Reverse-Proxy-Regel zunächst nur für den Administrator-Testkreis erreichbar machen;
+   TCP 8085 bleibt unabhängig davon ausschließlich an Host-Loopback gebunden.
+2. Den exakten `WORKBENCH_PUBLIC_ORIGIN` öffnen. Keine alternative IP, keinen Hostalias und keinen
+   abweichenden Port verwenden.
+3. In „Ersteinrichtung“ ein einmaliges starkes Passwort mit mindestens 12 Zeichen setzen. Dadurch
+   entsteht exklusiv `secrets/password/password.argon2id`; es gibt kein Default-Passwort.
+4. Abmelden und mit demselben Passwort erneut anmelden. Setup darf danach nicht wieder angeboten
+   werden.
+5. Erst danach den vorgesehenen Nutzerkreis am HTTPS Reverse Proxy freigeben. TCP 8085 wird dabei
+   weder an eine LAN-IP gebunden noch per Firewall oder NAT direkt freigegeben.
+
+Eine Passwortänderungs- oder Recovery-Funktion existiert noch nicht. Den Verifier niemals als
+„Reset“ auf einer laufenden Instanz löschen; dies würde das Setup-Fenster erneut öffnen.
+
+## Erster Workbench-Ablauf
+
+1. In der linken Navigation ein direktes Git-Repository unter
+   `/volume1/docker/codex/workspace/repositories` auswählen. Verschachtelte oder symlinkbasierte
+   Repositories werden absichtlich nicht angeboten.
+2. Einen neuen Thread zunächst mit `Workspace write` und `On request` öffnen.
+3. Im Composer ein PNG/JPEG/WebP/GIF aus der Zwischenablage einfügen. Uploadfortschritt und danach
+   „Bereit“ müssen erscheinen. Eine entfernte Anlage wird sofort gelöscht; übrige Dateien laufen
+   nach `WORKBENCH_UPLOAD_TTL_SECONDS` ab und werden beim Start beziehungsweise nächsten Upload
+   bereinigt. Metadaten bleiben als Lifecycle-Audit in SQLite.
+4. Eine harmlose Aufgabe mit Bild senden. „Working…“, Assistant-Deltas, Aktivität und terminaler
+   Zustand müssen live erscheinen.
+5. „Nutzung & Kontingent“ öffnen und Kontext-, Token- und Rate-Limit-Anzeige gegen den angemeldeten
+   Codex-Account plausibilisieren. Ein reales Kontingent soll nicht absichtlich aufgebraucht werden.
+6. Full Access und Approval-Verhalten ausschließlich im disposable Testrepository nach
+   [synology-test-plan.md](synology-test-plan.md) prüfen.
+
+## Graceful Shutdown
+
+Keine neuen Turns starten und einen laufenden Turn entweder abschließen lassen oder über „Stop“
+unterbrechen. Danach:
+
+    docker-compose stop -t 30
+
+SIGTERM erreicht Uvicorn; die Anwendung beendet neue Arbeit, schließt oder verweigert ausstehende
+Approvals, schließt app-server-stdio und terminiert bei Bedarf dessen Prozessgruppe. Compose wartet
+30 Sekunden auf das Backend. `docker-compose kill` ist kein regulärer Shutdown.
+
+## Update
+
+1. Release-ID, Commit und aktuellen Healthzustand notieren:
+
+       git rev-parse HEAD
+       sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env
+       docker-compose ps
+
+2. Konsistentes Backup wie unten beschrieben erstellen. Während des Codex-Home-Backups darf kein
+   Codex-Prozess in SSH-Container oder Workbench schreiben.
+3. Den freigegebenen Quellstand mit dem vom Betreiber gewählten Git-Verfahren bereitstellen. Keine
+   generierten Schemas manuell ändern.
+4. In `.env` eine neue eindeutige `WORKBENCH_IMAGE_TAG` setzen.
+5. Laufende Turns beenden und die alte Workbench regulär stoppen. Der Installer muss den Host-Port
+   8085 frei vorfinden. Danach prüfen und bauen:
+
+       docker-compose stop -t 30
+       sudo ./scripts/init-deployment.sh
+       docker-compose config --quiet
+       docker-compose build --pull
+
+6. Auf die neuen Images wechseln:
+
+       docker-compose up -d --no-build --remove-orphans
+       docker-compose ps
+
+7. Health, Login, Repositoryliste, einen Read-only-Turn, WebSocket und Logs prüfen. Das vorige Image
+   bis nach vollständiger Abnahme nicht löschen.
+
+## Rollback
+
+Der schnelle Rollback ist nur zulässig, wenn die Release Notes die SQLite-Migration als rückwärts
+kompatibel ausweisen. Dann den vorherigen Compose-/Quellstand bereitstellen, in `.env` den alten
+Image-Tag setzen und ausführen:
+
+    docker-compose stop -t 30
+    sudo ./scripts/init-deployment.sh
+    docker-compose config --quiet
+    docker-compose up -d --no-build --remove-orphans
+
+Bei nicht rückwärtskompatibler oder unbekannter Migration zuerst stoppen und das koordinierte
+Backup von Workbench-Daten, Uploads, Secrets und Codex-Home restaurieren. Danach alten Quellstand und
+alten Image-Tag verwenden. Ein App-Rollback überschreibt niemals den allgemeinen Workspace.
+
+## Backup
+
+Ein konsistentes Backup braucht einen ruhenden Workbench-Backendprozess und ein ruhendes geteiltes
+Codex-Home. Vorher aktive SSH-Codex-Turns beenden. Dann als root:
+
+    cd /volume1/docker/codex/workspace/repositories/codex-workbench
+    docker-compose stop -t 30
+    workbench_stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    workbench_backup=/volume1/docker/codex/workbench/backups/control-${workbench_stamp}.tar.gz
+    tar -C /volume1/docker/codex -czpf "$workbench_backup" \
+      workbench/data \
+      workbench/uploads \
+      workbench/secrets \
+      config/.codex \
+      workspace/repositories/codex-workbench/.env
+    sha256sum "$workbench_backup" > "${workbench_backup}.sha256"
+    git rev-parse HEAD > "/volume1/docker/codex/workbench/backups/source-${workbench_stamp}.txt"
+    sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env > "/volume1/docker/codex/workbench/backups/image-${workbench_stamp}.txt"
+    docker-compose up -d --no-build
+
+Das Archiv enthält SQLite/WAL, Uploaddateien und -metadaten, Passwort-Verifier, Sitzungsschlüssel,
+Codex-Authentifizierung/-Threads und `.env` als eine Einheit. Es enthält absichtlich nicht alle
+Workspace-Repositories. Diese werden separat mit Synology Hyper Backup beziehungsweise einem
+Btrfs-Snapshot gesichert; alternativ kann im selben ruhenden Fenster ein eigenes Archiv von
+`/volume1/docker/codex/workspace` erstellt werden. Backups an einen anderen Datenträger replizieren
+und Wiederherstellung testen. Das Backup-Verzeichnis selbst ist kein Off-NAS-Backup.
+
+## Restore
+
+Restore ist ein Wartungsfenster. Backup-Hash zuerst prüfen, Workbench stoppen und aktive
+SSH-Codex-Prozesse beenden:
+
+    cd /volume1/docker/codex/workspace/repositories/codex-workbench
+    workbench_backup=/volume1/docker/codex/workbench/backups/<control-archiv>.tar.gz
+    sha256sum -c "${workbench_backup}.sha256"
+    docker-compose stop -t 30
+    restore_stamp=$(date -u +%Y%m%dT%H%M%SZ)
+    mv /volume1/docker/codex/workbench/data "/volume1/docker/codex/workbench/data.pre-restore-${restore_stamp}"
+    mv /volume1/docker/codex/workbench/uploads "/volume1/docker/codex/workbench/uploads.pre-restore-${restore_stamp}"
+    mv /volume1/docker/codex/workbench/secrets "/volume1/docker/codex/workbench/secrets.pre-restore-${restore_stamp}"
+    mv /volume1/docker/codex/config/.codex "/volume1/docker/codex/config/.codex.pre-restore-${restore_stamp}"
+    cp -p .env "/volume1/docker/codex/workbench/config.pre-restore-${restore_stamp}.env"
+    tar -C /volume1/docker/codex -xzpf "$workbench_backup"
+    sudo ./scripts/init-deployment.sh
+    docker-compose config --quiet
+    docker-compose up -d --no-build
+
+Die `pre-restore`-Pfade bleiben erhalten, bis Login, Threads, Upload-Lifecycle, Turn und Backup-Hash
+geprüft sind. Bei einem Extraktionsfehler nicht weiterstarten, sondern die verschobenen Pfade
+zurückbenennen. Ein Workspace-Restore ist ein separates, explizites Verfahren und darf niemals als
+Nebenwirkung eines Workbench-Rollbacks erfolgen.
+
+## Vollständige Deinstallation ohne Datenverlust
+
+1. Letztes konsistentes Backup samt Hash extern replizieren und testweise auflisten.
+2. Workbench stoppen und nur dieses Compose-Projekt entfernen:
+
+       cd /volume1/docker/codex/workspace/repositories/codex-workbench
+       docker-compose down --remove-orphans
+
+   Kein `down -v`, kein pauschales Docker-Prune und kein rekursives Löschen unter
+   `/volume1/docker/codex` verwenden.
+
+3. Nicht mehr benötigte Workbench-Images einzeln und anhand des exakten Tags entfernen:
+
+       docker image rm codex-workbench-backend:<tag>
+       docker image rm codex-workbench-frontend:<tag>
+
+4. Persistente Workbench-Daten zunächst nur aus dem aktiven Pfad verschieben:
+
+       deinstall_stamp=$(date -u +%Y%m%dT%H%M%SZ)
+       mv /volume1/docker/codex/workbench "/volume1/docker/codex/workbench.retired-${deinstall_stamp}"
+
+   Damit ist die Workbench entfernt, ihre Daten bleiben wiederherstellbar. Das gemeinsame
+   `/volume1/docker/codex/config/.codex`, der Workspace, alle anderen Repositories, `backend-net` und
+   der SSH-Codex-Container bleiben unangetastet. Das Workbench-Quellrepository erst nach separater
+   Betreiberentscheidung archivieren; niemals den gesamten Workspace löschen.
+
+## Noch offene Produktionsrisiken
+
+- Der explizite HTTP-Modus ist ausschließlich für einen host-lokalen Test vorgesehen und schützt
+  keine Transportdaten. Regulärer Betrieb erfordert den HTTPS Reverse Proxy.
+- Das einmalige Setup kann vor dem Eigentümer von einem anderen LAN-Client übernommen werden.
+- Geteiltes Codex-Home hat keine prozessübergreifende Schreibsperre; parallele CLI-Turns vermeiden.
+- DSM-ACLs können restriktive POSIX-Modi erweitern; numerische UID/GID allein beweisen keinen
+  wirksamen Zugriffsschutz.
+- App-server und von Codex ausgeführte Prozesse laufen unter derselben Container-UID wie FastAPI.
+  Full Access kann deshalb alle Backend-Mounts lesen, einschließlich Codex-Home und Workbench-
+  Secrets. Read-only Secret-Mounts verhindern Änderung, nicht Lesen; dies ist ein bewusst offenes
+  Privilege-Separation-Risiko.
+- Container-Basistags sind versions-, aber noch nicht digestgepinnt. Registry-Tag-Mutation und
+  Supply-Chain-Abweichung bleiben bis zu Digest-Pins, SBOM und Image-Scan offen.
+- Login-Rate-Limits sehen hinter Nginx derzeit primär den Proxy-Peer. Das globale Limit bleibt
+  wirksam; Forwarded-Client-IP wird absichtlich noch nicht als Autorität vertraut.
+- Uploadbereinigung läuft bei Start und vor neuen Uploads, nicht als unabhängiger periodischer Job.
+  Abgelaufene Dateien können daher bis zum nächsten dieser Ereignisse liegen bleiben.
+- Tatsächliche linux/amd64-, seccomp/Landlock-, Netzwerk-, Health-, Recreate- und Last-Eigenschaften
+  können erst auf der DS918+ freigegeben werden. Der verbindliche Ablauf steht im Testplan.

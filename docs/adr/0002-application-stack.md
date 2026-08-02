@@ -23,8 +23,9 @@ composer/uploads, and approvals. Later Monaco and xterm.js integrations are rout
 chunks behind dedicated adapters.
 
 Use a separate frontend build/container and backend build/container. An unprivileged Nginx gateway
-serves static assets and is the only external Compose service; it reverse-proxies same-origin API
-and WebSocket traffic.
+serves static assets and is the only host-published Compose service; production binds it to host
+loopback for the Synology HTTPS reverse proxy. It reverse-proxies same-origin API and WebSocket
+traffic.
 
 Pin direct dependency and image versions, commit npm package-lock.json, keep Python dependencies
 project-local, and validate with tests, lint, strict typing, and production frontend build.

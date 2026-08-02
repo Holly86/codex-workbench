@@ -194,6 +194,18 @@ or CLI option is accepted. A dedicated task owns stdin writes. Graceful applicat
 new turns, cancels or resolves pending requests safely, closes stdin, waits briefly, then terminates
 the child process group if required.
 
+The Synology backend image includes Bash, CA certificates, Git, Make, npm, OpenSSH client, procps
+and ripgrep so the pinned Codex binary and repository-oriented turns do not depend on tools from
+the existing SSH container. The image remains non-root and read-only; only explicit workspace,
+Workbench-data, Codex-home and bounded tmpfs paths are writable. Compose `init`, SIGTERM and a
+30-second grace period complement the supervisor's own process-group shutdown.
+
+The production mount intentionally points at the existing Synology Codex home. That shares account
+and Codex-owned thread state but does not add locking between an SSH CLI process and Workbench.
+Operators must serialize active use and quiesce both processes for a consistent backup. App-server
+and its commands also share the backend UID, so Full Access does not isolate Workbench secrets from
+the child; this deployment risk is documented in the security model.
+
 Unexpected EOF/exit changes readiness to failed, marks active projections reconnecting, invalidates
 pending approvals, and retries with capped exponential backoff and a bounded restart window. After initialization,
 reconciliation uses read/list calls and does not claim in-flight work completed.
