@@ -14,6 +14,19 @@ is the binding protocol authority for the first implementation. The official loc
 The selected transport is explicit `--stdio`. Daemon, proxy, Unix socket, and app-server WebSocket
 modes are not used. One managed child starts only after the Workbench security service is ready.
 
+The runtime compatibility probe preserves the validated npm launcher path
+`/usr/local/bin/codex` and directly executes only `--version`. After trimming outer whitespace it
+accepts exactly one UTF-8 line `codex-cli 0.146.0`; a final LF or CRLF is equivalent. Missing
+`codex-cli`, `codex 0.146.0`, a bare version, extra stdout lines, a non-zero exit, any non-whitespace
+stderr, timeout or another semantic version fail closed. There is no substring, prefix-only,
+lexicographic or multi-line-last-value fallback.
+
+The operator-safe failure taxonomy is `binary_not_found`, `execution_failed`,
+`malformed_version_output`, `unsupported_version`, `timeout`, `permission_denied` and
+`unexpected_stderr`. Logs never include captured output, executable paths, auth state or raw
+environment values. This also means a known harmless stderr warning is not mistaken for a version;
+its underlying temp/home/permission condition must be corrected before readiness.
+
 ## Generated schemas
 
 The following commands succeeded locally:
@@ -197,8 +210,11 @@ the child process group if required.
 The Synology backend image includes Bash, CA certificates, Git, Make, npm, OpenSSH client, procps
 and ripgrep so the pinned Codex binary and repository-oriented turns do not depend on tools from
 the existing SSH container. The image remains non-root and read-only; only explicit workspace,
-Workbench-data, Codex-home and bounded tmpfs paths are writable. Compose `init`, SIGTERM and a
-30-second grace period complement the supervisor's own process-group shutdown.
+Workbench-data, Codex-home and bounded tmpfs paths are writable. `HOME=/home/workbench`,
+`CODEX_HOME=/home/workbench/.codex` and `TMPDIR=/tmp` are explicit. Only the backend enables Docker
+Init, since the Python image has no competing init and owns children; neither image contains
+s6-overlay. SIGTERM and a 30-second grace period complement the supervisor's own process-group
+shutdown. A version-probe timeout kills the entire isolated probe process group as well.
 
 The production mount intentionally points at the existing Synology Codex home. That shares account
 and Codex-owned thread state but does not add locking between an SSH CLI process and Workbench.
@@ -219,6 +235,11 @@ and cancellation, unknown ids, generation restart/restart limit, version mismatc
 snapshots/replay/gaps/slow clients, approval replay/invalidation, Full Access binding, upload
 validation/cancellation/symlink replacement, and authoritative terminal activity. Generated schema
 directories are separately required to remain byte-for-byte unchanged in normal verification.
+
+Version-specific regressions cover no-newline, LF, CRLF and outer-whitespace success plus wrong
+version, missing/wrong prefix, extra stdout, stderr warning, missing binary, permission denial,
+timeout and non-zero exit. Health tests prove 200 only after successful initialize and 503 after a
+failed compatibility probe.
 
 ## Repository-contained real runtime smoke
 

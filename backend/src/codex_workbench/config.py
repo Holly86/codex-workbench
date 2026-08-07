@@ -6,6 +6,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, HttpUrl, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
     codex_executable: str = "codex"
     expected_codex_version: str = "0.146.0"
     app_server_start_enabled: bool = False
+    app_server_version_check_timeout_seconds: float = Field(default=15.0, ge=0.1, le=60.0)
     app_server_request_timeout_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
     app_server_shutdown_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     app_server_max_line_bytes: int = Field(
@@ -160,6 +162,14 @@ class Settings(BaseSettings):
         """Return the configured origin without the URL serializer's root slash."""
 
         return str(self.public_origin).removesuffix("/")
+
+    @property
+    def public_scheme(self) -> str:
+        return urlsplit(self.canonical_public_origin).scheme
+
+    @property
+    def public_authority(self) -> str:
+        return urlsplit(self.canonical_public_origin).netloc
 
     @property
     def session_cookie_name(self) -> str:

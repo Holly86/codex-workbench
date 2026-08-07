@@ -6,6 +6,7 @@ import logging
 
 from fastapi import WebSocket
 
+from codex_workbench.security.http import forwarded_boundary_matches
 from codex_workbench.security.service import SecurityService
 from codex_workbench.security.sessions import AuthenticatedSession, SessionValidation
 
@@ -18,6 +19,10 @@ async def authenticate_websocket(
 ) -> AuthenticatedSession | None:
     """Authenticate before accept; return None after a policy close."""
 
+    if not forwarded_boundary_matches(websocket.headers, security.settings):
+        logger.warning("security_websocket_forwarded_boundary_rejected")
+        await websocket.close(code=4403)
+        return None
     origins = websocket.headers.getlist("origin")
     if len(origins) != 1 or origins[0] != security.settings.canonical_public_origin:
         logger.warning("security_websocket_origin_rejected")

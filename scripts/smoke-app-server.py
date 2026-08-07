@@ -12,6 +12,7 @@ from pathlib import Path
 from codex_workbench.app_server.client import AppServerClient
 from codex_workbench.app_server.correlation import AppServerRequestError
 from codex_workbench.app_server.protocol import ProtocolAdapter
+from codex_workbench.app_server.supervisor import check_codex_version
 from codex_workbench.app_server.transport import (
     JsonObject,
     JsonScalar,
@@ -39,14 +40,9 @@ async def run_checked(*arguments: str, capture_stdout: bool = False) -> bytes:
 
 async def smoke() -> dict[str, object]:
     repository_root = Path(__file__).resolve().parents[1]
-    codex = Path("/usr/local/bin/codex").resolve(strict=True)
-    version = (
-        (await run_checked(str(codex), "--version", capture_stdout=True))
-        .decode("utf-8", errors="strict")
-        .strip()
-    )
-    if version != "codex-cli 0.146.0":
-        raise RuntimeError("runtime smoke requires codex-cli 0.146.0")
+    codex = Path("/usr/local/bin/codex")
+    if not codex.exists():
+        raise RuntimeError("runtime smoke requires /usr/local/bin/codex")
 
     with tempfile.TemporaryDirectory(prefix=".runtime-smoke-", dir=repository_root) as temporary:
         root = Path(temporary)
@@ -70,7 +66,12 @@ async def smoke() -> dict[str, object]:
                 "SSL_CERT_DIR",
                 "HTTP_PROXY",
                 "HTTPS_PROXY",
+                "ALL_PROXY",
                 "NO_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+                "no_proxy",
             }
         }
         environment.update(
@@ -79,6 +80,12 @@ async def smoke() -> dict[str, object]:
                 "CODEX_HOME": str(codex_home),
                 "TMPDIR": str(temporary_dir),
             }
+        )
+        version = await check_codex_version(
+            str(codex),
+            expected_version="0.146.0",
+            environment=environment,
+            timeout_seconds=15,
         )
         notifications: list[str] = []
         completed = asyncio.Event()
@@ -166,7 +173,7 @@ async def smoke() -> dict[str, object]:
             await client.close()
             await transport.stop()
         return {
-            "version": version,
+            "version": f"codex-cli {version}",
             "initialized": True,
             "repositoryContainedCodexHome": True,
             "accountAvailable": account_available,

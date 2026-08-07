@@ -22,5 +22,9 @@ cd "$repository_root"
 ./scripts/check-secrets.sh
 ./scripts/audit-dependencies.sh
 ./scripts/check-generated-schemas.sh
+backend/.venv/bin/python ./scripts/check-deployment-policy.py
+sh -n scripts/*.sh
+./scripts/test-init-deployment.sh
+./scripts/test-deployment-invariants.sh
 git diff --check
 printf '%s\n' "All available verification steps passed."

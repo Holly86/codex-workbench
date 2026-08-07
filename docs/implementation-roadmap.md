@@ -36,17 +36,20 @@ Status: implemented in the current uncommitted worktree.
 - Authenticated bounded image uploads with real browser progress/cancel and `localImage` conversion.
 - Conversation-first frontend with repository/thread navigation, streaming chat, activity timeline,
   approvals, usage/quota detail, reconnect and session-expired behavior.
+- DS918+ deployment hardening: strict reason-coded Codex version gate, ready-only health,
+  linux/amd64/1026:100 Compose invariants, CPU-CFS removal, LF-safe installer parsing, protected
+  port/network topology and secrets-free diagnostics.
 
-Exit gate: 66 backend and 9 frontend tests, strict checks, production build, audits, secret scan,
-schema unchanged check and diff hygiene pass locally. Docker validation and an authenticated real
-model turn remain environment-dependent release gates.
+Exit gate: 83 backend and 9 frontend tests, strict checks, production build, audits, secret scan,
+schema unchanged check, deployment/parser policy tests and diff hygiene pass locally. Docker
+validation and an authenticated real model turn remain environment-dependent release gates.
 
 ## Recommended next phase — Read-only developer workspace and operational hardening
 
 - Safe paginated repository tree, bounded text-file read/search, and Git status/diff APIs.
 - Lazy read-only Monaco viewer; no write endpoint and no terminal.
 - Reconnect/crash/upload soak tests, structured operational metrics and log-retention guidance.
-- Synology Compose/install/runbook/test artifacts are prepared; execute and record the full
+- Synology Compose/install/runbook/test artifacts are hardened; execute and record the full
   linux/amd64 DS918+ acceptance plan before production release.
 - Dedicated authenticated Codex-home smoke environment, backup/restore rehearsal, image digests,
   SBOM and vulnerability scanning.

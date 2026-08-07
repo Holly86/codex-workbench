@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
+import signal
 import stat
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -30,6 +33,104 @@ type ReadyHandler = Callable[[int], Awaitable[None]]
 type TerminalFailureHandler = Callable[[int, str], Awaitable[None]]
 type TransportFactory = Callable[[int], SubprocessJsonlTransport]
 type VersionChecker = Callable[[], Awaitable[str]]
+
+_VERSION_PATTERN = re.compile(
+    r"codex-cli ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+)
+
+
+class VersionCheckReason(StrEnum):
+    BINARY_NOT_FOUND = "binary_not_found"
+    EXECUTION_FAILED = "execution_failed"
+    MALFORMED_VERSION_OUTPUT = "malformed_version_output"
+    UNSUPPORTED_VERSION = "unsupported_version"
+    TIMEOUT = "timeout"
+    PERMISSION_DENIED = "permission_denied"
+    UNEXPECTED_STDERR = "unexpected_stderr"
+
+
+class CodexVersionCheckError(RuntimeError):
+    """A content-free, operator-safe Codex compatibility failure."""
+
+    def __init__(self, reason: VersionCheckReason) -> None:
+        super().__init__(reason.value)
+        self.reason = reason
+
+
+def parse_codex_version_output(
+    stdout: bytes,
+    stderr: bytes,
+    *,
+    expected_version: str,
+) -> str:
+    """Parse one exact ``codex-cli X.Y.Z`` line without treating warnings as version data."""
+
+    if stderr.strip():
+        raise CodexVersionCheckError(VersionCheckReason.UNEXPECTED_STDERR)
+    try:
+        text = stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise CodexVersionCheckError(VersionCheckReason.MALFORMED_VERSION_OUTPUT) from exc
+    match = _VERSION_PATTERN.fullmatch(text)
+    if match is None:
+        raise CodexVersionCheckError(VersionCheckReason.MALFORMED_VERSION_OUTPUT)
+    version = match.group(1)
+    if version != expected_version:
+        raise CodexVersionCheckError(VersionCheckReason.UNSUPPORTED_VERSION)
+    return version
+
+
+async def check_codex_version(
+    executable: str,
+    *,
+    expected_version: str,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+) -> str:
+    """Execute the version probe directly and return only an exactly supported version."""
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            executable,
+            "--version",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=environment,
+            start_new_session=True,
+        )
+    except PermissionError as exc:
+        raise CodexVersionCheckError(VersionCheckReason.PERMISSION_DENIED) from exc
+    except FileNotFoundError as exc:
+        reason = (
+            VersionCheckReason.EXECUTION_FAILED
+            if Path(executable).exists()
+            else VersionCheckReason.BINARY_NOT_FOUND
+        )
+        raise CodexVersionCheckError(reason) from exc
+    except OSError as exc:
+        raise CodexVersionCheckError(VersionCheckReason.EXECUTION_FAILED) from exc
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=timeout_seconds
+        )
+    except asyncio.CancelledError:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        await process.wait()
+        raise
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        await process.wait()
+        raise CodexVersionCheckError(VersionCheckReason.TIMEOUT) from None
+    if process.returncode != 0:
+        raise CodexVersionCheckError(VersionCheckReason.EXECUTION_FAILED)
+    return parse_codex_version_output(
+        stdout,
+        stderr,
+        expected_version=expected_version,
+    )
 
 
 class ProcessState(StrEnum):
@@ -72,9 +173,10 @@ class AppServerSupervisor:
         self._ready_handler = ready_handler
         self._terminal_failure_handler = terminal_failure_handler
         self._environment = self._minimal_environment(os.environ)
-        self._command = self._validated_command(settings.codex_executable)
+        self._configured_executable = settings.codex_executable
+        self._command: tuple[str, str, str] | None = None
         self._transport_factory = transport_factory or self._make_transport
-        self._version_checker = version_checker or self._check_installed_version
+        self._version_checker = version_checker
         self._state = ProcessState.STOPPED
         self._generation = 0
         self._version: str | None = None
@@ -112,18 +214,35 @@ class AppServerSupervisor:
             if self._state is not ProcessState.STOPPED:
                 return
             self._stopping = False
+            self._version = None
+            self._error_code = None
             self._state = ProcessState.CHECKING
             try:
-                version = await self._version_checker()
+                executable = self._resolve_executable(self._configured_executable)
+                self._command = (executable, "app-server", "--stdio")
+                version = (
+                    await self._version_checker()
+                    if self._version_checker is not None
+                    else await self._check_installed_version()
+                )
                 if version != self._settings.expected_codex_version:
-                    raise RuntimeError("codex_version_mismatch")
+                    raise CodexVersionCheckError(VersionCheckReason.UNSUPPORTED_VERSION)
                 self._version = version
-            except Exception as exc:
-                self._error_code = type(exc).__name__
+            except CodexVersionCheckError as exc:
+                self._error_code = exc.reason.value
                 self._state = ProcessState.FAILED
                 logger.error(
                     "app_server_version_check_failed",
-                    extra={"error_type": type(exc).__name__},
+                    extra={"reason": exc.reason.value},
+                )
+                await self._notify_terminal_failure()
+                return
+            except Exception:
+                self._error_code = VersionCheckReason.EXECUTION_FAILED.value
+                self._state = ProcessState.FAILED
+                logger.error(
+                    "app_server_version_check_failed",
+                    extra={"reason": VersionCheckReason.EXECUTION_FAILED.value},
                 )
                 await self._notify_terminal_failure()
                 return
@@ -257,54 +376,55 @@ class AppServerSupervisor:
 
     def _make_transport(self, generation: int) -> SubprocessJsonlTransport:
         del generation
+        command = self._command
+        if command is None:
+            raise RuntimeError("app-server command is unavailable before version verification")
         return SubprocessJsonlTransport(
-            self._command,
+            command,
             environment=self._environment,
             max_line_bytes=self._settings.app_server_max_line_bytes,
             shutdown_timeout_seconds=self._settings.app_server_shutdown_timeout_seconds,
         )
 
     async def _check_installed_version(self) -> str:
-        process = await asyncio.create_subprocess_exec(
-            self._command[0],
-            "--version",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=self._environment,
+        command = self._command
+        if command is None:
+            raise CodexVersionCheckError(VersionCheckReason.EXECUTION_FAILED)
+        return await check_codex_version(
+            command[0],
+            expected_version=self._settings.expected_codex_version,
+            environment=self._environment,
+            timeout_seconds=self._settings.app_server_version_check_timeout_seconds,
         )
-        try:
-            stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=10)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise RuntimeError("codex_version_check_timeout") from None
-        if process.returncode != 0:
-            raise RuntimeError("codex_version_check_failed")
-        text = stdout.decode("utf-8", errors="strict").strip()
-        prefix = "codex-cli "
-        if not text.startswith(prefix):
-            raise RuntimeError("codex_version_output_invalid")
-        return text.removeprefix(prefix).strip()
 
     @staticmethod
-    def _validated_command(configured: str) -> tuple[str, str, str]:
+    def _resolve_executable(configured: str) -> str:
         if "/" in configured:
             path = Path(configured)
             if not path.is_absolute():
-                raise ValueError("codex executable path must be absolute when it contains a slash")
-            resolved = path.resolve(strict=True)
+                raise CodexVersionCheckError(VersionCheckReason.BINARY_NOT_FOUND)
         else:
             located = shutil.which(configured)
             if located is None:
-                raise ValueError("codex executable is unavailable")
-            resolved = Path(located).resolve(strict=True)
-        metadata = resolved.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("codex executable must resolve to a regular file")
-        if not os.access(resolved, os.X_OK):
-            raise ValueError("codex executable is not executable")
-        return (str(resolved), "app-server", "--stdio")
+                raise CodexVersionCheckError(VersionCheckReason.BINARY_NOT_FOUND)
+            path = Path(located)
+        try:
+            candidate = Path(os.path.abspath(path))
+            resolved = candidate.resolve(strict=True)
+            metadata = resolved.stat()
+        except PermissionError as exc:
+            raise CodexVersionCheckError(VersionCheckReason.PERMISSION_DENIED) from exc
+        except FileNotFoundError as exc:
+            raise CodexVersionCheckError(VersionCheckReason.BINARY_NOT_FOUND) from exc
+        except OSError as exc:
+            raise CodexVersionCheckError(VersionCheckReason.EXECUTION_FAILED) from exc
+        if not stat.S_ISREG(metadata.st_mode):
+            raise CodexVersionCheckError(VersionCheckReason.EXECUTION_FAILED)
+        if not os.access(candidate, os.X_OK):
+            raise CodexVersionCheckError(VersionCheckReason.PERMISSION_DENIED)
+        # Execute the validated launcher path, not its npm symlink target, so launcher semantics
+        # remain identical to an operator's `/usr/local/bin/codex` invocation.
+        return str(candidate)
 
     @staticmethod
     def _minimal_environment(source: Mapping[str, str]) -> dict[str, str]:
@@ -319,6 +439,11 @@ class AppServerSupervisor:
             "SSL_CERT_DIR",
             "HTTP_PROXY",
             "HTTPS_PROXY",
+            "ALL_PROXY",
             "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
         )
         return {name: source[name] for name in allowed if name in source}

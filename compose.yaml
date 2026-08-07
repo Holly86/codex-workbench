@@ -2,6 +2,7 @@ version: "2.4"
 
 services:
   backend:
+    platform: linux/amd64
     image: codex-workbench-backend:${WORKBENCH_IMAGE_TAG:-local}
     build:
       context: .
@@ -47,6 +48,7 @@ services:
       WORKBENCH_CODEX_EXECUTABLE: /usr/local/bin/codex
       WORKBENCH_EXPECTED_CODEX_VERSION: ${CODEX_VERSION:-0.146.0}
       WORKBENCH_APP_SERVER_START_ENABLED: "true"
+      WORKBENCH_APP_SERVER_VERSION_CHECK_TIMEOUT_SECONDS: "15"
       WORKBENCH_APP_SERVER_REQUEST_TIMEOUT_SECONDS: ${WORKBENCH_APP_SERVER_REQUEST_TIMEOUT_SECONDS:-30}
       WORKBENCH_APP_SERVER_SHUTDOWN_TIMEOUT_SECONDS: ${WORKBENCH_APP_SERVER_SHUTDOWN_TIMEOUT_SECONDS:-5}
       WORKBENCH_APP_SERVER_MAX_LINE_BYTES: ${WORKBENCH_APP_SERVER_MAX_LINE_BYTES:-4194304}
@@ -73,18 +75,16 @@ services:
     read_only: true
     tmpfs:
       - "/tmp:size=128m,mode=1777,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.cache:size=256m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.config:size=32m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.local:size=128m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.npm:size=256m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.cache:size=128m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.config:size=16m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.local:size=64m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/home/workbench/.npm:size=128m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
     init: true
     stop_signal: SIGTERM
     stop_grace_period: 30s
     restart: unless-stopped
-    mem_limit: ${WORKBENCH_BACKEND_MEMORY_LIMIT:-3g}
-    cpu_period: 100000
-    cpu_quota: ${WORKBENCH_BACKEND_CPU_QUOTA:-200000}
-    pids_limit: 512
+    mem_limit: 2g
+    pids_limit: 256
     ulimits:
       nofile:
         soft: 4096
@@ -106,12 +106,13 @@ services:
         - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)
       interval: 30s
       timeout: 5s
-      start_period: 20s
+      start_period: 60s
       retries: 5
     networks:
       - workbench-private
 
   frontend:
+    platform: linux/amd64
     image: codex-workbench-frontend:${WORKBENCH_IMAGE_TAG:-local}
     build:
       context: .
@@ -132,10 +133,12 @@ services:
     stop_signal: SIGTERM
     stop_grace_period: 15s
     restart: unless-stopped
-    mem_limit: ${WORKBENCH_FRONTEND_MEMORY_LIMIT:-128m}
-    cpu_period: 100000
-    cpu_quota: ${WORKBENCH_FRONTEND_CPU_QUOTA:-50000}
+    mem_limit: 128m
     pids_limit: 64
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -145,6 +148,18 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - "-"
+        - http://127.0.0.1:8080/healthz
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
     networks:
       workbench-private:
       backend-net:

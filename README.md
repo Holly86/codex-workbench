@@ -7,7 +7,8 @@ local filesystem paths to the browser.
 
 ## Implemented capabilities
 
-- Direct `codex app-server --stdio` supervision with an exact 0.146.0 compatibility check,
+- Direct `codex app-server --stdio` supervision with an exact, single-line
+  `codex-cli 0.146.0` compatibility check,
   initialize/initialized handshake, request correlation, deadlines, cancellation, EOF detection,
   bounded exponential restart, readiness integration, and graceful shutdown.
 - Opaque repository selection for direct non-symlink Git repositories, Codex-authoritative thread
@@ -60,15 +61,17 @@ Vite listens on 127.0.0.1:5173 and proxies same-origin API traffic to the backen
 
     make verify
 
-This runs Ruff, strict MyPy, 66 backend tests including the deterministic fake app server, ESLint,
+This runs Ruff, strict MyPy, 83 backend tests including the deterministic fake app server, ESLint,
 strict TypeScript, 9 frontend tests, the production build, secret scanning, Python/npm audits, the
-generated-schema unchanged check, and `git diff --check`.
+generated-schema unchanged check, deployment policy and installer parser tests, shell syntax, and
+`git diff --check`.
 
 On the Synology deployment host additionally run from the repository after preparing `.env`:
 
     sudo ./scripts/init-deployment.sh
-    docker-compose config --quiet
-    docker-compose build --pull
+    sudo docker-compose config
+    sudo docker-compose build --pull --no-cache
+    sudo docker-compose up -d
 
 If Docker is unavailable on a development host, these Docker checks remain a deployment-host gate
 and must not be emulated by exposing another port.
@@ -76,7 +79,7 @@ and must not be emulated by exposing another port.
 ## Deployment preparation
 
 `./scripts/init-deployment.sh` is an idempotent, Synology-only installer for the fixed
-`/volume1/docker/codex` topology. It validates or creates Workbench state/upload/security/backup
+`/volume1/docker/codex` topology. It validates or creates only Workbench data/upload/secret
 directories, normalizes `.env` line endings, and creates a session key only when absent; it never
 builds or starts containers and never changes the existing Codex home or workspace. Follow the
 [deployment runbook](docs/deployment.md) and execute the real-host
@@ -85,6 +88,13 @@ publishes an app-server or backend host port. The frontend is attached to the ex
 `backend-net` without a fixed container or LAN IP. Its sole host publication is fixed at
 `127.0.0.1:8085:8080`; production access is exclusively through the Synology HTTPS reverse proxy
 targeting `http://127.0.0.1:8085`.
+
+The DS918+ kernel cannot enforce Docker CPU CFS quotas. Compose deliberately contains no `cpus`,
+`cpu_period`, or `cpu_quota`; memory, PID, file-descriptor, queue, upload, tmpfs, capability,
+read-only-root, and health boundaries remain enforced. A Buildx warning that host Git is unavailable
+is harmless: `.git` is excluded from the build context, images contain no fabricated commit label,
+and runtime behavior does not depend on Git provenance. Run `sudo ./scripts/diagnose-deployment.sh`
+for a secrets-free, read-only check of the Workbench containers after startup.
 
 ## Protocol schemas
 

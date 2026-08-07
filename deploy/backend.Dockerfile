@@ -5,8 +5,10 @@ ARG CODEX_VERSION=0.146.0
 
 FROM node:${NODE_VERSION}-bookworm-slim AS codex-cli
 ARG CODEX_VERSION
-RUN npm install --global --omit=dev @openai/codex@${CODEX_VERSION} \
-    && codex --version
+RUN npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}" \
+    && version_output="$(codex --version 2>&1)" \
+    && test "$version_output" = "codex-cli ${CODEX_VERSION}" \
+    && codex app-server --help >/dev/null
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS backend-builder
 WORKDIR /build
@@ -15,6 +17,7 @@ COPY backend/src ./src
 RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+ARG CODEX_VERSION
 ARG WORKBENCH_UID=1026
 ARG WORKBENCH_GID=100
 
@@ -47,7 +50,10 @@ COPY --from=codex-cli /usr/local/lib/node_modules/@openai/codex /usr/local/lib/n
 COPY --from=codex-cli /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 COPY --from=backend-builder /wheels /wheels
 RUN python -m pip install --no-cache-dir /wheels/* \
-    && rm -rf /wheels
+    && rm -rf /wheels \
+    && version_output="$(/usr/local/bin/codex --version 2>&1)" \
+    && test "$version_output" = "codex-cli ${CODEX_VERSION}" \
+    && /usr/local/bin/codex app-server --help >/dev/null
 
 WORKDIR /app
 USER workbench
@@ -57,7 +63,7 @@ ENV HOME=/home/workbench \
     WORKBENCH_ENVIRONMENT=production
 
 EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/live', timeout=3)"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)"]
 
 CMD ["uvicorn", "codex_workbench.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

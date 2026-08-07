@@ -1,0 +1,27 @@
+services:
+  backend:
+    image: codex-workbench-backend:test-release
+    platform: linux/amd64
+    user: "1026:100"
+    networks:
+      workbench-private: null
+  frontend:
+    image: codex-workbench-frontend:test-release
+    platform: linux/amd64
+    user: "1026:100"
+    ports:
+      - mode: ingress
+        target: 8080
+        published: "8085"
+        protocol: tcp
+        host_ip: 127.0.0.1
+    networks:
+      backend-net: null
+      workbench-private: null
+networks:
+  backend-net:
+    name: backend-net
+    external: true
+  workbench-private:
+    name: codex-workbench_workbench-private
+    driver: bridge

@@ -27,6 +27,10 @@ Compose baut zwei linux/amd64-Images und startet genau je einen Container:
 
 Der bestehende SSH-Codex-Container wird weder ersetzt noch von diesem Compose-Projekt verwaltet.
 
+Die bereits belegten Hostports `1880`, `3000`, `3002`, `5005`, `5678`, `8010`, `8080`, `8081`,
+`8890`, `11434`, `1883` und `1884` werden nicht verwendet oder verändert. Der Installer akzeptiert
+nur 8085 auf Loopback und bricht ab, wenn dieser Port bereits lauscht.
+
 ## Persistente Hostpfade
 
 Es gibt keine benannten oder anonymen Docker-Volumes. Jeder dauerhafte Schreibpfad ist ein absoluter
@@ -43,10 +47,10 @@ Bind-Mount unter `/volume1/docker/codex`.
 | `/volume1/docker/codex/workspace` | `/workspace` | rw | Workspace und Repositories |
 | Repository-`.env` | nur Compose auf dem Host | nicht gemountet | Workbench-Konfiguration ohne Credentials |
 
-`/volume1/docker/codex/workbench/backups` wird vom Installationsskript als restriktiver
-Backup-Zielordner angelegt, aber nicht in einen Container gemountet. Ein eigener Log-Mount ist nicht
-erforderlich: beide Services schreiben nach stdout/stderr; der Docker-JSON-Logger rotiert pro Service
-bei 10 MiB und behält drei Dateien.
+Der Installer legt keine vierte Workbench-Persistenz und kein Backupverzeichnis an. Backups gehen in
+ein vom Betreiber ausdrücklich gewähltes, extern gesichertes Ziel und sind keine Runtime-Mounts. Ein
+eigener Log-Mount ist nicht erforderlich: beide Services schreiben nach stdout/stderr; der
+Docker-JSON-Logger rotiert pro Service bei 10 MiB und behält drei Dateien.
 
 Der Image-Root ist read-only. Schreibbar sind nur die genannten Backend-Bind-Mounts und begrenzte
 tmpfs-Pfade für `/tmp` sowie ephemere Benutzer-Caches. Das Frontend erhält ausschließlich tmpfs für
@@ -54,10 +58,10 @@ Nginx-Laufzeitpfade und überhaupt keine Hostdaten.
 
 ## Identitäts- und Rechtemodell
 
-Build und Compose verwenden standardmäßig UID `1026` und GID `100`. Beide Werte sind über `PUID`
-und `PGID` konfigurierbar, müssen aber mit den Eigentümern beziehungsweise DSM-ACLs des vorhandenen
-Codex-Home und Workspace übereinstimmen. Ein Wechsel der Werte erfordert immer einen Neubau beider
-Images. Der Installer ändert bestehendes Codex-Home und Workspace nicht rekursiv.
+Build und Compose verwenden verbindlich UID `1026` und GID `100`. Der Installer lehnt andere Werte
+und abweichende Eigentümer von Codex-Home oder Workspace ab, ändert diese gemeinsamen Pfade aber
+nicht. Beide Images werden mit derselben numerischen Identität gebaut und laufen vollständig
+non-root.
 
 Workbench-Verzeichnisse sind Modus 0700, Sitzungsschlüssel, Passwort-Verifier, SQLite-Dateien und
 Uploads Modus 0600. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
@@ -65,8 +69,20 @@ Station oder mit den auf dem NAS verfügbaren ACL-Werkzeugen geprüft werden. De
 [synology-test-plan.md](synology-test-plan.md) ist deshalb verpflichtend.
 
 Beide Container laufen ohne `privileged`, ohne Docker-Socket, ohne Geräte, ohne Host-PID/IPC/Netz,
-mit `no-new-privileges`, sämtlichen gedroppten Linux-Capabilities, PID-/Speicher-/CPU-Limits und
+mit `no-new-privileges`, sämtlichen gedroppten Linux-Capabilities, PID-/Speicher-/nofile-Limits und
 read-only Root-Filesystem. Full Access hebt die Codex-Sandbox auf, nicht diese Containergrenzen.
+
+Der DS918+-Kernel unterstützt keine Docker-CPU-CFS-Quotas. Deshalb enthält Compose bewusst weder
+`cpus` noch `cpu_period`/`cpu_quota` oder gleichartige CFS-Grenzen; die frühere DSM-Warnung entfällt.
+CPU-Isolation kann auf diesem Host nicht durch Compose erzwungen werden. Ein Uvicorn-Worker, ein
+verwalteter App Server, begrenzte Queues/Uploads, 2 GiB Backend-RAM, 128 MiB Frontend-RAM, begrenzte
+tmpfs-Pfade und keine automatischen Last-/Soak-Tests reduzieren stattdessen die Konkurrenz zu den
+bestehenden Diensten.
+
+Nur der Backend-Service setzt `init: true`: das Python-Slim-Image besitzt kein eigenes Init-System,
+und Docker Init übernimmt das Reaping weiterer Kindprozesse neben dem expliziten Supervisor. Das
+Frontend verwendet das unveränderte unprivilegierte Nginx-Image ohne zusätzlichen Init. Keines der
+Images verwendet s6-overlay; der bekannte s6/PID-1-Konflikt kann hier daher nicht auftreten.
 
 ## Voraussetzung: geteiltes Codex-Home
 
@@ -140,13 +156,16 @@ kein belastbares Synchronisationsverfahren.
 
        sudo ./scripts/init-deployment.sh
 
-   Er normalisiert eine CRLF-`.env` atomar auf LF, validiert alle sicherheits- und
-   ressourcenrelevanten Werte, prüft die exakten Hostpfade, Eigentümerhinweise, den Schema-/CLI-Pin,
-   das vorhandene `backend-net`, den freien Host-TCP-Port 8085 und das vollständig gerenderte
-   Compose-Modell. Dieses muss genau eine Veröffentlichung `127.0.0.1:8085:8080` am Frontend und
-   keine weitere Portfreigabe enthalten. Bestehende Daten, Secrets, Codex-Authentifizierung und
-   Repositories werden nie gelöscht oder inhaltlich überschrieben. Da der Port frei sein muss,
-   wird der Installer nur bei gestoppter Workbench ausgeführt.
+   Er normalisiert eine CRLF-`.env` atomar auf LF, ohne sie als Shellcode auszuführen, prüft alle
+   Shellskripte und `.env.example` auf LF, validiert numerisch exakt `1026:100`, alle sicherheits-
+   und ressourcenrelevanten Werte, die exakten Hostpfade und Eigentümer sowie den Schema-/CLI-Pin.
+   `backend-net` muss vorhanden und ein Bridge-Netz sein; TCP 8085 muss frei sein. Das vollständig
+   gerenderte Compose-Modell darf nur die Images des gewählten Tags, `linux/amd64`, die zwei
+   vorgesehenen Services/Netze und exakt `127.0.0.1:8085:8080` enthalten. Zusätzliche Ports,
+   `docker-net`, macvlan, feste IPs, `container_name`, Host-Netz und CPU-CFS-Schlüssel führen vor
+   Build/Start zum Abbruch. Bestehende Daten, Secrets, Codex-Authentifizierung und Repositories
+   werden nie gelöscht oder inhaltlich überschrieben. Da der Port frei sein muss, wird der
+   Installer nur bei gestoppter Workbench ausgeführt.
 
 6. Den Reverse Proxy wie im folgenden Abschnitt konfigurieren und testen.
 
@@ -171,7 +190,10 @@ angelegt. Verbindliche Werte und Eigenschaften:
 
 Nach erfolgreicher Prüfung kann HSTS am HTTPS-Edge aktiviert werden. Die Frontend-Konfiguration in
 `deploy/nginx.conf` erhält Host, Forwarded-Proto, Clientkette und WebSocket-Header auf dem internen
-Hop; sie macht den Loopback-Port nicht selbst extern erreichbar.
+Hop; sie macht den Loopback-Port nicht selbst extern erreichbar. Im Production-Modus prüft das
+Backend für jede Nicht-Health-API und jeden WebSocket zusätzlich genau einen passenden `Host`,
+`X-Forwarded-Host` und `X-Forwarded-Proto`. Eine Proxy-Regel, die Host oder HTTPS-Schema nicht wie
+oben beschrieben erhält, scheitert daher sichtbar und fail-closed.
 
 ## Konfiguration, Build und Start
 
@@ -179,15 +201,22 @@ Vor Initialinstallation oder einem Start nach Wartungsarbeiten muss TCP 8085 fre
 
     cd /volume1/docker/codex/workspace/repositories/codex-workbench
     sudo ./scripts/init-deployment.sh
-    docker-compose config --quiet
+    sudo docker-compose config
 
 Build mit den in `.env` gepinnten Versionen:
 
-    docker-compose build --pull
+    sudo docker-compose build --pull --no-cache
 
-Der Backend-Build installiert exakt `@openai/codex@0.146.0` und führt `codex --version` aus. Der
-Backend-Start verweigert Readiness, wenn die Laufzeitversion nicht exakt zum generierten
-0.146.0-Schema passt. Node 24.18.1 und Python 3.12.11 werden vom Installer ebenfalls festgehalten.
+Der Backend-Build installiert exakt `@openai/codex@0.146.0`, verlangt bereits in Build- und
+Runtime-Stage exakt `codex-cli 0.146.0` und prüft `codex app-server --help`. Der Backend-Start
+verweigert Readiness, wenn die Laufzeitversion nicht exakt zum generierten 0.146.0-Schema passt.
+Node 24.18.1 und Python 3.12.11 werden vom Installer ebenfalls festgehalten.
+
+Buildx kann auf DSM melden, dass Host-Git fehlt und Commitinformationen nicht erfasst wurden. Das
+ist harmlos und kein Grund für eine Git-Installation auf DSM: `.git` liegt nicht im Buildkontext,
+es gibt kein Commit-Label und keine erfundene Provenance, und die Anwendung benötigt zur Laufzeit
+keine Build-Commitmetadaten. Der Buildinhalt wird durch Quellstand, Lockfiles und gepinnte Versionen
+bestimmt; ein Release-Tag in `.env` bleibt die explizite Betreiberzuordnung.
 
 Vor dem ersten Start die Images prüfen:
 
@@ -197,8 +226,8 @@ Vor dem ersten Start die Images prüfen:
 
 Start ohne impliziten Neubau:
 
-    docker-compose up -d --no-build --remove-orphans
-    docker-compose ps
+    sudo docker-compose up -d
+    sudo docker-compose ps
 
 Nur `frontend` darf exakt `127.0.0.1:8085->8080/tcp` als Host-Portzuordnung besitzen. `backend` darf
 in `docker-compose ps` keinen veröffentlichten Port zeigen. Insbesondere gibt es keinen Port für den
@@ -222,6 +251,55 @@ Passwort-Verifier ist kein Readiness-Fehler.
 Der normale laufende Zustand enthält unter anderem `application_started` und `app_server_ready`,
 aber keine Prompts, Uploadinhalte, Cookies, Token, komplette Hostpfade oder rohen App-Server-Stderr.
 Nginx-Access-Logs sind deaktiviert.
+
+Der Backend-Healthcheck wartet auf der langsameren DS918+ zunächst 60 Sekunden, prüft danach alle
+30 Sekunden mit 5 Sekunden Timeout und fünf Retries. Das Frontend wartet über `service_healthy` und
+startet daher entweder nach echter Readiness oder bleibt mit einem klaren Backendfehler aus; es gibt
+weder eine Abschwächung auf `/live` noch eine endlose aggressive Startschleife. Ein späterer
+App-Server-Restart macht `/ready` vorübergehend 503 und nach erfolgreicher neuer Initialisierung
+wieder 200.
+
+Der Compatibility-Probe startet den validierten `/usr/local/bin/codex`-Launcher direkt mit dem
+festen Argument `--version`, nie über eine Shell. Er akzeptiert nach äußerem Whitespace genau eine
+UTF-8-Zeile `codex-cli 0.146.0`; LF und CRLF sind zulässig. `0.146.0`, `codex 0.146.0`, zusätzliche
+stdout-Zeilen, andere Versionen, nicht-leeres stderr oder Exitcodes ungleich null werden nicht
+erraten oder als Teilstring akzeptiert. Die sichere Logursache ist genau eine von
+`binary_not_found`, `execution_failed`, `malformed_version_output`, `unsupported_version`,
+`timeout`, `permission_denied` oder `unexpected_stderr`. Weder stdout/stderr-Inhalt noch
+Umgebungswerte werden geloggt. Eine bekannte harmlose CLI-Warnung wird somit nicht als Versionswert
+interpretiert; bei `unexpected_stderr` sind insbesondere UID/GID, HOME/CODEX_HOME und tmpfs-Rechte
+mit dem Diagnosewerkzeug zu prüfen.
+
+Nach dem Start liefert die folgende rein lesende Diagnose ausschließlich Metadaten der beiden
+Workbench-Services. Sie zeigt keine Authdateien, Cookies, Session-/CSRF-Werte oder Dateiinhalte und
+verändert keine Container:
+
+    cd /volume1/docker/codex/workspace/repositories/codex-workbench
+    sudo ./scripts/diagnose-deployment.sh
+
+Sie prüft `command -v codex`, Version und App-Server-Hilfe im Backend, UID/GID, HOME/CODEX_HOME,
+Mountzugriff, Live/Ready, den einen App-Server-Prozess, effektive Ports/Netze und die
+Workbench-eigenen Containerzustände.
+
+## Schutz der bestehenden Synology-Dienste
+
+Alle Compose-Befehle werden ausschließlich in diesem Repository mit
+`COMPOSE_PROJECT_NAME=codex-workbench` ausgeführt. Es gibt keine expliziten `container_name`-Werte;
+Compose erzeugt kollisionsarme projektspezifische Namen. Verboten sind `docker system prune`,
+globales `docker image prune`, `docker network prune`, `docker volume prune`, das Entfernen von
+`backend-net`, Stop/Recreate fremder Container und das Ändern bestehender Reverse-Proxy-Ziele oder
+belegter Ports. Insbesondere werden Daten von Alivo, Nextcloud, Paperless, n8n, ioBroker, Ollama,
+Pool Community, Signage und Homebridge sowie `/volume1/docker/alivo` niemals berührt.
+
+`docker-compose down` darf nur aus diesem Projektverzeichnis und nur für den Workbench-Stack
+verwendet werden; `down -v` ist unzulässig. Eine risikoarme Bereinigung entfernt ausschließlich
+zuvor geprüfte, unbenutzte Workbench-Images anhand ihres vollständigen Tags:
+
+    sudo docker image rm codex-workbench-backend:<alter-tag>
+    sudo docker image rm codex-workbench-frontend:<alter-tag>
+
+Vorher muss `docker-compose config --images` bestätigen, dass der Tag nicht mehr aktiv ist. Es gibt
+keinen generischen Prune-Befehl.
 
 ## Erster Bootstrap und Login
 
@@ -289,7 +367,7 @@ Approvals, schließt app-server-stdio und terminiert bei Bedarf dessen Prozessgr
        docker-compose stop -t 30
        sudo ./scripts/init-deployment.sh
        docker-compose config --quiet
-       docker-compose build --pull
+       docker-compose build --pull --no-cache
 
 6. Auf die neuen Images wechseln:
 
@@ -321,8 +399,10 @@ Codex-Home. Vorher aktive SSH-Codex-Turns beenden. Dann als root:
 
     cd /volume1/docker/codex/workspace/repositories/codex-workbench
     docker-compose stop -t 30
+    workbench_backup_root=<vorhandenes-extern-gesichertes-backupziel>
+    test -d "$workbench_backup_root" && test -w "$workbench_backup_root"
     workbench_stamp=$(date -u +%Y%m%dT%H%M%SZ)
-    workbench_backup=/volume1/docker/codex/workbench/backups/control-${workbench_stamp}.tar.gz
+    workbench_backup=${workbench_backup_root}/codex-workbench-control-${workbench_stamp}.tar.gz
     tar -C /volume1/docker/codex -czpf "$workbench_backup" \
       workbench/data \
       workbench/uploads \
@@ -330,16 +410,18 @@ Codex-Home. Vorher aktive SSH-Codex-Turns beenden. Dann als root:
       config/.codex \
       workspace/repositories/codex-workbench/.env
     sha256sum "$workbench_backup" > "${workbench_backup}.sha256"
-    git rev-parse HEAD > "/volume1/docker/codex/workbench/backups/source-${workbench_stamp}.txt"
-    sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env > "/volume1/docker/codex/workbench/backups/image-${workbench_stamp}.txt"
+    git rev-parse HEAD > "${workbench_backup_root}/codex-workbench-source-${workbench_stamp}.txt"
+    sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env > "${workbench_backup_root}/codex-workbench-image-${workbench_stamp}.txt"
     docker-compose up -d --no-build
 
 Das Archiv enthält SQLite/WAL, Uploaddateien und -metadaten, Passwort-Verifier, Sitzungsschlüssel,
 Codex-Authentifizierung/-Threads und `.env` als eine Einheit. Es enthält absichtlich nicht alle
 Workspace-Repositories. Diese werden separat mit Synology Hyper Backup beziehungsweise einem
 Btrfs-Snapshot gesichert; alternativ kann im selben ruhenden Fenster ein eigenes Archiv von
-`/volume1/docker/codex/workspace` erstellt werden. Backups an einen anderen Datenträger replizieren
-und Wiederherstellung testen. Das Backup-Verzeichnis selbst ist kein Off-NAS-Backup.
+`/volume1/docker/codex/workspace` erstellt werden. Das Ziel wird bewusst nicht vom Installer erzeugt
+oder gemountet und darf nicht innerhalb von `workbench/data`, `workbench/uploads` oder
+`workbench/secrets` liegen. Es muss auf einen anderen Datenträger repliziert und testweise
+wiederhergestellt werden.
 
 ## Restore
 
@@ -347,7 +429,7 @@ Restore ist ein Wartungsfenster. Backup-Hash zuerst prüfen, Workbench stoppen u
 SSH-Codex-Prozesse beenden:
 
     cd /volume1/docker/codex/workspace/repositories/codex-workbench
-    workbench_backup=/volume1/docker/codex/workbench/backups/<control-archiv>.tar.gz
+    workbench_backup=<absoluter-pfad-zum-geprüften-control-archiv>.tar.gz
     sha256sum -c "${workbench_backup}.sha256"
     docker-compose stop -t 30
     restore_stamp=$(date -u +%Y%m%dT%H%M%SZ)

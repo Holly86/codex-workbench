@@ -36,31 +36,17 @@ require_file() {
     [ ! -L "$1" ] || fail "Erforderliche Datei darf kein Symlink sein: $1"
 }
 
+require_lf_file() {
+    require_file "$1"
+    carriage_return=$(printf '\r')
+    if grep -q "$carriage_return" "$1"; then
+        fail "Datei muss LF-Zeilenenden verwenden: $1"
+    fi
+}
+
 read_env() {
     key=$1
-    value=$(
-        awk -v wanted="$key" '
-            /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-            {
-                line = $0
-                sub(/^[[:space:]]*/, "", line)
-                separator = index(line, "=")
-                if (separator == 0) { next }
-                name = substr(line, 1, separator - 1)
-                sub(/[[:space:]]*$/, "", name)
-                if (name != wanted) { next }
-                found += 1
-                result = substr(line, separator + 1)
-                sub(/^[[:space:]]*/, "", result)
-                sub(/[[:space:]]*$/, "", result)
-            }
-            END {
-                if (found == 1) { print result; exit 0 }
-                if (found > 1) { exit 2 }
-                exit 1
-            }
-        ' .env
-    ) || {
+    value=$(./scripts/read-deployment-env.sh .env "$key") || {
         result=$?
         if [ "$result" -eq 2 ]; then
             fail "Variable $key ist in .env mehrfach definiert."
@@ -107,14 +93,6 @@ validate_boolean() {
         true|false) ;;
         *) fail "$label muss exakt true oder false sein." ;;
     esac
-}
-
-validate_memory_limit() {
-    label=$1
-    value=$2
-    awk -v value="$value" '
-        BEGIN { if (value !~ /^[1-9][0-9]*[mMgG]$/) { exit 1 } }
-    ' || fail "$label muss als positive MiB-/GiB-Angabe wie 128m oder 3g gesetzt sein."
 }
 
 validate_managed_path() {
@@ -189,6 +167,11 @@ check_host_tcp_port_available() {
         END { exit(found ? 0 : 1) }
     ' $tcp_tables; then
         fail "TCP-Port $checked_port ist auf dem Host bereits belegt."
+    fi
+    if command -v docker >/dev/null 2>&1 \
+        && docker ps --format '{{.Ports}}' 2>/dev/null \
+            | grep -Eq "(^|, )[^,]*:${checked_port}->"; then
+        fail "Docker veröffentlicht Host-Port $checked_port bereits."
     fi
     status "TCP-Port $checked_port ist auf dem Host frei."
 }
@@ -288,6 +271,12 @@ require_file deploy/backend.Dockerfile
 require_file deploy/frontend.Dockerfile
 require_file deploy/nginx.conf
 require_file schemas/codex-app-server/VERSION
+require_file scripts/validate-compose.sh
+require_file scripts/read-deployment-env.sh
+require_lf_file .env.example
+for shell_script in scripts/*.sh; do
+    require_lf_file "$shell_script"
+done
 status "Compose-Datei, Image-Definitionen, Nginx-Konfiguration und Schema-Pin sind vorhanden."
 
 if [ -L .env ]; then
@@ -323,6 +312,8 @@ project_name=$(read_env COMPOSE_PROJECT_NAME)
 awk -v value="$project_name" '
     BEGIN { if (value !~ /^[a-z0-9][a-z0-9_-]*$/) { exit 1 } }
 ' || fail "COMPOSE_PROJECT_NAME darf nur Kleinbuchstaben, Ziffern, Unterstriche und Bindestriche enthalten."
+[ "$project_name" = codex-workbench ] \
+    || fail "COMPOSE_PROJECT_NAME muss zum Schutz fremder Container exakt codex-workbench sein."
 
 image_tag=$(read_env WORKBENCH_IMAGE_TAG)
 awk -v value="$image_tag" '
@@ -413,9 +404,7 @@ for integer_rule in \
     WORKBENCH_MAX_UPLOAD_SESSION_BYTES:1:1073741824 \
     WORKBENCH_UPLOAD_TTL_SECONDS:300:2592000 \
     WORKBENCH_UPLOAD_MAX_DIMENSION:256:50000 \
-    WORKBENCH_UPLOAD_MAX_PIXELS:65536:250000000 \
-    WORKBENCH_BACKEND_CPU_QUOTA:10000:400000 \
-    WORKBENCH_FRONTEND_CPU_QUOTA:10000:400000
+    WORKBENCH_UPLOAD_MAX_PIXELS:65536:250000000
 do
     integer_name=${integer_rule%%:*}
     remainder=${integer_rule#*:}
@@ -465,15 +454,12 @@ awk -v initial="$backoff_initial" -v maximum="$backoff_maximum" '
     BEGIN { if (initial + 0 > maximum + 0) { exit 1 } }
 ' || fail "Der initiale App-Server-Backoff darf nicht größer als sein Maximum sein."
 
-backend_memory=$(read_env WORKBENCH_BACKEND_MEMORY_LIMIT)
-frontend_memory=$(read_env WORKBENCH_FRONTEND_MEMORY_LIMIT)
-validate_memory_limit WORKBENCH_BACKEND_MEMORY_LIMIT "$backend_memory"
-validate_memory_limit WORKBENCH_FRONTEND_MEMORY_LIMIT "$frontend_memory"
-
 puid=$(read_env PUID)
 pgid=$(read_env PGID)
 validate_integer PUID "$puid" 1 60000
 validate_integer PGID "$pgid" 1 60000
+[ "$puid" = 1026 ] || fail "PUID muss auf dieser Synology exakt 1026 sein."
+[ "$pgid" = 100 ] || fail "PGID muss auf dieser Synology exakt 100 sein."
 status "PUID/PGID validiert: $puid:$pgid."
 if [ "$created_env" = true ]; then
     chown "$puid:$pgid" .env
@@ -543,7 +529,6 @@ create_managed_directory "$workbench_uploads" 700
 create_managed_directory "$persistent_root/workbench/secrets" 700
 create_managed_directory "$workbench_password" 700
 create_managed_directory "$workbench_session" 700
-create_managed_directory "$persistent_root/workbench/backups" 700
 
 unexpected_password_entry=$(find "$workbench_password" -mindepth 1 ! -name password.argon2id -print -quit)
 [ -z "$unexpected_password_entry" ] \
@@ -607,26 +592,31 @@ done
 codex_owner=$(stat -c '%u:%g' "$codex_home" 2>/dev/null || printf 'unbekannt')
 workspace_owner=$(stat -c '%u:%g' "$workspace" 2>/dev/null || printf 'unbekannt')
 notice "Codex-Home Eigentümer: $codex_owner; Workspace Eigentümer: $workspace_owner; Containeridentität: $puid:$pgid."
-if [ "$codex_owner" != "$puid:$pgid" ] || [ "$workspace_owner" != "$puid:$pgid" ]; then
-    notice "Abweichende Eigentümer können durch Synology-ACLs funktionieren; der Runtime-Schreibtest bleibt zwingend."
-fi
+[ "$codex_owner" = "$puid:$pgid" ] \
+    || fail "Codex-Home muss $puid:$pgid gehören; der Installer ändert es nicht."
+[ "$workspace_owner" = "$puid:$pgid" ] \
+    || fail "Workspace muss $puid:$pgid gehören; der Installer ändert ihn nicht."
 
 command -v docker >/dev/null 2>&1 \
     || fail "Docker ist nicht verfügbar; backend-net kann nicht geprüft werden."
 docker network inspect backend-net >/dev/null 2>&1 \
     || fail "Das erforderliche externe Netzwerk backend-net ist nicht verfügbar."
 network_driver=$(docker network inspect --format '{{.Driver}}' backend-net 2>/dev/null || printf 'unbekannt')
+[ "$network_driver" = bridge ] \
+    || fail "backend-net muss den Treiber bridge verwenden; gefunden: $network_driver"
 status "Externes Netzwerk backend-net ist vorhanden (Treiber: $network_driver); Compose setzt bewusst keine feste IP."
 
 command -v docker-compose >/dev/null 2>&1 \
     || fail "docker-compose ist nicht verfügbar; das gerenderte Deployment kann nicht geprüft werden."
 compose_version=$(docker-compose version --short 2>/dev/null || printf 'unbekannt')
-temporary_file=.compose.resolved.$$
-[ ! -e "$temporary_file" ] && [ ! -L "$temporary_file" ] \
-    || fail "Temporäre Compose-Datei existiert bereits: $temporary_file"
+notice "Erkannte Docker-Compose-Version: $compose_version"
+temporary_file=$(mktemp /tmp/codex-workbench-compose.XXXXXX) \
+    || fail "Temporäre Compose-Datei konnte nicht sicher angelegt werden."
 docker-compose config > "$temporary_file" \
     || fail "docker-compose config konnte nicht gerendert werden."
 validate_rendered_ports "$temporary_file"
+./scripts/validate-compose.sh "$temporary_file" "$image_tag" "$puid" "$pgid" >/dev/null \
+    || fail "Die gerenderte Compose-Konfiguration verletzt Deployment-Invarianten."
 rm -f -- "$temporary_file"
 temporary_file=
 status "docker-compose config ist gültig und veröffentlicht exakt 127.0.0.1:8085:8080 (Version: $compose_version)."

@@ -18,6 +18,11 @@ Docker-/Compose-Befehle.
 - Das externe Netz und der bestehende SSH-Codex-Container werden nicht verändert.
 - Für jeden fehlgeschlagenen Test zunächst `docker-compose logs --tail=200` sichern; keine
   Container mit `kill -9` oder pauschalem Docker-Prune „reparieren“.
+- Kein `docker system prune`, globales Image-/Netzwerk-/Volume-Prune, Stop/Recreate fremder
+  Container, Entfernen von `backend-net` oder Ändern fremder Reverse-Proxies/Ports. Alle
+  Compose-Befehle ausschließlich aus diesem Repository und mit Projektname `codex-workbench`.
+- Daten von Alivo, Nextcloud, Paperless, n8n, ioBroker, Ollama, Pool, Signage und Homebridge werden
+  weder gelesen noch verändert; `/volume1/docker/alivo` bleibt unangetastet.
 
 Eine Ergebnistabelle verwenden:
 
@@ -61,6 +66,8 @@ Erwartung:
   `published: 8085` und `target: 8080`; es gibt keine weitere Veröffentlichung. Kein Service
   enthält `privileged`, Docker-Socket, Host-Netz oder feste Container-IP. `backend-net` ist
   `external: true`.
+- Kein Service enthält `cpus`, `cpu_period`, `cpu_quota` oder gleichartige CPU-CFS-Schlüssel;
+  `docker-net`, macvlan, `container_name` und feste IPs fehlen vollständig.
 - Vor dem Start war Host-TCP-Port 8085 frei; der Installer hat sowohl diese Belegung als auch das
   vorhandene `backend-net` erfolgreich geprüft.
 - `WORKBENCH_PUBLIC_ORIGIN` ist der reale HTTPS-Reverse-Proxy-Origin und kein `.invalid`-/
@@ -70,7 +77,7 @@ Erwartung:
 
 ## S02 – Image-Build, Plattform und Codex-Pin
 
-    docker-compose build --pull
+    docker-compose build --pull --no-cache
     workbench_tag=$(sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env)
     docker image inspect --format '{{.Os}} {{.Architecture}} {{.Config.User}}' "codex-workbench-backend:${workbench_tag}"
     docker image inspect --format '{{.Os}} {{.Architecture}} {{.Config.User}}' "codex-workbench-frontend:${workbench_tag}"
@@ -82,8 +89,10 @@ Erwartung:
 
 Erwartung: beide Images `linux amd64`; Backend-Image ist non-root, Codex meldet exakt
 `codex-cli 0.146.0`, Python 3.12.11 und Node 24.18.1. Repositorywerkzeuge und Zertifikatspaket sind
-im Image vorhanden. `docker-compose run` erstellt kurzlebige Testcontainer, startet aber nicht die
-regulären Services.
+im Image vorhanden; `codex app-server --help` muss erfolgreich sein. Die Buildx-Meldung zu
+fehlendem Host-Git ist zulässig, da keine Commitmetadaten ins Image erfunden werden und Runtime
+nicht davon abhängt. Git wird dafür nicht auf DSM installiert. `docker-compose run` erstellt
+kurzlebige Testcontainer, startet aber nicht die regulären Services.
 
 ## S03 – Start, Non-root, read-only Root und Containerhärtung
 
@@ -98,9 +107,9 @@ regulären Services.
     docker inspect --format 'backend ports={{json .NetworkSettings.Ports}} tmpfs={{json .HostConfig.Tmpfs}}' "$backend_id"
     docker inspect --format 'frontend ports={{json .NetworkSettings.Ports}} tmpfs={{json .HostConfig.Tmpfs}}' "$frontend_id"
 
-Erwartung: beide Prozesse laufen als `1026:100` beziehungsweise den explizit konfigurierten
-Werten; `readonly=true`, `privileged=false`, `CapDrop` enthält `ALL`, PID-/Speicher-/CPU-Limits sind
-gesetzt. Backend-Ports haben keine Hostbindung und der Codex App Server bleibt ein reiner
+Erwartung: beide Prozesse laufen verbindlich als `1026:100`; `readonly=true`, `privileged=false`,
+`CapDrop` enthält `ALL`, PID-/Speicher-/nofile-Limits sind gesetzt. CPU-CFS-Quotas fehlen bewusst,
+weil der DS918+-Kernel sie nicht unterstützt. Backend-Ports haben keine Hostbindung und der Codex App Server bleibt ein reiner
 stdio-Kindprozess. Frontend veröffentlicht ausschließlich `127.0.0.1:8085->8080/tcp`; weder
 `0.0.0.0` noch eine LAN-IP darf in der Portbindung erscheinen.
 
@@ -146,6 +155,7 @@ Host Eigentümer/Modi und DSM-ACLs prüfen:
     curl --fail --silent --show-error "$public_origin/healthz"
     curl --fail --silent --show-error "$public_origin/api/health/live"
     curl --fail --silent --show-error "$public_origin/api/health/ready"
+    sudo ./scripts/diagnose-deployment.sh
 
 Die drei HTTP-Aufrufe werden auf der Synology selbst ausgeführt. Von einem anderen LAN-Host müssen
 `http://<NAS-LAN-IP>:8085/healthz` und TCP-Verbindungen zu Port 8085 scheitern. Die drei HTTPS-
@@ -153,6 +163,11 @@ Aufrufe laufen über den Reverse Proxy. Erwartung: jeweils HTTP 200; Ready-JSON 
 `repositories`, `data`, `security` und `app_server` als `true`. Backend wird in
 `docker-compose ps` `healthy`. Wenn der App-Server wegen Authentifizierung zwar initialisiert, aber
 noch keinen Turn ausführen kann, bleibt der spätere Turntest das verbindliche Auth-Gate.
+
+Bei einem Versionfehler muss der Log genau einen redigierten Grund aus `binary_not_found`,
+`execution_failed`, `malformed_version_output`, `unsupported_version`, `timeout`,
+`permission_denied` oder `unexpected_stderr` zeigen, niemals rohe stdout-/stderr-Zeilen. Der Probe
+akzeptiert nur die einzelne Zeile `codex-cli 0.146.0`; `/ready` bleibt dabei korrekt 503.
 
 Die Reverse-Proxy-Regel muss als Ziel `http://127.0.0.1:8085` verwenden, HTTP/1.1-WebSockets mit
 `Upgrade`/`Connection` weiterleiten, den ursprünglichen `Host` erhalten, Forwarded-Proto auf `https`
@@ -314,7 +329,7 @@ Hash vergleichen, weil Sessions/WAL legitime Änderungen erzeugen.
 2. Archiv ohne Ausgabe sensibler Dateiinhalte auflisten und in ein neues restriktives Testverzeichnis
    unter `/volume1/docker/codex/workbench` extrahieren:
 
-       workbench_backup=/volume1/docker/codex/workbench/backups/<control-archiv>.tar.gz
+       workbench_backup=<absoluter-pfad-zum-geprüften-control-archiv>.tar.gz
        restore_test=$(mktemp -d /volume1/docker/codex/workbench/restore-test.XXXXXX)
        chmod 700 "$restore_test"
        tar -C "$restore_test" -xzpf "$workbench_backup"

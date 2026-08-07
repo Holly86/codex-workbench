@@ -72,6 +72,13 @@ CORS is disabled because browser access is same-origin. The current authenticati
 not use forwarded client-address headers as authority. Narrow proxy trust and tested extraction
 must precede any future use of those headers.
 
+In production, every non-health API request additionally requires one `Host`, one
+`X-Forwarded-Host`, and one `X-Forwarded-Proto` matching the configured public authority and
+scheme. The frontend overwrites those forwarded fields from its narrowly normalized ingress;
+duplicates and mismatches fail closed. WebSocket handshakes apply the same proxy boundary before
+the exact browser-Origin/session checks. Health remains directly diagnosable on container
+loopback and does not grant application authority.
+
 ## WebSocket policy
 
 `/ws/events` requires the valid session cookie and exact Origin before acceptance. Its first frame
@@ -177,6 +184,11 @@ method, and opaque thread/item ids. They exclude prompt text, raw tool output, u
 cookies, authorization/CSRF headers, password values/hashes, Codex auth, and complete environment
 dumps.
 
+The Codex compatibility probe separately captures stdout/stderr and logs only one allowlisted
+reason code. It accepts exactly one `codex-cli 0.146.0` line after outer whitespace. Additional
+stdout, any non-whitespace stderr, malformed UTF-8, timeout, execution/permission errors and a
+different version all fail closed; their contents are never emitted.
+
 ## Browser and content security
 
 The gateway sets a restrictive Content Security Policy, frame denial, nosniff, no-referrer, and a
@@ -215,3 +227,6 @@ DSM ACLs may broaden POSIX mode bits and require a host-side audit.
 Uploads are purged on startup and before later uploads rather than by a periodic timer, so expired
 bytes can remain at rest until one of those triggers. Container images are version-tag-pinned but
 not digest-pinned, and Docker validation depends on the target host.
+The DS918+ kernel cannot enforce Docker CPU-CFS quotas, so Compose does not claim CPU isolation;
+memory, PID, nofile, queue, upload, tmpfs, read-only-root, capability and one-worker boundaries
+remain active.

@@ -6,6 +6,7 @@ import logging
 from http import HTTPStatus
 
 from fastapi import Request, Response
+from starlette.datastructures import Headers
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse
 
@@ -47,6 +48,24 @@ def exact_origin_matches(request: Request, expected: str) -> bool:
     return len(origins) == 1 and origins[0] == expected
 
 
+def forwarded_boundary_matches(headers: Headers, settings: Settings) -> bool:
+    """Validate the single trusted frontend hop in production without trusting client IP data."""
+
+    if settings.environment != "production":
+        return True
+    hosts = headers.getlist("host")
+    forwarded_hosts = headers.getlist("x-forwarded-host")
+    forwarded_protocols = headers.getlist("x-forwarded-proto")
+    return (
+        len(hosts) == 1
+        and len(forwarded_hosts) == 1
+        and len(forwarded_protocols) == 1
+        and hosts[0].lower() == settings.public_authority.lower()
+        and forwarded_hosts[0].lower() == settings.public_authority.lower()
+        and forwarded_protocols[0] == settings.public_scheme
+    )
+
+
 def mutation_metadata_is_safe(
     request: Request,
     expected_origin: str,
@@ -75,6 +94,18 @@ class SecurityBoundaryMiddleware(BaseHTTPMiddleware):
             ("GET", "/api/health/ready"),
         }:
             return await call_next(request)
+
+        settings: Settings = request.app.state.settings
+        if not forwarded_boundary_matches(request.headers, settings):
+            logger.warning(
+                "security_forwarded_boundary_rejected",
+                extra={"path": request.url.path},
+            )
+            return api_error(
+                HTTPStatus.FORBIDDEN,
+                "proxy_boundary_rejected",
+                "Die Anfrage wurde aus Sicherheitsgründen abgelehnt.",
+            )
 
         security: SecurityService = request.app.state.security
         if not security.ready:

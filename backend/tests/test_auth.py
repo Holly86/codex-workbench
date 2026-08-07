@@ -101,6 +101,40 @@ def test_secure_cookie_uses_host_prefix(tmp_path: Path) -> None:
     assert "Domain=" not in set_cookie
 
 
+def test_production_rejects_mismatched_forwarded_host_and_proto(tmp_path: Path) -> None:
+    settings = build_settings(
+        tmp_path,
+        environment="production",
+        public_origin="https://workbench.example",
+        secure_cookie=True,
+    )
+    with TestClient(create_app(settings), base_url="https://workbench.example") as client:
+        rejected = client.post(
+            "/api/auth/setup",
+            json={"password": _PASSWORD},
+            headers={
+                "Origin": settings.canonical_public_origin,
+                "Host": settings.public_authority,
+                "X-Forwarded-Host": "attacker.example",
+                "X-Forwarded-Proto": "http",
+            },
+        )
+        accepted = client.post(
+            "/api/auth/setup",
+            json={"password": _PASSWORD},
+            headers={
+                "Origin": settings.canonical_public_origin,
+                "Host": settings.public_authority,
+                "X-Forwarded-Host": settings.public_authority,
+                "X-Forwarded-Proto": settings.public_scheme,
+            },
+        )
+
+    assert rejected.status_code == 403
+    assert rejected.json()["error"]["code"] == "proxy_boundary_rejected"
+    assert accepted.status_code == 200
+
+
 def test_login_uses_generic_error_and_rotates_existing_session(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
     with TestClient(create_app(settings)) as client:

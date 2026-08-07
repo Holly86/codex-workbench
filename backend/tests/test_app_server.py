@@ -12,7 +12,14 @@ from codex_workbench.app_server.correlation import (
     AppServerRequestTimeoutError,
     RequestCorrelator,
 )
-from codex_workbench.app_server.supervisor import AppServerSupervisor, ProcessState
+from codex_workbench.app_server.supervisor import (
+    AppServerSupervisor,
+    CodexVersionCheckError,
+    ProcessState,
+    VersionCheckReason,
+    check_codex_version,
+    parse_codex_version_output,
+)
 from codex_workbench.app_server.transport import (
     AppServerEofError,
     AppServerProtocolError,
@@ -24,6 +31,105 @@ from codex_workbench.config import Settings
 from tests.helpers import build_settings
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "fake_codex.py"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        b"codex-cli 0.146.0",
+        b"codex-cli 0.146.0\n",
+        b"codex-cli 0.146.0\r\n",
+        b" \t codex-cli 0.146.0 \r\n\t ",
+    ],
+)
+def test_version_parser_accepts_only_the_supported_cli_line(stdout: bytes) -> None:
+    assert (
+        parse_codex_version_output(stdout, b"", expected_version="0.146.0")
+        == "0.146.0"
+    )
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "reason"),
+    [
+        (b"codex-cli 0.145.0\n", b"", VersionCheckReason.UNSUPPORTED_VERSION),
+        (b"0.146.0\n", b"", VersionCheckReason.MALFORMED_VERSION_OUTPUT),
+        (b"codex 0.146.0\n", b"", VersionCheckReason.MALFORMED_VERSION_OUTPUT),
+        (
+            b"codex-cli 0.146.0\nunexpected line\n",
+            b"",
+            VersionCheckReason.MALFORMED_VERSION_OUTPUT,
+        ),
+        (
+            b"codex-cli 0.146.0\n",
+            b"harmless-looking warning\n",
+            VersionCheckReason.UNEXPECTED_STDERR,
+        ),
+    ],
+)
+def test_version_parser_fails_closed_with_a_safe_reason(
+    stdout: bytes,
+    stderr: bytes,
+    reason: VersionCheckReason,
+) -> None:
+    with pytest.raises(CodexVersionCheckError) as captured:
+        parse_codex_version_output(stdout, stderr, expected_version="0.146.0")
+    assert captured.value.reason is reason
+
+
+def _version_probe(tmp_path: Path, body: str, *, executable: bool = True) -> Path:
+    probe = tmp_path / "codex-version-probe"
+    probe.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8", newline="\n")
+    probe.chmod(0o700 if executable else 0o600)
+    return probe
+
+
+async def _run_version_probe(path: Path, *, probe_timeout: float = 1.0) -> str:
+    return await check_codex_version(
+        str(path),
+        expected_version="0.146.0",
+        environment={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        timeout_seconds=probe_timeout,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    [
+        ("exit 7", VersionCheckReason.EXECUTION_FAILED),
+        ("printf '%s\\n' 'codex-cli 0.146.0' >&2", VersionCheckReason.UNEXPECTED_STDERR),
+    ],
+)
+async def test_version_probe_rejects_failed_execution_and_stderr(
+    tmp_path: Path,
+    body: str,
+    reason: VersionCheckReason,
+) -> None:
+    with pytest.raises(CodexVersionCheckError) as captured:
+        await _run_version_probe(_version_probe(tmp_path, body))
+    assert captured.value.reason is reason
+
+
+@pytest.mark.asyncio
+async def test_version_probe_reports_binary_not_found(tmp_path: Path) -> None:
+    with pytest.raises(CodexVersionCheckError) as captured:
+        await _run_version_probe(tmp_path / "missing-codex")
+    assert captured.value.reason is VersionCheckReason.BINARY_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_version_probe_reports_permission_denied(tmp_path: Path) -> None:
+    with pytest.raises(CodexVersionCheckError) as captured:
+        await _run_version_probe(_version_probe(tmp_path, "exit 0", executable=False))
+    assert captured.value.reason is VersionCheckReason.PERMISSION_DENIED
+
+
+@pytest.mark.asyncio
+async def test_version_probe_reports_timeout(tmp_path: Path) -> None:
+    with pytest.raises(CodexVersionCheckError) as captured:
+        await _run_version_probe(_version_probe(tmp_path, "exec sleep 60"), probe_timeout=0.05)
+    assert captured.value.reason is VersionCheckReason.TIMEOUT
 
 
 def _transport(scenario: str = "normal") -> SubprocessJsonlTransport:
@@ -380,6 +486,7 @@ async def test_version_mismatch_fails_without_restart_loop(tmp_path: Path) -> No
     )
     await supervisor.start()
     assert supervisor.status.state is ProcessState.FAILED
+    assert supervisor.status.error_code == "unsupported_version"
     assert supervisor.status.generation == 0
     assert supervisor.status.restart_attempts == 0
     await supervisor.stop()

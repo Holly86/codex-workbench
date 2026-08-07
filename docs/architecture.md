@@ -35,6 +35,12 @@ The backend container will run exactly one supervised app-server child. Horizont
 is disallowed until process ownership and event fan-out are redesigned; SQLite and one child
 process make a single active backend replica the explicit topology.
 
+Both services target `linux/amd64`, use numeric identity `1026:100`, read-only roots, dropped
+capabilities and bounded RAM/PIDs/fds/tmpfs. Only the Python backend enables Docker Init because it
+owns child processes and its image has no init system; neither image uses s6-overlay. The Synology
+kernel cannot enforce CPU-CFS quotas, so the architecture makes no false CPU-isolation claim and
+uses one Uvicorn worker plus bounded application queues instead.
+
 ## Backend module boundaries
 
 | Module | Responsibility | Must not do |
@@ -167,6 +173,12 @@ and exposes an operator-visible reason.
 Only one process generation may own the transport. Every pending call and server request carries
 that generation so late messages from an old process cannot resolve new state.
 
+Before the first generation, the supervisor validates the standard npm launcher target but invokes
+the launcher path itself, then runs `--version` directly. A strict parser accepts only one
+`codex-cli 0.146.0` line and empty stderr within the bounded timeout. Failures become stable,
+content-free diagnostics; no shell, substring/version ordering, raw stderr or environment dump is
+involved. The child command remains the fixed vector `codex`, `app-server`, `--stdio`.
+
 ## JSON-RPC correlation
 
 The app-server wire format omits the jsonrpc member and uses one JSON object per stdout line.
@@ -214,6 +226,10 @@ readiness succeeds. Child restart invalidates approvals and reconciles persisted
 references. Codex requests are not blindly
 retried: read-only methods may retry; thread/turn mutations require an idempotency/reconciliation
 strategy.
+
+Production non-health HTTP and WebSocket ingress also proves that Host, forwarded Host and
+forwarded scheme match the configured public origin. The health routes stay available for direct
+loopback diagnosis but provide no privileged capability.
 
 ## Implemented boundary and extension points
 

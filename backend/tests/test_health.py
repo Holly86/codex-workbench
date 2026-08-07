@@ -6,7 +6,10 @@ from fastapi.testclient import TestClient
 
 from codex_workbench.config import Settings
 from codex_workbench.main import create_app
+from codex_workbench.runtime import WorkbenchRuntime
 from tests.helpers import build_settings
+
+_FIXTURE = Path(__file__).parent / "fixtures" / "fake_codex.py"
 
 
 def _settings(
@@ -55,17 +58,63 @@ def test_readiness_reports_missing_data_directory(tmp_path: Path) -> None:
     assert response.json()["checks"]["security"] is False
 
 
+def _app_server_settings(tmp_path: Path, executable: Path) -> Settings:
+    base = _settings(tmp_path)
+    values = base.model_dump()
+    values.update(
+        {
+            "codex_executable": str(executable),
+            "app_server_start_enabled": True,
+        }
+    )
+    return Settings(_env_file=None, **values)
+
+
+def test_readiness_is_200_after_supported_app_server_initializes(tmp_path: Path) -> None:
+    with TestClient(create_app(_app_server_settings(tmp_path, _FIXTURE))) as client:
+        response = client.get("/api/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["checks"]["app_server"] is True
+
+
+def test_readiness_is_503_after_version_check_fails(tmp_path: Path) -> None:
+    incompatible = tmp_path / "incompatible-codex"
+    incompatible.write_text(
+        "#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.147.0'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    incompatible.chmod(0o700)
+    app = create_app(_app_server_settings(tmp_path, incompatible))
+    with TestClient(app) as client:
+        response = client.get("/api/health/ready")
+        runtime = app.state.runtime
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["app_server"] is False
+    assert isinstance(runtime, WorkbenchRuntime)
+    assert runtime.supervisor.status.error_code == "unsupported_version"
+
+
 def test_production_exposes_health_but_not_api_schema(tmp_path: Path) -> None:
     settings = _settings(tmp_path, environment="production")
     with TestClient(create_app(settings)) as client:
         health_response = client.get("/api/health/live")
-        unauthenticated_schema_response = client.get("/api/openapi.json")
+        proxy_headers = {
+            "Host": settings.public_authority,
+            "X-Forwarded-Host": settings.public_authority,
+            "X-Forwarded-Proto": settings.public_scheme,
+        }
+        unauthenticated_schema_response = client.get(
+            "/api/openapi.json", headers=proxy_headers
+        )
         client.post(
             "/api/auth/setup",
             json={"password": "correct horse battery staple"},
-            headers={"Origin": settings.canonical_public_origin},
+            headers={"Origin": settings.canonical_public_origin, **proxy_headers},
         )
-        schema_response = client.get("/api/openapi.json")
+        schema_response = client.get("/api/openapi.json", headers=proxy_headers)
 
     assert health_response.status_code == 200
     assert unauthenticated_schema_response.status_code == 401
