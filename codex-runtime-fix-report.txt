@@ -1,0 +1,1692 @@
+codex:/workspace/repositories/codex-workbench$ codex \
+  -C /workspace/repositories/codex-workbench \
+  -m gpt-5.6-sol \
+  -c model_reasoning_effort='"xhigh"' \
+  --sandbox danger-full-access \
+  --ask-for-approval never \
+  "$(cat /tmp/codex-workbench-fix-runtime-build.md)"
+WARNING: failed to clean up stale arg0 temp dirs: Permission denied (os error 13)
+╭──────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                           │
+│                                                      │
+│ model:       gpt-5.6-sol xhigh   /model to change    │
+│ directory:   /workspace/repositories/codex-workbench │
+│ permissions: YOLO mode                               │
+╰──────────────────────────────────────────────────────╯
+
+  Tip: Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at
+  lower reasoning efforts—try starting lower, then turn it up for harder jobs.
+
+
+› Du bist Principal Software Engineer für „Codex Workbench“.
+
+  Arbeite ausschließlich im Repository:
+
+  /workspace/repositories/codex-workbench
+
+  Committe nichts, pushe nichts, deploye nichts und verändere keine laufenden Container oder Dateien außerhalb dieses Repositorys.
+
+  ## Aktueller Stand
+
+  Alle lokalen Tests waren zuletzt grün. Der frühere Runtime-Fehler `app_server_version_check_failed` wurde bereits durch eine streng typisierte, fail-closed Versionsprüfung mit
+  Regressionstests adressiert.
+
+  Beim ersten vollständigen Synology-Rebuild mit:
+
+  sudo docker-compose build --pull --no-cache
+
+  scheitert nun jedoch der Backend-Image-Build selbst.
+
+  ## Reale Zielumgebung
+
+  - Synology DS918+
+  - linux/amd64
+  - DSM 7.2
+  - Docker Compose 2.20.1-6047-g6817716
+  - Ziel-Codex-Version exakt: 0.146.0
+  - erwartete CLI-Ausgabe: `codex-cli 0.146.0`
+  - Runtime Python: 3.12.11 slim-bookworm
+  - Codex wird in einer separaten Node-Stage mit Node 24.18.1 installiert
+  - Runtime läuft später als UID 1026 / GID 100
+  - Backend-Port intern 8000
+  - kein Backend-Host-Port
+  - Frontend später ausschließlich 127.0.0.1:8085:8080
+  - externes Netz backend-net
+  - internes Netz workbench-private
+
+  ## Exakter Buildfehler
+
+  Der Build erreicht erfolgreich:
+
+  - Installation aller Python-Abhängigkeiten
+  - Installation `@openai/codex@0.146.0` in der Codex-Build-Stage
+  - Copy von Node
+  - Copy von Codex
+  - Copy von npm/npx
+  - Copy von `/usr/local/lib/node_modules/@openai/codex`
+  - Copy von npm
+
+  Er scheitert erst bei diesem RUN-Schritt der Runtime-Stage:
+
+  ```dockerfile
+  RUN python -m pip install --no-cache-dir /wheels/* \
+      && rm -rf /wheels \
+      && version_output="$(/usr/local/bin/codex --version 2>&1)" \
+      && test "$version_output" = "codex-cli ${CODEX_VERSION}" \
+      && /usr/local/bin/codex app-server --help >/dev/null
+
+  Docker meldet:
+
+  failed to solve: process "... version_output=... &&
+  test "$version_output" = "codex-cli ${CODEX_VERSION}" &&
+  /usr/local/bin/codex app-server --help >/dev/null"
+  did not complete successfully: exit code: 1
+
+  Es erscheint keine zusätzliche Codex-Fehlermeldung.
+
+  Die Codex-Build-Stage selbst hatte vorher erfolgreich:
+
+  npm install --global --omit=dev "@openai/codex@0.146.0"
+
+  sowie dort einen Versionscheck durchgeführt.
+
+  Aufgabe
+
+  Finde die Root Cause des Runtime-Stage-Buildfehlers exakt und behebe sie robust.
+
+  1. Dockerfile vollständig analysieren
+
+  Lies insbesondere:
+
+  deploy/backend.Dockerfile
+  compose.yaml
+  .env.example
+  scripts/init-deployment.sh
+  backend/src/codex_workbench/app_server/supervisor.py
+  relevante Tests
+  docs/app-server-integration.md
+  docs/deployment.md
+  AGENTS.md
+
+  Prüfe insbesondere:
+
+  Multi-Stage-Copy-Semantik
+  ob /usr/local/bin/codex Symlink oder reguläre Datei ist
+  wohin der Codex-Launcher tatsächlich zeigt
+  welche nativen Codex-Artefakte das npm-Paket benötigt
+  ob alle benötigten Dateien aus der Node-Stage in die Runtime kopiert werden
+  Node-Pfad
+  npm global prefix
+  Package-Struktur von @openai/codex@0.146.0
+  Plattform-/Architektur-Artefakte
+  Dateirechte
+  HOME/TMP während des Build-Schritts
+  ARG CODEX_VERSION Scope in allen Stages
+  stdout/stderr von codex --version
+  Exit-Code von codex --version
+  stdout/stderr und Exit-Code von codex app-server --help
+  2. Build-Checks diagnostizierbar machen
+
+  Die Build-Verifikation darf nicht aus einer undurchsichtigen langen &&-Kette bestehen.
+
+  Baue sie so um, dass ein zukünftiger Fehler eindeutig erkennen lässt, ob folgende Prüfung fehlgeschlagen ist:
+
+  Codex-Binary fehlt
+  codex --version Exit-Code
+  unerwartete stdout-Ausgabe
+  unerwartete stderr-Ausgabe
+  falsche Version
+  codex app-server --help Exit-Code
+  fehlende Runtime-Datei oder Library
+
+  Keine Secrets ausgeben.
+
+  Die erwartete Versionsausgabe darf weiterhin strikt geprüft werden.
+
+  3. Codex-Runtime korrekt paketieren
+
+  Bevorzuge eine robuste und nachvollziehbare Runtime-Installation.
+
+  Falls das Kopieren einzelner Dateien aus einer globalen npm-Installation fragil ist, ändere die Strategie.
+
+  Zulässige Beispiele, sofern technisch korrekt:
+
+  vollständige relevante npm-prefix-Struktur aus der Build-Stage übernehmen;
+  Codex in der finalen Runtime-Stage reproduzierbar installieren;
+  einen eindeutig aufgelösten Launcher plus alle benötigten Runtime-Artefakte kopieren.
+
+  Nicht zulässig:
+
+  latest
+  ungepinnte Codex-Version
+  stilles Ignorieren des App-Server-Checks
+  Entfernen des Versionschecks
+  Entfernen des app-server --help-Smoke-Checks
+  unsichere Fallbacks
+  Versionsprüfung per Teilstring
+  Download unbekannter Binärdateien aus nicht offiziellen Quellen
+
+  Ziel bleibt exakt:
+
+  @openai/codex@0.146.0
+
+  4. Build-Time und Runtime unterscheiden
+
+  Build-Time darf als root laufen.
+
+  Die finale Anwendung muss weiterhin als:
+
+  UID 1026
+  GID 100
+
+  laufen.
+
+  Der pip-Hinweis:
+
+  Running pip as the 'root' user
+
+  ist während eines Docker-Image-Builds kein Laufzeit-Sicherheitsfehler. Falls sinnvoll, unterdrücke den Hinweis sauber, aber baue keine unnötige Virtualenv-Schicht allein deswegen ein.
+
+  5. App-Server-Befehl
+
+  Verifiziere anhand der lokal installierten Codex-Version und der versionsgenauen Projektschemas, welcher Befehl für 0.146.0 korrekt ist.
+
+  Der bisherige Projektstand verwendet:
+
+  codex app-server --stdio
+
+  und zum Build-Smoke:
+
+  codex app-server --help
+
+  Ändere das nur, wenn die installierte Version 0.146.0 eindeutig etwas anderes verlangt.
+
+  Die Runtime-Supervisor-Implementierung und der Docker-Build müssen denselben tatsächlichen Befehl erwarten.
+
+  6. Regressionstests
+
+  Ergänze soweit sinnvoll Tests beziehungsweise statische Prüfungen für:
+
+  erwartete Codex-Version
+  erwarteten App-Server-Befehl
+  Dockerfile-Pinning
+  vorhandene Codex-Runtime-Artefakte
+  keine Nutzung von latest
+  keine Entfernung der Build-Smoke-Prüfung
+  Konsistenz zwischen Dockerfile, Konfiguration und Supervisor
+  Multi-Stage-Runtime-Layout soweit ohne Docker testbar
+  7. Synology-Kompatibilität bewahren
+
+  Nicht wieder einführen:
+
+  CPU-CFS-Quotas
+  docker-net
+  macvlan
+  feste Container-IP
+  Backend-Hostport
+  zusätzliche Host-Ports
+  Docker-Socket
+  privileged
+  globale Docker-Prune-Befehle
+
+  Weiterhin verbindlich:
+
+  Frontend:
+  127.0.0.1:8085:8080
+
+  Backend:
+  nur intern :8000
+
+  Netzwerke:
+  backend-net
+  workbench-private
+
+  8. Alle Prüfungen
+
+  Führe danach alle lokal verfügbaren Prüfungen aus:
+
+  Ruff
+  MyPy strict
+  Backendtests
+  Frontendtests
+  ESLint
+  TypeScript
+  Frontend-Build
+  Dependency Audits
+  Secret Scan
+  Schema-Unverändert-Prüfung
+  Dockerfile-/Compose-Invarianten
+  Shell-Syntax
+  git diff --check
+  ./scripts/verify.sh
+
+  Docker ist im Entwicklungscontainer nicht verfügbar. Führe daher keinen tatsächlichen Docker-Build aus, wenn Docker weiterhin fehlt.
+
+  9. Exakte Synology-Testbefehle liefern
+
+  Der Abschlussbericht muss die exakte Reihenfolge liefern für:
+
+  sudo ./scripts/init-deployment.sh
+  sudo docker-compose config
+  sudo docker-compose build --pull --no-cache
+  sudo docker-compose up -d
+  sudo docker-compose ps
+  sudo docker-compose logs --tail=200 backend
+
+  Zusätzlich einen Befehl, mit dem auf dem fertig gebauten Backend-Container geprüft werden kann:
+
+  command -v codex
+  codex --version
+  codex app-server --help
+  UID/GID
+  HOME
+  CODEX_HOME
+  Abschlussbericht
+
+  Berichte insbesondere:
+
+  Root Cause des aktuellen Docker-Buildfehlers
+  welcher Teil der bisherigen RUN-Kette konkret Exit 1 verursacht hat
+  warum er nur in der finalen Runtime-Stage auftrat
+  welche Runtime-Artefakte gefehlt oder falsch waren
+  exakte Dockerfile-Änderung
+  ob codex --version und codex app-server --help danach konzeptionell funktionieren
+  Änderungen an Supervisor oder Konfiguration, falls erforderlich
+  neue Regressionstests
+  Ergebnisse sämtlicher lokaler Prüfungen
+  finaler Git-Status
+  exakte Befehle für den nächsten Synology-Rebuild
+
+  Committe nichts.
+  Pushe nichts.
+  Deploye nichts.
+
+
+• Ich untersuche zuerst das tatsächliche Multi-Stage-Layout, die Codex-Paketstruktur und die bestehenden Invariantentests. Danach ändere ich die Paketierung und die Build-Diagnostik gezielt,
+  ergänze Regressionstests und führe die komplette lokale Prüfkette aus; Docker selbst lasse ich aus, falls er wie angekündigt nicht verfügbar ist.
+
+• Updated Plan
+  └ □ Repository-Regeln, Dockerfile, Compose, Deployment-Skripte, Supervisor, Doku und Tests vollständig analysieren
+    □ Root Cause verifizieren und robuste Codex-Runtime-Paketierung samt diagnostischen Build-Checks implementieren
+    □ Regressionstests und statische Invarianten ergänzen oder anpassen
+    □ Alle lokalen Prüfungen inklusive verify.sh, Secret-Scan und git diff --check ausführen
+    □ Root Cause, Änderungen, Prüfergebnisse, Git-Status und exakte Synology-Befehle berichten
+
+• Ran pwd && git status --short && rg --files -g 'AGENTS.md' -g 'deploy/backend.Dockerfile' -g 'compose.yaml' -g '.env.example' -g 'scripts/init-deployment.sh' -g 'backend/src/
+  │ codex_workbench/app_server/supervisor.py' -g 'docs/app-server-integration.md' -g 'docs/deployment.md' -g '*test*' | sed -n '1,240p'
+  └ /workspace/repositories/codex-workbench
+    compose.yaml
+    … +25 lines (ctrl + t to view transcript)
+    schemas/codex-app-server/typescript/v2/AttestationGenerateParams.ts
+    schemas/codex-app-server/typescript/v2/AttestationGenerateResponse.ts
+
+• Explored
+  └ Read AGENTS.md, backend.Dockerfile, compose.yaml, .env.example
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Der verdächtige Bereich ist bereits eng eingegrenzt: Die Codex-Stage prüft dieselbe Version erfolgreich, erst der selektiv zusammengesetzte Runtime-Prefix scheitert. Ich kläre jetzt anhand
+  der tatsächlich installierten/versionsgenauen npm-Paketstruktur, ob der globale codex-Eintrag als Symlink erhalten bleibt und welche plattformspezifischen optionalen Abhängigkeiten
+  außerhalb des kopierten Paketverzeichnisses liegen.
+
+• Ran command -v codex || true
+  │ codex --version 2>&1 || true
+  │ node --version 2>&1 || true
+  │ … +6 lines
+  └ codex-cli 0.146.0
+    v24.18.1
+    … +669 lines (ctrl + t to view transcript)
+    backend/src/codex_workbench/security/http.py:15:from codex_workbench.security.sessions import SessionValidation
+    backend/src/codex_workbench/security/http.py:17:logger = logging.getLogger("codex_workbench.security.http")
+
+• Ran set -eu
+  │ codex_package=/usr/local/lib/node_modules/@openai/codex
+  │ stat -c '%F %a %U:%G %n' /usr/local/bin/codex "$codex_package/bin/codex.js" "$codex_package/package.json"
+  │ … +7 lines
+  └ symbolic link 777 root:root /usr/local/bin/codex
+    regular file 755 root:root /usr/local/lib/node_modules/@openai/codex/bin/codex.js
+    … +316 lines (ctrl + t to view transcript)
+      "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
+    }
+
+• Ran codex_package=/usr/local/lib/node_modules/@openai/codex
+  │ find "$codex_package/node_modules/@openai/codex-linux-x64/vendor" -printf '%y %m %s %p -> %l\n' | sed -n '1,240p'
+  │ native="$codex_package/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+  │ … +17 lines
+  └ version_stdout_exit=0 stdout=<codex-cli 0.146.0>
+    version_stderr_exit=0 stderr=<WARNING: proceeding, even though we could not create PATH aliases: CODEX_HOME points to "/workspace/repositories/codex-workbench/.codex", but that path does
+    … +82 lines (ctrl + t to view transcript)
+    help_stderr_exit=0 stderr=<WARNING: proceeding, even though we could not create PATH aliases: CODEX_HOME points to "/workspace/repositories/codex-workbench/.codex", but that path does not
+    exist>
+
+• Ran command -v docker || true
+  │ command -v podman || true
+  │ command -v skopeo || true
+  │ … +9 lines
+  └ /lib/ld-musl-x86_64.so.1: cannot load /usr/local/bin/node: No such file or directory
+    /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-resources/bwrap: /usr/local/lib/node_modules/@openai/codex/
+    node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex: /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/
+    x86_64-unknown-linux-musl/bin/codex-code-mode-host: /usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path/rg: /usr/
+    local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-package.json:
+
+• Explored
+  └ Read supervisor.py, test_app_server.py, test_config.py, app-server-integration.md, init-deployment.sh, deployment.md
+
+• Searching the web
+
+• Searched the web for site:docs.docker.com Dockerfile COPY symlink preserve source link multi-stage ...
+
+• Searching the web
+
+• Searched the web for https://raw.githubusercontent.com/nodejs/docker-node/main/24/bookworm-slim/Dockerfile
+
+• Searching the web
+
+• Searched the web for https://raw.githubusercontent.com/docker-library/python/master/3.12/slim-bookworm/Dockerfile
+
+• Searching the web
+
+• Searched the web for site:github.com/moby/buildkit COPY --from symlink dereference source ...
+
+• Ran ls -l /usr/local/bin/node /lib/ld-musl-x86_64.so.1 2>&1 || true
+  │ command -v readelf || true
+  │ command -v objdump || true
+  │ … +8 lines
+  └ ls: cannot access '/usr/local/bin/node': No such file or directory
+    -rwxr-xr-x 1 root root 670312 Apr 11 11:33 /lib/ld-musl-x86_64.so.1
+    … +305 lines (ctrl + t to view transcript)
+    schemas:
+        ./scripts/update-app-server-schemas.sh
+
+• Ran command -v node || true
+  │ ls -l "$(command -v node)" 2>&1 || true
+  │ scanelf -n "$(command -v node)" 2>&1 || true
+  │ … +6 lines
+  └ WARNING: failed to clean up stale arg0 temp dirs: Permission denied (os error 13)
+    codex-cli 0.146.0
+
+• Searching the web
+
+• Searched the web for site:github.com/moby/buildkit "copy symlink" "FollowLinks" Dockerfile ...
+
+• Searching the web
+
+• Searched the web for Node.js official linux x64 binary ldd libstdc++.so.6 node 24 ...
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Die Root Cause ist jetzt konkret: npm legt /usr/local/bin/codex als Symlink auf ../lib/node_modules/@openai/codex/bin/codex.js an. Der bisherige Einzeldatei-COPY --from folgt diesen Link;
+  dadurch landet der JavaScript-Launcher in der Runtime als reguläre Datei unter dem falschen Verzeichnis /usr/local/bin. Seine relative Paketauflösung findet anschließend das mitkopierte
+  native @openai/codex-linux-x64 nicht, der Launcher beendet sich mit Exit 1. Die Kommando-Substitution hat genau diese Fehlermeldung in version_output verborgen. Zusätzlich fehlt dem
+  selektiv kopierten offiziellen Node-Binary im Python-Slim-Image die explizite C++-Runtime (libstdc++6); das sichere Fix-Layout muss daher beide Probleme beseitigen.
+
+• Explored
+  └ Read init-deployment.sh, deployment.md, test_app_server.py
+
+• Edited 8 files (+176 -18)
+  └ backend/src/codex_workbench/app_server/supervisor.py (+3 -1)
+     36
+     37 +APP_SERVER_ARGUMENTS = ("app-server", "--stdio")
+     38 +
+     39  _VERSION_PATTERN = re.compile(
+        ⋮
+    223                  executable = self._resolve_executable(self._configured_executable)
+    222 -                self._command = (executable, "app-server", "--stdio")
+    224 +                self._command = (executable, *APP_SERVER_ARGUMENTS)
+    225                  version = (
+
+  └ deploy/backend.Dockerfile (+18 -14)
+     7  ARG CODEX_VERSION
+     8 -RUN npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}" \
+     9 -    && version_output="$(codex --version 2>&1)" \
+    10 -    && test "$version_output" = "codex-cli ${CODEX_VERSION}" \
+    11 -    && codex app-server --help >/dev/null
+     8 +ARG NODE_VERSION
+     9 +COPY deploy/verify-codex-runtime.sh /usr/local/sbin/verify-codex-runtime
+    10 +RUN npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"
+    11 +RUN /usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"
+    12
+       ⋮
+    20  ARG CODEX_VERSION
+    21 +ARG NODE_VERSION
+    22  ARG WORKBENCH_UID=1026
+       ⋮
+    29          git \
+    30 +        libstdc++6 \
+    31          make \
+       ⋮
+    47  COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
+    46 -COPY --from=codex-cli /usr/local/bin/codex /usr/local/bin/codex
+    47 -COPY --from=codex-cli /usr/local/bin/npm /usr/local/bin/npm
+    48 -COPY --from=codex-cli /usr/local/bin/npx /usr/local/bin/npx
+    49 -COPY --from=codex-cli /usr/local/lib/node_modules/@openai/codex /usr/local/lib/node_modules/@openai/codex
+    50 -COPY --from=codex-cli /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+    48 +COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+    49 +COPY --from=codex-cli /usr/local/sbin/verify-codex-runtime /usr/local/sbin/verify-codex-runtime
+    50 +RUN <<'EOF'
+    51 +set -eu
+    52 +ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+    53 +ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+    54 +ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+    55 +EOF
+    56 +
+    57  COPY --from=backend-builder /wheels /wheels
+    52 -RUN python -m pip install --no-cache-dir /wheels/* \
+    53 -    && rm -rf /wheels \
+    54 -    && version_output="$(/usr/local/bin/codex --version 2>&1)" \
+    55 -    && test "$version_output" = "codex-cli ${CODEX_VERSION}" \
+    56 -    && /usr/local/bin/codex app-server --help >/dev/null
+    58 +RUN python -m pip install --no-cache-dir --root-user-action=ignore /wheels/*
+    59 +RUN rm -rf /wheels
+    60 +RUN /usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"
+    61
+
+  └ deploy/verify-codex-runtime.sh (+133 -0)
+      1 +#!/bin/sh
+      2 +set -eu
+      3 +
+      4 +expected_codex_version=${1:?expected Codex version is required}
+      5 +expected_node_version=${2:?expected Node version is required}
+      6 +codex_launcher=/usr/local/bin/codex
+      7 +node_binary=/usr/local/bin/node
+      8 +codex_package=/usr/local/lib/node_modules/@openai/codex
+      9 +platform_package=$codex_package/node_modules/@openai/codex-linux-x64
+     10 +target_root=$platform_package/vendor/x86_64-unknown-linux-musl
+     11 +expected_launcher_target=../lib/node_modules/@openai/codex/bin/codex.js
+     12 +check_directory=/tmp/codex-runtime-verification
+     13 +
+     14 +fail() {
+     15 +    printf '%s\n' "[codex-runtime-check] FAILED: $*" >&2
+     16 +    exit 1
+     17 +}
+     18 +
+     19 +pass() {
+     20 +    printf '%s\n' "[codex-runtime-check] OK: $*"
+     21 +}
+     22 +
+     23 +cleanup() {
+     24 +    rm -rf -- "$check_directory"
+     25 +}
+     26 +
+     27 +trap cleanup 0 1 2 15
+     28 +rm -rf -- "$check_directory"
+     29 +install -d -m 700 \
+     30 +    "$check_directory/home" \
+     31 +    "$check_directory/codex-home" \
+     32 +    "$check_directory/tmp"
+     33 +
+     34 +[ -L "$codex_launcher" ] || fail "Codex launcher is missing or is not a symbolic link"
+     35 +launcher_target=$(readlink "$codex_launcher") \
+     36 +    || fail "Codex launcher target cannot be read"
+     37 +[ "$launcher_target" = "$expected_launcher_target" ] \
+     38 +    || fail "Codex launcher points to an unexpected target"
+     39 +[ -x "$codex_package/bin/codex.js" ] \
+     40 +    || fail "Codex JavaScript launcher is missing or not executable"
+     41 +pass "Codex launcher layout"
+     42 +
+     43 +[ -x "$node_binary" ] || fail "Node runtime is missing or not executable"
+     44 +if ! ldd "$node_binary" > "$check_directory/node.ldd" 2>&1; then
+     45 +    fail "Node shared-library inspection failed"
+     46 +fi
+     47 +if grep -Fq 'not found' "$check_directory/node.ldd"; then
+     48 +    fail "Node has an unresolved runtime library"
+     49 +fi
+     50 +set +e
+     51 +HOME="$check_directory/home" \
+     52 +CODEX_HOME="$check_directory/codex-home" \
+     53 +TMPDIR="$check_directory/tmp" \
+     54 +    "$node_binary" --version \
+     55 +    > "$check_directory/node.stdout" \
+     56 +    2> "$check_directory/node.stderr"
+     57 +node_status=$?
+     58 +set -e
+     59 +[ "$node_status" -eq 0 ] \
+     60 +    || fail "node --version exited with status $node_status (runtime file or library missing)"
+     61 +[ ! -s "$check_directory/node.stderr" ] \
+     62 +    || fail "node --version wrote unexpected stderr ($(wc -c < "$check_directory/node.stderr") bytes)"
+     63 +printf 'v%s\n' "$expected_node_version" > "$check_directory/node.expected"
+     64 +cmp -s "$check_directory/node.expected" "$check_directory/node.stdout" \
+     65 +    || fail "node --version wrote unexpected stdout"
+     66 +pass "Node v$expected_node_version and shared libraries"
+     67 +
+     68 +[ -r "$codex_package/package.json" ] || fail "Codex package manifest is missing"
+     69 +package_version=$(sed -n \
+     70 +    's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)"[,]*[[:space:]]*$/\1/p' \
+     71 +    "$codex_package/package.json")
+     72 +[ "$package_version" = "$expected_codex_version" ] \
+     73 +    || fail "Codex package manifest has the wrong version"
+     74 +[ -r "$platform_package/package.json" ] \
+     75 +    || fail "linux/amd64 Codex platform package is missing"
+     76 +for executable in \
+     77 +    "$target_root/bin/codex" \
+     78 +    "$target_root/bin/codex-code-mode-host" \
+     79 +    "$target_root/codex-resources/bwrap" \
+     80 +    "$target_root/codex-resources/zsh/bin/zsh" \
+     81 +    "$target_root/codex-path/rg"
+     82 +do
+     83 +    [ -x "$executable" ] \
+     84 +        || fail "required native Codex runtime executable is missing"
+     85 +done
+     86 +[ -r "$target_root/codex-package.json" ] \
+     87 +    || fail "native Codex runtime manifest is missing"
+     88 +pass "complete @openai/codex linux/amd64 runtime artifacts"
+     89 +
+     90 +set +e
+     91 +HOME="$check_directory/home" \
+     92 +CODEX_HOME="$check_directory/codex-home" \
+     93 +TMPDIR="$check_directory/tmp" \
+     94 +    "$codex_launcher" --version \
+     95 +    > "$check_directory/version.stdout" \
+     96 +    2> "$check_directory/version.stderr"
+     97 +version_status=$?
+     98 +set -e
+     99 +[ "$version_status" -eq 0 ] \
+    100 +    || fail "codex --version exited with status $version_status"
+    101 +[ ! -s "$check_directory/version.stderr" ] \
+    102 +    || fail "codex --version wrote unexpected stderr ($(wc -c < "$check_directory/version.stderr") bytes)"
+    103 +printf 'codex-cli %s\n' "$expected_codex_version" > "$check_directory/version.expected"
+    104 +if ! cmp -s "$check_directory/version.expected" "$check_directory/version.stdout"; then
+    105 +    version_line=$(sed -n '1p' "$check_directory/version.stdout")
+    106 +    version_lines=$(wc -l < "$check_directory/version.stdout")
+    107 +    if [ "$version_lines" -eq 1 ] \
+    108 +        && printf '%s\n' "$version_line" \
+    109 +            | grep -Eq '^codex-cli (0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+    110 +        fail "codex --version reported the wrong version"
+    111 +    fi
+    112 +    fail "codex --version wrote unexpected stdout"
+    113 +fi
+    114 +pass "exact codex-cli $expected_codex_version stdout with empty stderr"
+    115 +
+    116 +set +e
+    117 +HOME="$check_directory/home" \
+    118 +CODEX_HOME="$check_directory/codex-home" \
+    119 +TMPDIR="$check_directory/tmp" \
+    120 +    "$codex_launcher" app-server --help \
+    121 +    > "$check_directory/app-server-help.stdout" \
+    122 +    2> "$check_directory/app-server-help.stderr"
+    123 +help_status=$?
+    124 +set -e
+    125 +[ "$help_status" -eq 0 ] \
+    126 +    || fail "codex app-server --help exited with status $help_status"
+    127 +[ ! -s "$check_directory/app-server-help.stderr" ] \
+    128 +    || fail "codex app-server --help wrote unexpected stderr ($(wc -c < "$check_directory/app-server-help.stderr") bytes)"
+    129 +grep -Fq 'Usage: codex app-server' "$check_directory/app-server-help.stdout" \
+    130 +    || fail "codex app-server --help wrote unexpected stdout"
+    131 +grep -Fq -- '--stdio' "$check_directory/app-server-help.stdout" \
+    132 +    || fail "codex app-server --help does not advertise --stdio"
+    133 +pass "codex app-server --help and --stdio support"
+
+  └ docs/app-server-integration.md (+10 -0)
+    218
+    219 +The npm install creates `/usr/local/bin/codex` as a symlink to
+    220 +`../lib/node_modules/@openai/codex/bin/codex.js`. That launcher resolves the linux/amd64 optional
+    221 +package below its real npm package directory and starts
+    222 +`vendor/x86_64-unknown-linux-musl/bin/codex`; the same platform package also carries bwrap, zsh,
+    223 +ripgrep and the code-mode host. The image therefore copies the complete global `node_modules`
+    224 +layout, recreates the npm bin links explicitly, and installs Node's `libstdc++6` runtime dependency.
+    225 +It never copies the `codex` link as an isolated multi-stage source, because that operation follows
+    226 +the source link and would relocate the launcher as a regular file, breaking its relative package
+    227 +resolution.
+    228 +
+    229  The production mount intentionally points at the existing Synology Codex home. That shares account
+
+  └ docs/deployment.md (+8 -0)
+    214
+    215 +Die Runtime übernimmt die vollständige globale `node_modules`-Struktur aus der Node-Stage und legt
+    216 +die npm-Bin-Symlinks darin explizit neu an. Dadurch bleibt der Codex-Launcher am von npm erwarteten
+    217 +Ort relativ zu `@openai/codex` und findet das native Paket `@openai/codex-linux-x64` samt seiner
+    218 +linux/amd64-Artefakte. `libstdc++6` wird als explizite Node-Runtime-Abhängigkeit installiert. Ein
+    219 +separater, secrets-freier Build-Check meldet fehlende Launcher, Pakete, native Dateien oder
+    220 +Libraries, Exitcodes und unerwartete stdout/stderr-Kanäle getrennt; Version und `--stdio`-Hilfe
+    221 +bleiben fail-closed geprüft.
+    222 +
+    223  Buildx kann auf DSM melden, dass Host-Git fehlt und Commitinformationen nicht erfasst wurden. Das
+
+  └ scripts/init-deployment.sh (+1 -0)
+    272  require_file deploy/nginx.conf
+    273 +require_lf_file deploy/verify-codex-runtime.sh
+    274  require_file schemas/codex-app-server/VERSION
+
+  └ scripts/smoke-app-server.py (+2 -2)
+     14  from codex_workbench.app_server.protocol import ProtocolAdapter
+     15 -from codex_workbench.app_server.supervisor import check_codex_version
+     15 +from codex_workbench.app_server.supervisor import APP_SERVER_ARGUMENTS, check_codex_version
+     16  from codex_workbench.app_server.transport import (
+        ⋮
+    111          transport = SubprocessJsonlTransport(
+    112 -            (str(codex), "app-server", "--stdio"),
+    112 +            (str(codex), *APP_SERVER_ARGUMENTS),
+    113              environment=environment,
+
+  └ scripts/verify.sh (+1 -1)
+    25  backend/.venv/bin/python ./scripts/check-deployment-policy.py
+    26 -sh -n scripts/*.sh
+    26 +sh -n deploy/*.sh scripts/*.sh
+    27  ./scripts/test-init-deployment.sh
+
+• Edited 2 files (+131 -0)
+  └ backend/tests/test_deployment_artifacts.py (+83 -0)
+     1 +from __future__ import annotations
+     2 +
+     3 +import re
+     4 +from pathlib import Path
+     5 +
+     6 +import yaml
+     7 +
+     8 +from codex_workbench.app_server.protocol import EXPECTED_CODEX_VERSION
+     9 +from codex_workbench.app_server.supervisor import APP_SERVER_ARGUMENTS
+    10 +from codex_workbench.config import Settings
+    11 +
+    12 +_ROOT = Path(__file__).resolve().parents[2]
+    13 +
+    14 +
+    15 +def _read(path: str) -> str:
+    16 +    return (_ROOT / path).read_text(encoding="utf-8")
+    17 +
+    18 +
+    19 +def _env_value(name: str) -> str:
+    20 +    prefix = f"{name}="
+    21 +    matches = [
+    22 +        line.removeprefix(prefix)
+    23 +        for line in _read(".env.example").splitlines()
+    24 +        if line.startswith(prefix)
+    25 +    ]
+    26 +    assert len(matches) == 1
+    27 +    return matches[0]
+    28 +
+    29 +
+    30 +def test_codex_version_and_app_server_command_are_consistent() -> None:
+    31 +    schema_version = _read("schemas/codex-app-server/VERSION").strip()
+    32 +    settings = Settings(_env_file=None)
+    33 +
+    34 +    assert EXPECTED_CODEX_VERSION == "0.146.0"
+    35 +    assert settings.expected_codex_version == EXPECTED_CODEX_VERSION
+    36 +    assert _env_value("CODEX_VERSION") == EXPECTED_CODEX_VERSION
+    37 +    assert schema_version == f"codex-cli {EXPECTED_CODEX_VERSION}"
+    38 +    assert APP_SERVER_ARGUMENTS == ("app-server", "--stdio")
+    39 +
+    40 +
+    41 +def test_backend_image_preserves_the_complete_pinned_codex_layout() -> None:
+    42 +    dockerfile = _read("deploy/backend.Dockerfile")
+    43 +    verifier = _read("deploy/verify-codex-runtime.sh")
+    44 +
+    45 +    assert "ARG CODEX_VERSION=0.146.0" in dockerfile
+    46 +    assert "ARG NODE_VERSION=24.18.1" in dockerfile
+    47 +    assert 'npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"' in dockerfile
+    48 +    assert "COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules" in dockerfile
+    49 +    assert "COPY --from=codex-cli /usr/local/bin/codex" not in dockerfile
+    50 +    assert "libstdc++6" in dockerfile
+    51 +    assert (
+    52 +        "ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex"
+    53 +        in dockerfile
+    54 +    )
+    55 +    assert not re.search(r"@openai/codex@latest(?:\s|\"|$)", dockerfile)
+    56 +    verifier_call = (
+    57 +        '/usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"'
+    58 +    )
+    59 +    assert dockerfile.count(verifier_call) == 2
+    60 +
+    61 +    for runtime_path in (
+    62 +        "bin/codex",
+    63 +        "bin/codex-code-mode-host",
+    64 +        "codex-resources/bwrap",
+    65 +        "codex-resources/zsh/bin/zsh",
+    66 +        "codex-path/rg",
+    67 +        "codex-package.json",
+    68 +    ):
+    69 +        assert runtime_path in verifier
+    70 +    assert '"$codex_launcher" app-server --help' in verifier
+    71 +    assert "grep -Fq -- '--stdio'" in verifier
+    72 +
+    73 +
+    74 +def test_synology_compose_boundaries_remain_unchanged() -> None:
+    75 +    compose = yaml.safe_load(_read("compose.yaml"))
+    76 +    backend = compose["services"]["backend"]
+    77 +    frontend = compose["services"]["frontend"]
+    78 +
+    79 +    assert "ports" not in backend
+    80 +    assert backend["user"] == "${PUID:-1026}:${PGID:-100}"
+    81 +    assert frontend["ports"] == ["127.0.0.1:8085:8080"]
+    82 +    assert set(compose["networks"]) == {"backend-net", "workbench-private"}
+    83 +    assert compose["networks"]["backend-net"]["external"] is True
+
+  └ scripts/check-deployment-policy.py (+48 -0)
+    173
+    174 +    required_backend_fragments = {
+    175 +        'ARG CODEX_VERSION=0.146.0': "backend image must pin Codex 0.146.0",
+    176 +        'ARG NODE_VERSION=24.18.1': "backend image must pin Node 24.18.1",
+    177 +        'npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"': (
+    178 +            "backend image must install the exact configured Codex package"
+    179 +        ),
+    180 +        "libstdc++6": "backend image must install the copied Node runtime dependency",
+    181 +        (
+    182 +            "COPY --from=codex-cli /usr/local/lib/node_modules "
+    183 +            "/usr/local/lib/node_modules"
+    184 +        ): "backend image must copy the complete global npm module layout",
+    185 +        (
+    186 +            "ln -s ../lib/node_modules/@openai/codex/bin/codex.js "
+    187 +            "/usr/local/bin/codex"
+    188 +        ): "backend image must recreate the Codex npm bin link explicitly",
+    189 +    }
+    190 +    for fragment, message in required_backend_fragments.items():
+    191 +        if fragment not in backend_dockerfile:
+    192 +            fail(message)
+    193 +    if "COPY --from=codex-cli /usr/local/bin/codex" in backend_dockerfile:
+    194 +        fail("backend image must not dereference-copy the Codex npm bin symlink")
+    195 +    if re.search(r"@openai/codex@(?:latest|\$\{?[^} ]*:-latest)", backend_dockerfile):
+    196 +        fail("backend image must never install an unpinned latest Codex package")
+    197 +    verifier_call = (
+    198 +        '/usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"'
+    199 +    )
+    200 +    if backend_dockerfile.count(verifier_call) != 2:
+    201 +        fail("Codex runtime verification must run in both Node and final runtime stages")
+    202 +
+    203 +    verifier = (ROOT / "deploy/verify-codex-runtime.sh").read_text(encoding="utf-8")
+    204 +    required_verifier_fragments = {
+    205 +        "Codex launcher is missing or is not a symbolic link",
+    206 +        "Node has an unresolved runtime library",
+    207 +        "codex --version exited with status",
+    208 +        "codex --version wrote unexpected stdout",
+    209 +        "codex --version wrote unexpected stderr",
+    210 +        "codex --version reported the wrong version",
+    211 +        "codex app-server --help exited with status",
+    212 +        "required native Codex runtime executable is missing",
+    213 +        "grep -Fq -- '--stdio'",
+    214 +    }
+    215 +    missing_verifier_fragments = required_verifier_fragments.difference(verifier.splitlines())
+    216 +    if missing_verifier_fragments:
+    217 +        # Substring checks are intentional here because several diagnostics include shell values.
+    218 +        for fragment in required_verifier_fragments:
+    219 +            if fragment not in verifier:
+    220 +                fail(f"Codex runtime verifier is missing diagnostic: {fragment}")
+    221 +
+    222      executable_assets = [ROOT / "Makefile", ROOT / "compose.yaml"]
+
+• Edited scripts/check-deployment-policy.py (+3 -6)
+    214      }
+    215 -    missing_verifier_fragments = required_verifier_fragments.difference(verifier.splitlines())
+    216 -    if missing_verifier_fragments:
+    217 -        # Substring checks are intentional here because several diagnostics include shell values.
+    218 -        for fragment in required_verifier_fragments:
+    219 -            if fragment not in verifier:
+    220 -                fail(f"Codex runtime verifier is missing diagnostic: {fragment}")
+    215 +    for fragment in required_verifier_fragments:
+    216 +        if fragment not in verifier:
+    217 +            fail(f"Codex runtime verifier is missing diagnostic: {fragment}")
+    218
+
+• Ran chmod 755 deploy/verify-codex-runtime.sh
+  │ git status --short
+  │ git diff -- deploy/backend.Dockerfile deploy/verify-codex-runtime.sh scripts/check-deployment-policy.py backend/src/codex_workbench/app_server/supervisor.py scripts/smoke-app-server.py
+  │ … +1 lines
+  └  M backend/src/codex_workbench/app_server/supervisor.py
+     M deploy/backend.Dockerfile
+    … +236 lines (ctrl + t to view transcript)
+     ./scripts/test-deployment-invariants.sh
+     git diff --check
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Die Umsetzung verwendet nun bewusst die vollständige globale node_modules-Struktur, erstellt die npm-Bin-Symlinks in der Runtime neu und prüft das genaue Linkziel. Der neue Build-Check
+  trennt Launcher-/Dateifehler, ungelöste Node-Libraries, Exitcodes, stdout, stderr, falsche Version und App-Server-Hilfe; HOME, CODEX_HOME und TMPDIR liegen dabei in einem isolierten Build-
+  Verzeichnis. Als Nächstes lasse ich die statischen Invarianten und gezielten Backendtests gegen diese Änderungen laufen.
+
+• Ran sh -n deploy/verify-codex-runtime.sh scripts/*.sh
+  │ backend/.venv/bin/python scripts/check-deployment-policy.py
+  │ cd backend && .venv/bin/ruff check tests/test_deployment_artifacts.py src/codex_workbench/app_server/supervisor.py ../scripts/smoke-app-server.py ../scripts/check-deployment-policy.py
+  │ … +1 lines
+  └ Deployment source policy checks passed.
+    tests/test_deployment_artifacts.py:48:101: E501 Line too long (104 > 100)
+    … +28 lines (ctrl + t to view transcript)
+
+    Found 3 errors.
+
+• Edited 2 files (+12 -3)
+  └ backend/tests/test_deployment_artifacts.py (+4 -1)
+    47      assert 'npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"' in dockerfile
+    48 -    assert "COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules" in dockerfile
+    48 +    assert (
+    49 +        "COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules"
+    50 +        in dockerfile
+    51 +    )
+    52      assert "COPY --from=codex-cli /usr/local/bin/codex" not in dockerfile
+
+  └ scripts/check-deployment-policy.py (+8 -2)
+     65          fail(f"{label} must define a PID limit")
+     66 -    nofile = mapping(mapping(service.get("ulimits"), f"{label}.ulimits").get("nofile"), f"{label}.nofile")
+     66 +    nofile = mapping(
+     67 +        mapping(service.get("ulimits"), f"{label}.ulimits").get("nofile"),
+     68 +        f"{label}.nofile",
+     69 +    )
+     70      if not isinstance(nofile.get("soft"), int) or not isinstance(nofile.get("hard"), int):
+        ⋮
+    140          fail("backend healthcheck must retain readiness semantics")
+    138 -    depends = mapping(mapping(frontend.get("depends_on"), "depends_on").get("backend"), "depends_on.backend")
+    141 +    depends = mapping(
+    142 +        mapping(frontend.get("depends_on"), "depends_on").get("backend"),
+    143 +        "depends_on.backend",
+    144 +    )
+    145      if depends.get("condition") != "service_healthy":
+
+• Ran backend/.venv/bin/python scripts/check-deployment-policy.py
+  │ cd backend && .venv/bin/ruff check tests/test_deployment_artifacts.py src/codex_workbench/app_server/supervisor.py ../scripts/smoke-app-server.py ../scripts/check-deployment-policy.py
+  │ && .venv/bin/pytest -q tests/test_deployment_artifacts.py tests/test_app_server.py tests/test_config.py
+  └ Deployment source policy checks passed.
+    All checks passed!
+    ..................................                                       [100%]
+    34 passed in 2.52s
+
+• Searching the web
+
+• Searched the web for site:github.com/docker-library/python "ENV PYTHON_VERSION 3.12.11" "slim-bookworm" ...
+
+• Ran stat -c '%A %a %U:%G %n' deploy/verify-codex-runtime.sh
+  │ sed -n '1,280p' deploy/verify-codex-runtime.sh
+  │ sed -n '1,220p' backend/tests/test_deployment_artifacts.py
+  │ … +2 lines
+  └ -rwxr-xr-x 755 codex:codex deploy/verify-codex-runtime.sh
+    #!/bin/sh
+    … +225 lines (ctrl + t to view transcript)
+     scripts/verify.sh                                  |  2 +-
+     8 files changed, 96 insertions(+), 20 deletions(-)
+
+• Updated Plan
+  └ Root Cause und Paketlayout sind verifiziert. Dockerfile, diagnostischer Runtime-Check, gemeinsame App-Server-Argumente, Dokumentation und statische Regressionstests sind umgesetzt; die
+    gezielten Tests sind grün.
+    ✔ Repository-Regeln, Dockerfile, Compose, Deployment-Skripte, Supervisor, Doku und Tests vollständig analysieren
+    ✔ Root Cause verifizieren und robuste Codex-Runtime-Paketierung samt diagnostischen Build-Checks implementieren
+    ✔ Regressionstests und statische Invarianten ergänzen oder anpassen
+    □ Alle lokalen Prüfungen inklusive verify.sh, Secret-Scan und git diff --check ausführen
+    □ Root Cause, Änderungen, Prüfergebnisse, Git-Status und exakte Synology-Befehle berichten
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Die gezielten Regressionen sind grün: Deployment-Policy, Shell-Syntax sowie 34 relevante Backendtests bestehen. Der Supervisor und der reale Smoke-Test verwenden jetzt dieselbe zentrale
+  Argumentfolge ("app-server", "--stdio"); der Befehl bleibt für 0.146.0 korrekt, weil die lokale versionsgenaue Hilfe --stdio ausdrücklich anbietet. Ich starte nun die vollständige
+  Repository-Prüfung einschließlich Audits, Secret- und Schema-Checks.
+
+• Ran ./scripts/verify.sh
+  └ tests/test_deployment_artifacts.py:6: error: Library stubs not installed for "yaml"  [import-untyped]
+    tests/test_deployment_artifacts.py:6: note: Hint: "python3 -m pip install types-PyYAML"
+    tests/test_deployment_artifacts.py:6: note: (or run "mypy --install-types" to install all missing stub packages)
+    tests/test_deployment_artifacts.py:6: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+    Found 1 error in 1 file (checked 55 source files)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Die Vollprüfung hat einen neuen, rein typbezogenen Testfehler gefunden: Der Regressionstest importierte PyYAML, für das im strikt geprüften Backend keine Typ-Stubs installiert sind. Ich
+  entferne diese unnötige Testabhängigkeit und lasse die bereits vorhandene typisierte Deployment-Policy die Compose-Struktur autoritativ prüfen. Danach starte ich die vollständige Prüfkette
+  erneut.
+
+• Edited backend/tests/test_deployment_artifacts.py (+6 -10)
+     5
+     6 -import yaml
+     7 -
+     6  from codex_workbench.app_server.protocol import EXPECTED_CODEX_VERSION
+       ⋮
+    75  def test_synology_compose_boundaries_remain_unchanged() -> None:
+    78 -    compose = yaml.safe_load(_read("compose.yaml"))
+    79 -    backend = compose["services"]["backend"]
+    80 -    frontend = compose["services"]["frontend"]
+    76 +    compose = _read("compose.yaml")
+    77
+    82 -    assert "ports" not in backend
+    83 -    assert backend["user"] == "${PUID:-1026}:${PGID:-100}"
+    84 -    assert frontend["ports"] == ["127.0.0.1:8085:8080"]
+    85 -    assert set(compose["networks"]) == {"backend-net", "workbench-private"}
+    86 -    assert compose["networks"]["backend-net"]["external"] is True
+    78 +    assert compose.count("\n    ports:\n") == 1
+    79 +    assert '      - "127.0.0.1:8085:8080"' in compose
+    80 +    assert compose.count('    user: "${PUID:-1026}:${PGID:-100}"') == 2
+    81 +    assert "  backend-net:\n    external: true" in compose
+    82 +    assert "  workbench-private:\n    driver: bridge" in compose
+
+• Ran cd backend && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest -q tests/test_deployment_artifacts.py
+  └ Success: no issues found in 55 source files
+    ...                                                                      [100%]
+    3 passed in 0.47s
+
+• Waited for background terminal · ./scripts/verify.sh
+
+• Ran ./scripts/verify.sh
+  └ Success: no issues found in 55 source files
+    ============================= test session starts ==============================
+    … +115 lines (ctrl + t to view transcript)
+    FAILED tests/test_auth.py::test_websocket_handshake_uses_same_session_and_origin_boundary
+    =================== 1 failed, 85 passed, 1 warning in 57.06s ===================
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Der zweite Lauf kam bis 85/86 Backendtests; ein bestehender WebSocket-Test endete beim Schließen des Testclients mit einem asynchronen CancelledError, ohne Bezug zu Dockerfile,
+  Supervisorbefehl oder den neuen statischen Tests. Ich prüfe ihn isoliert auf Reproduzierbarkeit und wiederhole anschließend die vollständige Kette, damit der Abschluss nicht auf einem
+  bloßen Flake beruht.
+
+• Ran cd backend && .venv/bin/pytest -q tests/test_auth.py::test_websocket_handshake_uses_same_session_and_origin_boundary
+  └ .                                                                        [100%]
+    =============================== warnings summary ===============================
+    … +5 lines (ctrl + t to view transcript)
+    -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+    1 passed, 1 warning in 2.87s
+
+• Waited for background terminal · ./scripts/verify.sh
+
+• Ran ./scripts/verify.sh
+  └ Success: no issues found in 55 source files
+    ============================= test session starts ==============================
+    … +78 lines (ctrl + t to view transcript)
+    Deployment invariant parser tests passed.
+    All available verification steps passed.
+
+• Edited 3 files (+5 -1)
+  └ backend/tests/test_deployment_artifacts.py (+1 -0)
+    45      assert 'npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"' in dockerfile
+    46 +    assert "COPY --chmod=755 deploy/verify-codex-runtime.sh" in dockerfile
+    47      assert (
+
+  └ deploy/backend.Dockerfile (+1 -1)
+     8  ARG NODE_VERSION
+     9 -COPY deploy/verify-codex-runtime.sh /usr/local/sbin/verify-codex-runtime
+     9 +COPY --chmod=755 deploy/verify-codex-runtime.sh /usr/local/sbin/verify-codex-runtime
+    10  RUN npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"
+
+  └ scripts/check-deployment-policy.py (+3 -0)
+    185          ),
+    186 +        "COPY --chmod=755 deploy/verify-codex-runtime.sh": (
+    187 +            "backend image must make the Codex runtime verifier executable"
+    188 +        ),
+    189          "libstdc++6": "backend image must install the copied Node runtime dependency",
+
+• Ran nl -ba deploy/backend.Dockerfile
+  │ nl -ba deploy/verify-codex-runtime.sh | sed -n '1,240p'
+  │ backend/.venv/bin/python scripts/check-deployment-policy.py
+  │ … +1 lines
+  └ Deployment source policy checks passed.
+    All checks passed!
+    Success: no issues found in 55 source files
+    ...                                                                      [100%]
+    3 passed in 0.49s
+
+• Waited for background terminal · ./scripts/verify.sh
+
+• Ran ./scripts/verify.sh
+  └ Success: no issues found in 55 source files
+    ============================= test session starts ==============================
+    … +78 lines (ctrl + t to view transcript)
+    Deployment invariant parser tests passed.
+    All available verification steps passed.
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Die vollständige Prüfkette ist jetzt nach der letzten Änderung grün: 86 Backendtests, 9 Frontendtests, Ruff, MyPy strict, ESLint, TypeScript, Production-Build, beide Dependency-Audits,
+  Secret-Scan, unveränderte 0.146.0-Schemas, Deployment-/Installer-Invarianten, Shell-Syntax und git diff --check. Ich erfasse noch den finalen Git-Status und dokumentiere ausdrücklich, dass
+  mangels Docker weder Build noch Compose-Rendering lokal ausgeführt wurden.
+
+• Ran if command -v docker >/dev/null 2>&1; then docker --version; else printf '%s\n' 'docker: not available'; fi
+  │ if command -v docker-compose >/dev/null 2>&1; then docker-compose version; else printf '%s\n' 'docker-compose: not available'; fi
+  │ printf '%s\n' '--- diff check ---'
+  │ … +7 lines
+  └ docker: not available
+    docker-compose: not available
+    … +21 lines (ctrl + t to view transcript)
+     8 files changed, 99 insertions(+), 20 deletions(-)
+    --- generated schema status ---
+
+• Updated Plan
+  └ Die komplette lokale Verifikation ist grün. Docker und docker-compose sind im Entwicklungscontainer nicht vorhanden, daher wurden Build und Compose-Rendering wie gefordert nicht
+    simuliert. Finaler Diff-Check und Git-Status sind erfasst.
+    ✔ Repository-Regeln, Dockerfile, Compose, Deployment-Skripte, Supervisor, Doku und Tests vollständig analysieren
+    ✔ Root Cause verifizieren und robuste Codex-Runtime-Paketierung samt diagnostischen Build-Checks implementieren
+    ✔ Regressionstests und statische Invarianten ergänzen oder anpassen
+    ✔ Alle lokalen Prüfungen inklusive verify.sh, Secret-Scan und git diff --check ausführen
+    ✔ Root Cause, Änderungen, Prüfergebnisse, Git-Status und exakte Synology-Befehle berichten
+
+• Searching the web
+
+• Searched the web for site:github.com/moby/buildkit "FollowSymlinks: true" "CopyInfo" dockerfile2llb ...
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• Die Root Cause ist behoben. Es wurde nichts committed, gepusht, deployed oder außerhalb des Repositorys verändert.
+
+  ## Root Cause
+
+  npm install --global @openai/codex@0.146.0 erzeugt:
+
+  /usr/local/bin/codex
+    -> ../lib/node_modules/@openai/codex/bin/codex.js
+
+  Der bisherige Einzeldatei-Copy:
+
+  COPY --from=codex-cli /usr/local/bin/codex /usr/local/bin/codex
+
+  folgte diesem Symlink. In der Runtime entstand dadurch eine reguläre Kopie von codex.js unter /usr/local/bin/codex, nicht der ursprüngliche Symlink.
+
+  Der Launcher ermittelt sein Paket relativ zu seinem eigenen realen Pfad. Am falschen Ort suchte er deshalb unter /usr/local/vendor/... statt im kopierten npm-Paket. Das native Paket
+
+  @openai/codex-linux-x64/
+    vendor/x86_64-unknown-linux-musl/
+
+  war vorhanden, konnte vom verlagerten Launcher aber nicht aufgelöst werden. Dieses Verhalten folgt direkt aus dem versionsgenauen Codex-0.146.0-Launcher
+  (https://github.com/openai/codex/blob/rust-v0.146.0/codex-cli/bin/codex.js) und der Multi-Stage-Copy-Semantik von BuildKit.
+
+  Konkret schlug daher dieser Teil fehl:
+
+  version_output="$(/usr/local/bin/codex --version 2>&1)"
+
+  Der Launcher beendete sich mit Exit 1. Da stderr durch 2>&1 in version_output verschwand, zeigte Docker keine Codex-Fehlermeldung. Der nachfolgende test und codex app-server --help wurden
+  nicht mehr ausgeführt.
+
+  Nur die Runtime-Stage war betroffen, weil die Node-Stage noch den originalen npm-Symlink am korrekten Ort besaß.
+
+  Zusätzlich wurde ein latentes zweites Problem beseitigt: Die kopierte offizielle Node-Runtime benötigt libstdc++6; Systempakete einer Build-Stage werden durch COPY --from nicht in eine
+  andere Basis übernommen. Die finale Python-Slim-Stage installiert diese Library jetzt explizit. Das offizielle Node-Slim-Image ermittelt seine notwendigen Runtime-Pakete ebenfalls anhand
+  der dynamischen Abhängigkeiten des Node-Binaries (Node-Dockerfile (https://github.com/nodejs/docker-node/blob/main/24/bookworm-slim/Dockerfile)).
+
+  ## Änderungen
+
+  In deploy/backend.Dockerfile:6:
+
+  - @openai/codex@${CODEX_VERSION} bleibt exakt gepinnt.
+  - Die komplette /usr/local/lib/node_modules-Struktur wird übernommen.
+  - /usr/local/bin/codex, npm und npx werden explizit mit ihren korrekten npm-Linkzielen neu angelegt.
+  - Der fragile Einzel-Copy von /usr/local/bin/codex wurde entfernt.
+  - libstdc++6 wurde als Node-Runtime-Abhängigkeit ergänzt.
+  - CODEX_VERSION und NODE_VERSION werden in beiden relevanten Stages erneut deklariert.
+  - Der pip-Root-Hinweis wird über --root-user-action=ignore sauber unterdrückt.
+  - UID/GID, USER workbench, Port und Runtime-Basis bleiben unverändert.
+
+  Der neue deploy/verify-codex-runtime.sh:1 läuft sowohl in der Node- als auch in der finalen Runtime-Stage und diagnostiziert getrennt:
+
+  - fehlenden oder falschen Codex-Symlink,
+  - fehlenden Node-Runtimepfad,
+  - ungelöste Shared Libraries,
+  - falsche Node-Version,
+  - fehlendes npm-Paket oder Plattformpaket,
+  - fehlende native Codex-Artefakte,
+  - Exit-Code von codex --version,
+  - unerwartetes stdout,
+  - unerwartetes stderr,
+  - falsche Codex-Version,
+  - Exit-Code und Ausgabe von codex app-server --help,
+  - fehlende --stdio-Unterstützung.
+
+  Geprüft werden unter anderem das native Codex-Binary, Code-Mode-Host, bwrap, zsh, ripgrep und das native Manifest. HOME, CODEX_HOME und TMPDIR liegen während der Build-Prüfung in einem
+  isolierten temporären Verzeichnis. Es werden keine Ausgaben oder Umgebungswerte mit möglichem Secret-Inhalt ausgegeben.
+
+  Der App-Server-Befehl bleibt für 0.146.0:
+
+  codex app-server --stdio
+
+  Die lokale 0.146.0-Hilfe bestätigt --stdio. Supervisor und realer Smoke-Test verwenden nun dieselbe Konstante in backend/src/codex_workbench/app_server/supervisor.py:37.
+
+  Neue statische Regressionen stehen in backend/tests/test_deployment_artifacts.py:27 und in der erweiterten Deployment-Policy. Sie sichern Pinning, vollständiges Layout, Symlinkstrategie,
+  native Dateien, Smoke-Prüfung, Supervisorbefehl und Synology-Grenzen ab.
+
+  ## Prüfungen
+
+  Der abschließende Lauf von ./scripts/verify.sh war vollständig grün:
+
+  - Ruff: bestanden
+  - MyPy strict: 55 Dateien, keine Fehler
+  - Backend: 86 Tests bestanden
+  - Frontend: 9 Tests bestanden
+  - ESLint: bestanden
+  - TypeScript: bestanden
+  - Frontend-Production-Build: bestanden
+  - Dependency Audits: keine bekannten Schwachstellen; editierbare Backend-Distribution erwartungsgemäß übersprungen
+  - Secret Scan: keine offensichtlichen Secret-Muster
+  - Codex-0.146.0-Schemas: unverändert
+  - Deployment-/Compose-Invarianten: bestanden
+  - Installer-Parsertests: bestanden
+  - Shell-Syntax einschließlich neuem Verifier: bestanden
+  - git diff --check: bestanden
+
+  Ein Zwischenlauf traf einmal einen nicht reproduzierbaren CancelledError beim Schließen eines bestehenden WebSocket-Tests. Der Test bestand isoliert; der abschließende vollständige Lauf
+  bestand mit 86/86 Tests.
+
+  Docker und docker-compose sind im Entwicklungscontainer nicht vorhanden. Daher wurden weder Docker-Build noch lokales Compose-Rendering ausgeführt.
+
+  ## Finaler Git-Status
+
+   M backend/src/codex_workbench/app_server/supervisor.py
+   M deploy/backend.Dockerfile
+   M docs/app-server-integration.md
+   M docs/deployment.md
+   M scripts/check-deployment-policy.py
+   M scripts/init-deployment.sh
+   M scripts/smoke-app-server.py
+   M scripts/verify.sh
+  ?? backend/tests/test_deployment_artifacts.py
+  ?? deploy/verify-codex-runtime.sh
+
+  Keine Schemaänderungen, kein Commit, kein Push.
+
+  ## Nächster Synology-Rebuild
+
+  Aus dem Repository:
+
+  cd /volume1/docker/codex/workspace/repositories/codex-workbench
+
+  sudo ./scripts/init-deployment.sh
+  sudo docker-compose config
+  sudo docker-compose build --pull --no-cache
+  sudo docker-compose up -d
+  sudo docker-compose ps
+  sudo docker-compose logs --tail=200 backend
+
+  Runtime-Prüfung im fertig gebauten Backend-Container:
+
+  sudo docker-compose exec -T backend sh -c 'set -eu; command -v codex; codex --version; codex app-server --help; printf "UID=%s GID=%s\n" "$(id -u)" "$(id -g)"; printf
+  "HOME=%s\nCODEX_HOME=%s\n" "$HOME" "$CODEX_HOME"'
+
+  Erwartet werden insbesondere:
+
+  /usr/local/bin/codex
+  codex-cli 0.146.0
+  UID=1026 GID=100
+  HOME=/home/workbench
+  CODEX_HOME=/home/workbench/.codex
+
+  codex app-server --help muss erfolgreich enden und --stdio aufführen.
+
+─ Worked for 19m 23s ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› - Prüfung auf versehentlich eingecheckte Secrets
+  - `git diff --check`
+
+  Installiere notwendige Projektabhängigkeiten nur innerhalb des Projekts beziehungsweise geeigneter Projekt-Caches. Verändere keine globalen Systempakete, sofern es nicht zwingend
+  erforderlich und vorher genehmigt ist.
+
+  ## Nicht Bestandteil dieser Aufgabe
+
+  Noch nicht implementieren:
+
+  - vollständigen Codex-Chat
+  - produktive App-Server-Sitzungssteuerung
+  - produktive Thread-Persistenz
+  - vollständige Approval-Oberfläche
+  - Terminal
+  - Monaco Editor
+  - Git-Commit-Funktion
+  - Git-Push
+  - Benutzerverwaltung für mehrere Benutzer
+  - öffentliche Internetfreigabe
+  - Reverse-Proxy-Konfiguration für eine konkrete Domain
+  - Deployment oder Neustart bestehender Container
+  - GitHub-Repository-Erstellung
+  - Push zu GitHub
+
+  Es dürfen jedoch saubere Schnittstellen und minimale vertikale technische Probes entstehen, sofern sie zur Verifikation der Architektur erforderlich sind.
+
+  ## Arbeitsweise
+
+  1. Analysiere zuerst Umgebung und Ausgangszustand.
+  2. Erstelle danach einen konkreten Umsetzungsplan.
+  3. Setze die Foundation vollständig um.
+  4. Führe die Verifikation aus.
+  5. Prüfe abschließend alle Änderungen kritisch.
+  6. Committe nichts automatisch.
+  7. Pushe nichts.
+  8. Deploye nichts.
+  9. Verändere nichts außerhalb des angegebenen Repositorys.
+  10. Stelle nur notwendige Rückfragen; technisch eindeutig lösbare Details entscheidest du nachvollziehbar über ADRs.
+
+  ## Abschlussbericht
+
+  Liefere am Ende einen strukturierten Bericht mit:
+
+  - Ausgangszustand
+  - getroffenen Architekturentscheidungen
+  - erstellten Dateien und Modulen
+  - App-Server-Schema-Version
+  - ausgeführten Tests und Ergebnissen
+  - nicht ausführbaren Prüfungen samt Grund
+  - Sicherheitsbewertung
+  - bekannten Einschränkungen
+  - offenen Entscheidungen
+  - Git-Status
+  - konkreter Empfehlung für den nächsten Arbeitsschritt
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› Lies ausschließlich das aktuelle Verzeichnis. Erstelle keine Dateien und ändere
+  nichts. Nenne den aktuellen Pfad und fasse den Inhalt der README.md zusammen.
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› - .env.example
+  - scripts/init-deployment.sh
+  - deploy/nginx.conf
+  - docs/deployment.md
+  - docs/synology-test-plan.md
+  - README.md
+  - alle weiteren deploymentrelevanten Dokumente
+
+  Entferne alle Annahmen über:
+
+  - docker-net
+  - macvlan
+  - feste Container-IP
+  - direkte LAN-Erreichbarkeit
+  - WORKBENCH_BIND_ADDRESS als frei wählbare LAN-Adresse, sofern sie nicht mehr benötigt wird
+
+  Das Installationsskript muss prüfen:
+
+  - backend-net existiert
+  - Port 8085 ist auf dem Host nicht bereits belegt
+  - Compose rendert exakt 127.0.0.1:8085:8080
+  - keine zusätzliche Portfreigabe existiert
+  - WORKBENCH_PUBLIC_ORIGIN ist gesetzt und kein Dokumentationsplatzhalter
+  - HTTP ist nur für lokalen Testbetrieb zulässig
+  - für regulären Betrieb wird eine HTTPS-Origin hinter Reverse Proxy erwartet
+
+  Dokumentiere die Reverse-Proxy-Konfiguration:
+
+  - Ziel: http://127.0.0.1:8085
+  - WebSocket-Weiterleitung
+  - Forwarded-Proto
+  - Host-Header
+  - Origin-Konsistenz
+  - keine direkte LAN-Freigabe
+
+  Führe danach alle lokal möglichen Prüfungen aus:
+
+  - ./scripts/verify.sh
+  - git diff --check
+  - YAML-Parsing
+  - Secret Scan
+  - Prüfung auf verbleibende docker-net- oder macvlan-Annahmen
+
+  Dockerbefehle nicht ausführen, wenn Docker lokal nicht verfügbar ist.
+
+  Berichte abschließend:
+
+  - geänderte Dateien
+  - finale Portbindung
+  - finales Netzwerk
+  - entfernte Altannahmen
+  - Prüfresultate
+  - finalen Git-Status
+
+  Committe nichts.
+
+  Create a plan?  shift + tab use Plan mode   esc dismiss
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› - Prüfung auf versehentlich eingecheckte Secrets
+  - `git diff --check`
+
+  Installiere notwendige Projektabhängigkeiten nur innerhalb des Projekts beziehungsweise geeigneter Projekt-Caches. Verändere keine globalen Systempakete, sofern es nicht zwingend
+  erforderlich und vorher genehmigt ist.
+
+  ## Nicht Bestandteil dieser Aufgabe
+
+  Noch nicht implementieren:
+
+  - vollständigen Codex-Chat
+  - produktive App-Server-Sitzungssteuerung
+  - produktive Thread-Persistenz
+  - vollständige Approval-Oberfläche
+  - Terminal
+  - Monaco Editor
+  - Git-Commit-Funktion
+  - Git-Push
+  - Benutzerverwaltung für mehrere Benutzer
+  - öffentliche Internetfreigabe
+  - Reverse-Proxy-Konfiguration für eine konkrete Domain
+  - Deployment oder Neustart bestehender Container
+  - GitHub-Repository-Erstellung
+  - Push zu GitHub
+
+  Es dürfen jedoch saubere Schnittstellen und minimale vertikale technische Probes entstehen, sofern sie zur Verifikation der Architektur erforderlich sind.
+
+  ## Arbeitsweise
+
+  1. Analysiere zuerst Umgebung und Ausgangszustand.
+  2. Erstelle danach einen konkreten Umsetzungsplan.
+  3. Setze die Foundation vollständig um.
+  4. Führe die Verifikation aus.
+  5. Prüfe abschließend alle Änderungen kritisch.
+  6. Committe nichts automatisch.
+  7. Pushe nichts.
+  8. Deploye nichts.
+  9. Verändere nichts außerhalb des angegebenen Repositorys.
+  10. Stelle nur notwendige Rückfragen; technisch eindeutig lösbare Details entscheidest du nachvollziehbar über ADRs.
+
+  ## Abschlussbericht
+
+  Liefere am Ende einen strukturierten Bericht mit:
+
+  - Ausgangszustand
+  - getroffenen Architekturentscheidungen
+  - erstellten Dateien und Modulen
+  - App-Server-Schema-Version
+  - ausgeführten Tests und Ergebnissen
+  - nicht ausführbaren Prüfungen samt Grund
+  - Sicherheitsbewertung
+  - bekannten Einschränkungen
+  - offenen Entscheidungen
+  - Git-Status
+  - konkreter Empfehlung für den nächsten Arbeitsschritt
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› Lies ausschließlich das aktuelle Verzeichnis. Erstelle keine Dateien und ändere
+  nichts. Nenne den aktuellen Pfad und fasse den Inhalt der README.md zusammen.
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› - Prüfung auf versehentlich eingecheckte Secrets
+  - `git diff --check`
+
+  Installiere notwendige Projektabhängigkeiten nur innerhalb des Projekts beziehungsweise geeigneter Projekt-Caches. Verändere keine globalen Systempakete, sofern es nicht zwingend
+  erforderlich und vorher genehmigt ist.
+
+  ## Nicht Bestandteil dieser Aufgabe
+
+  Noch nicht implementieren:
+
+  - vollständigen Codex-Chat
+  - produktive App-Server-Sitzungssteuerung
+  - produktive Thread-Persistenz
+  - vollständige Approval-Oberfläche
+  - Terminal
+  - Monaco Editor
+  - Git-Commit-Funktion
+  - Git-Push
+  - Benutzerverwaltung für mehrere Benutzer
+  - öffentliche Internetfreigabe
+  - Reverse-Proxy-Konfiguration für eine konkrete Domain
+  - Deployment oder Neustart bestehender Container
+  - GitHub-Repository-Erstellung
+  - Push zu GitHub
+
+  Es dürfen jedoch saubere Schnittstellen und minimale vertikale technische Probes entstehen, sofern sie zur Verifikation der Architektur erforderlich sind.
+
+  ## Arbeitsweise
+
+  1. Analysiere zuerst Umgebung und Ausgangszustand.
+  2. Erstelle danach einen konkreten Umsetzungsplan.
+  3. Setze die Foundation vollständig um.
+  4. Führe die Verifikation aus.
+  5. Prüfe abschließend alle Änderungen kritisch.
+  6. Committe nichts automatisch.
+  7. Pushe nichts.
+  8. Deploye nichts.
+  9. Verändere nichts außerhalb des angegebenen Repositorys.
+  10. Stelle nur notwendige Rückfragen; technisch eindeutig lösbare Details entscheidest du nachvollziehbar über ADRs.
+
+  ## Abschlussbericht
+
+  Liefere am Ende einen strukturierten Bericht mit:
+
+  - Ausgangszustand
+  - getroffenen Architekturentscheidungen
+  - erstellten Dateien und Modulen
+  - App-Server-Schema-Version
+  - ausgeführten Tests und Ergebnissen
+  - nicht ausführbaren Prüfungen samt Grund
+  - Sicherheitsbewertung
+  - bekannten Einschränkungen
+  - offenen Entscheidungen
+  - Git-Status
+  - konkreter Empfehlung für den nächsten Arbeitsschritt
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› Lies ausschließlich das aktuelle Verzeichnis. Erstelle keine Dateien und ändere
+  nichts. Nenne den aktuellen Pfad und fasse den Inhalt der README.md zusammen.
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› Prüfung auf unerlaubte Host-Ports;
+  Prüfung auf CFS-CPU-Limits;
+  Prüfung auf globale Docker-Prune-Befehle;
+  git diff --check;
+  vollständiges ./scripts/verify.sh.
+
+  Ergänze einen lokalen isolierten Test der Versionsprüfung gegen die tatsächlich installierte Binärdatei, sofern sie im Entwicklungscontainer vorhanden ist.
+
+  Ergänze außerdem ein Diagnosekommando oder Skript, das auf dem Synology-Host ohne Geheimnispreisgabe prüft:
+
+  command -v codex;
+  codex --version;
+  codex app-server --help;
+  UID/GID;
+  HOME;
+  CODEX_HOME;
+  Mount-Berechtigungen;
+  Live- und Ready-Endpunkt;
+  App-Server-Prozessstatus;
+  effektive Compose-Portfreigaben;
+  effektive Compose-Netzwerke;
+  Workbench-eigene Containerzustände;
+  keine Veränderung fremder Container.
+
+  Dockerbefehle nur ausführen, wenn Docker verfügbar ist.
+
+  Keine bestehenden Container verändern.
+
+  Abschlussbericht
+
+  Berichte strukturiert:
+
+  Ausgangscommit und Ausgangsstatus;
+  Root Cause des Versioncheck-Fehlers;
+  exakte Korrektur;
+  weitere korrigierte Fehler;
+  Änderungen an Compose;
+  Änderungen am Dockerfile;
+  Änderungen am Installer;
+  Änderungen an Health und Readiness;
+  Änderungen an Tests;
+  Synology-CFS-Behandlung;
+  Buildx-Git-Behandlung;
+  Schutz der bestehenden Container und Ports;
+  Dateirechte und Schreibpfade;
+  ausgeführte Prüfungen und Ergebnisse;
+  nicht ausführbare Docker-Prüfungen;
+  finaler Git-Status;
+  exakte Befehle für den erneuten Synology-Build;
+  exakte Befehle für Logs und Healthchecks;
+  sichere Rollback-Befehle nur für den Workbench-Stack;
+  bekannte verbleibende Risiken.
+
+  Committe nichts, pushe nichts und deploye nichts.
+  PROMPT
+
+  Create a plan?  shift + tab use Plan mode   esc dismiss
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+› Prüfung auf unerlaubte Host-Ports;
+  Prüfung auf CFS-CPU-Limits;
+  Prüfung auf globale Docker-Prune-Befehle;
+  git diff --check;
+  vollständiges ./scripts/verify.sh.
+
+  Ergänze einen lokalen isolierten Test der Versionsprüfung gegen die tatsächlich installierte Binärdatei, sofern sie im Entwicklungscontainer vorhanden ist.
+
+  Ergänze außerdem ein Diagnosekommando oder Skript, das auf dem Synology-Host ohne Geheimnispreisgabe prüft:
+
+  command -v codex;
+  codex --version;
+  codex app-server --help;
+  UID/GID;
+  HOME;
+  CODEX_HOME;
+  Mount-Berechtigungen;
+  Live- und Ready-Endpunkt;
+  App-Server-Prozessstatus;
+  effektive Compose-Portfreigaben;
+  effektive Compose-Netzwerke;
+  Workbench-eigene Containerzustände;
+  keine Veränderung fremder Container.
+
+  Dockerbefehle nur ausführen, wenn Docker verfügbar ist.
+
+  Keine bestehenden Container verändern.
+
+  Abschlussbericht
+
+  Berichte strukturiert:
+
+  Ausgangscommit und Ausgangsstatus;
+  Root Cause des Versioncheck-Fehlers;
+  exakte Korrektur;
+  weitere korrigierte Fehler;
+  Änderungen an Compose;
+  Änderungen am Dockerfile;
+  Änderungen am Installer;
+  Änderungen an Health und Readiness;
+  Änderungen an Tests;
+  Synology-CFS-Behandlung;
+  Buildx-Git-Behandlung;
+  Schutz der bestehenden Container und Ports;
+  Dateirechte und Schreibpfade;
+  ausgeführte Prüfungen und Ergebnisse;
+  nicht ausführbare Docker-Prüfungen;
+  finaler Git-Status;
+  exakte Befehle für den erneuten Synology-Build;
+  exakte Befehle für Logs und Healthchecks;
+  sichere Rollback-Befehle nur für den Workbench-Stack;
+  bekannte verbleibende Risiken.
+
+  Committe nichts, pushe nichts und deploye nichts.
+  PROMPT
+
+  Create a plan?  shift + tab use Plan mode   esc dismiss
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.6-sol xhigh · /workspace/repositories/codex-workbench
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

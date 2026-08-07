@@ -34,6 +34,8 @@ type TerminalFailureHandler = Callable[[int, str], Awaitable[None]]
 type TransportFactory = Callable[[int], SubprocessJsonlTransport]
 type VersionChecker = Callable[[], Awaitable[str]]
 
+APP_SERVER_ARGUMENTS = ("app-server", "--stdio")
+
 _VERSION_PATTERN = re.compile(
     r"codex-cli ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
 )
@@ -219,7 +221,7 @@ class AppServerSupervisor:
             self._state = ProcessState.CHECKING
             try:
                 executable = self._resolve_executable(self._configured_executable)
-                self._command = (executable, "app-server", "--stdio")
+                self._command = (executable, *APP_SERVER_ARGUMENTS)
                 version = (
                     await self._version_checker()
                     if self._version_checker is not None

@@ -5,10 +5,10 @@ ARG CODEX_VERSION=0.146.0
 
 FROM node:${NODE_VERSION}-bookworm-slim AS codex-cli
 ARG CODEX_VERSION
-RUN npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}" \
-    && version_output="$(codex --version 2>&1)" \
-    && test "$version_output" = "codex-cli ${CODEX_VERSION}" \
-    && codex app-server --help >/dev/null
+ARG NODE_VERSION
+COPY --chmod=755 deploy/verify-codex-runtime.sh /usr/local/sbin/verify-codex-runtime
+RUN npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"
+RUN /usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS backend-builder
 WORKDIR /build
@@ -18,6 +18,7 @@ RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
 ARG CODEX_VERSION
+ARG NODE_VERSION
 ARG WORKBENCH_UID=1026
 ARG WORKBENCH_GID=100
 
@@ -26,6 +27,7 @@ RUN apt-get update \
         bash \
         ca-certificates \
         git \
+        libstdc++6 \
         make \
         openssh-client \
         procps \
@@ -43,17 +45,19 @@ RUN apt-get update \
         /home/workbench/.local /home/workbench/.npm /run/secrets/workbench
 
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
-COPY --from=codex-cli /usr/local/bin/codex /usr/local/bin/codex
-COPY --from=codex-cli /usr/local/bin/npm /usr/local/bin/npm
-COPY --from=codex-cli /usr/local/bin/npx /usr/local/bin/npx
-COPY --from=codex-cli /usr/local/lib/node_modules/@openai/codex /usr/local/lib/node_modules/@openai/codex
-COPY --from=codex-cli /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=codex-cli /usr/local/sbin/verify-codex-runtime /usr/local/sbin/verify-codex-runtime
+RUN <<'EOF'
+set -eu
+ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+EOF
+
 COPY --from=backend-builder /wheels /wheels
-RUN python -m pip install --no-cache-dir /wheels/* \
-    && rm -rf /wheels \
-    && version_output="$(/usr/local/bin/codex --version 2>&1)" \
-    && test "$version_output" = "codex-cli ${CODEX_VERSION}" \
-    && /usr/local/bin/codex app-server --help >/dev/null
+RUN python -m pip install --no-cache-dir --root-user-action=ignore /wheels/*
+RUN rm -rf /wheels
+RUN /usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"
 
 WORKDIR /app
 USER workbench

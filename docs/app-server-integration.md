@@ -216,6 +216,16 @@ Init, since the Python image has no competing init and owns children; neither im
 s6-overlay. SIGTERM and a 30-second grace period complement the supervisor's own process-group
 shutdown. A version-probe timeout kills the entire isolated probe process group as well.
 
+The npm install creates `/usr/local/bin/codex` as a symlink to
+`../lib/node_modules/@openai/codex/bin/codex.js`. That launcher resolves the linux/amd64 optional
+package below its real npm package directory and starts
+`vendor/x86_64-unknown-linux-musl/bin/codex`; the same platform package also carries bwrap, zsh,
+ripgrep and the code-mode host. The image therefore copies the complete global `node_modules`
+layout, recreates the npm bin links explicitly, and installs Node's `libstdc++6` runtime dependency.
+It never copies the `codex` link as an isolated multi-stage source, because that operation follows
+the source link and would relocate the launcher as a regular file, breaking its relative package
+resolution.
+
 The production mount intentionally points at the existing Synology Codex home. That shares account
 and Codex-owned thread state but does not add locking between an SSH CLI process and Workbench.
 Operators must serialize active use and quiesce both processes for a consistent backup. App-server

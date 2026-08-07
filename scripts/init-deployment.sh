@@ -270,6 +270,7 @@ require_file compose.yaml
 require_file deploy/backend.Dockerfile
 require_file deploy/frontend.Dockerfile
 require_file deploy/nginx.conf
+require_lf_file deploy/verify-codex-runtime.sh
 require_file schemas/codex-app-server/VERSION
 require_file scripts/validate-compose.sh
 require_file scripts/read-deployment-env.sh

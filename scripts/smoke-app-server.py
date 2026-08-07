@@ -12,7 +12,7 @@ from pathlib import Path
 from codex_workbench.app_server.client import AppServerClient
 from codex_workbench.app_server.correlation import AppServerRequestError
 from codex_workbench.app_server.protocol import ProtocolAdapter
-from codex_workbench.app_server.supervisor import check_codex_version
+from codex_workbench.app_server.supervisor import APP_SERVER_ARGUMENTS, check_codex_version
 from codex_workbench.app_server.transport import (
     JsonObject,
     JsonScalar,
@@ -109,7 +109,7 @@ async def smoke() -> dict[str, object]:
             return None
 
         transport = SubprocessJsonlTransport(
-            (str(codex), "app-server", "--stdio"),
+            (str(codex), *APP_SERVER_ARGUMENTS),
             environment=environment,
             shutdown_timeout_seconds=3,
         )

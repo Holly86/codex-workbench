@@ -63,7 +63,10 @@ def require_hardening(service: dict[str, Any], label: str) -> None:
         fail(f"{label} must define the conservative fixed memory limit")
     if not isinstance(service.get("pids_limit"), int):
         fail(f"{label} must define a PID limit")
-    nofile = mapping(mapping(service.get("ulimits"), f"{label}.ulimits").get("nofile"), f"{label}.nofile")
+    nofile = mapping(
+        mapping(service.get("ulimits"), f"{label}.ulimits").get("nofile"),
+        f"{label}.nofile",
+    )
     if not isinstance(nofile.get("soft"), int) or not isinstance(nofile.get("hard"), int):
         fail(f"{label} must define nofile soft/hard limits")
     if not service.get("tmpfs"):
@@ -135,7 +138,10 @@ def main() -> int:
     health_text = " ".join(str(part) for part in mapping(backend["healthcheck"], "health")["test"])
     if "/api/health/ready" not in health_text or "/api/health/live" in health_text:
         fail("backend healthcheck must retain readiness semantics")
-    depends = mapping(mapping(frontend.get("depends_on"), "depends_on").get("backend"), "depends_on.backend")
+    depends = mapping(
+        mapping(frontend.get("depends_on"), "depends_on").get("backend"),
+        "depends_on.backend",
+    )
     if depends.get("condition") != "service_healthy":
         fail("frontend must wait for backend readiness")
 
@@ -170,6 +176,54 @@ def main() -> int:
         fail("backend image healthcheck must use readiness")
     if re.search(r"--workers(?:=|\s)", backend_dockerfile):
         fail("backend image must retain one Uvicorn worker")
+
+    required_backend_fragments = {
+        'ARG CODEX_VERSION=0.146.0': "backend image must pin Codex 0.146.0",
+        'ARG NODE_VERSION=24.18.1': "backend image must pin Node 24.18.1",
+        'npm install --global --omit=dev "@openai/codex@${CODEX_VERSION}"': (
+            "backend image must install the exact configured Codex package"
+        ),
+        "COPY --chmod=755 deploy/verify-codex-runtime.sh": (
+            "backend image must make the Codex runtime verifier executable"
+        ),
+        "libstdc++6": "backend image must install the copied Node runtime dependency",
+        (
+            "COPY --from=codex-cli /usr/local/lib/node_modules "
+            "/usr/local/lib/node_modules"
+        ): "backend image must copy the complete global npm module layout",
+        (
+            "ln -s ../lib/node_modules/@openai/codex/bin/codex.js "
+            "/usr/local/bin/codex"
+        ): "backend image must recreate the Codex npm bin link explicitly",
+    }
+    for fragment, message in required_backend_fragments.items():
+        if fragment not in backend_dockerfile:
+            fail(message)
+    if "COPY --from=codex-cli /usr/local/bin/codex" in backend_dockerfile:
+        fail("backend image must not dereference-copy the Codex npm bin symlink")
+    if re.search(r"@openai/codex@(?:latest|\$\{?[^} ]*:-latest)", backend_dockerfile):
+        fail("backend image must never install an unpinned latest Codex package")
+    verifier_call = (
+        '/usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"'
+    )
+    if backend_dockerfile.count(verifier_call) != 2:
+        fail("Codex runtime verification must run in both Node and final runtime stages")
+
+    verifier = (ROOT / "deploy/verify-codex-runtime.sh").read_text(encoding="utf-8")
+    required_verifier_fragments = {
+        "Codex launcher is missing or is not a symbolic link",
+        "Node has an unresolved runtime library",
+        "codex --version exited with status",
+        "codex --version wrote unexpected stdout",
+        "codex --version wrote unexpected stderr",
+        "codex --version reported the wrong version",
+        "codex app-server --help exited with status",
+        "required native Codex runtime executable is missing",
+        "grep -Fq -- '--stdio'",
+    }
+    for fragment in required_verifier_fragments:
+        if fragment not in verifier:
+            fail(f"Codex runtime verifier is missing diagnostic: {fragment}")
 
     executable_assets = [ROOT / "Makefile", ROOT / "compose.yaml"]
     executable_assets.extend((ROOT / "scripts").glob("*"))

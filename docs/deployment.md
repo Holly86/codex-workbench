@@ -212,6 +212,14 @@ Runtime-Stage exakt `codex-cli 0.146.0` und prüft `codex app-server --help`. De
 verweigert Readiness, wenn die Laufzeitversion nicht exakt zum generierten 0.146.0-Schema passt.
 Node 24.18.1 und Python 3.12.11 werden vom Installer ebenfalls festgehalten.
 
+Die Runtime übernimmt die vollständige globale `node_modules`-Struktur aus der Node-Stage und legt
+die npm-Bin-Symlinks darin explizit neu an. Dadurch bleibt der Codex-Launcher am von npm erwarteten
+Ort relativ zu `@openai/codex` und findet das native Paket `@openai/codex-linux-x64` samt seiner
+linux/amd64-Artefakte. `libstdc++6` wird als explizite Node-Runtime-Abhängigkeit installiert. Ein
+separater, secrets-freier Build-Check meldet fehlende Launcher, Pakete, native Dateien oder
+Libraries, Exitcodes und unerwartete stdout/stderr-Kanäle getrennt; Version und `--stdio`-Hilfe
+bleiben fail-closed geprüft.
+
 Buildx kann auf DSM melden, dass Host-Git fehlt und Commitinformationen nicht erfasst wurden. Das
 ist harmlos und kein Grund für eine Git-Installation auf DSM: `.git` liegt nicht im Buildkontext,
 es gibt kein Commit-Label und keine erfundene Provenance, und die Anwendung benötigt zur Laufzeit
