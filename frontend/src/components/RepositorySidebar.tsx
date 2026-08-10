@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import type { Repository, ThreadView } from "../workbench/types";
 import { AnchoredMenu } from "./AnchoredMenu";
 
-export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "publish" | "github" | "rename" | "settings" | "remove" | "delete" | "create" | "clone";
+export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "deploy-key" | "publish" | "github" | "rename" | "settings" | "remove" | "delete" | "create" | "clone" | "connect-private";
 
 interface RepositorySidebarProps {
   repositories: Repository[];
@@ -32,6 +32,7 @@ const REPOSITORY_ACTION_GROUPS: Array<Array<{ action: RepositoryAction; label: s
     { action: "pull", label: "Pull – nur Fast-forward" },
     { action: "push", label: "Push" },
     { action: "remote", label: "Remote & Clone" },
+    { action: "deploy-key", label: "SSH / Deploy Key" },
   ],
   [
     { action: "publish", label: "Auf GitHub veröffentlichen" },
@@ -132,6 +133,7 @@ export function RepositorySidebar({
         <div className="repository-create-actions" aria-label="Repository-Aktionen">
           <button type="button" onClick={() => onRepositoryAction("create", null)}><span aria-hidden="true">□＋</span> Neu</button>
           <button type="button" onClick={() => onRepositoryAction("clone", null)}><span aria-hidden="true">↓</span> Klonen</button>
+          <button type="button" onClick={() => onRepositoryAction("connect-private", null)}><span aria-hidden="true">⌁</span> Privat</button>
         </div>
         <label className="sidebar-search">
           <span className="search-icon" aria-hidden="true">⌕</span>

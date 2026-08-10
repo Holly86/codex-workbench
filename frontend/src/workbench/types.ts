@@ -28,6 +28,30 @@ export interface GitHubCapability {
   published?: boolean; remoteUrl?: string | null; webUrl?: string | null;
 }
 
+export interface DeployKeyMaterial {
+  publicKey: string;
+  fingerprint: string;
+  createdAt: number;
+}
+
+export interface DeployKeyView {
+  credentialId: string;
+  repositoryId: string | null;
+  githubRepository: string;
+  sshUrl: string;
+  status: "configured" | "verified" | "failed" | "rotation_verified";
+  active: DeployKeyMaterial;
+  candidate: DeployKeyMaterial | null;
+  retiredKeyAvailable: boolean;
+  lastTestedAt: number | null;
+  lastSuccessfulTestAt: number | null;
+}
+
+export interface DeployKeyRemotePreview {
+  currentUrl: string;
+  newUrl: string;
+}
+
 export interface RepositoryRemovalPreview {
   repositoryId: string;
   repositoryName: string;

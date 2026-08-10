@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     uploads_dir: Path = Path("/var/lib/codex-workbench/uploads")
     database_path: Path = Path("/var/lib/codex-workbench/security/workbench.sqlite3")
     password_verifier_file: Path = Path("/var/lib/codex-workbench/security/password.argon2id")
+    deploy_keys_dir: Path | None = None
     session_secret_file: Path = Path("/run/secrets/workbench/session.key")
     session_idle_timeout_seconds: int = Field(default=12 * 60 * 60, ge=300, le=30 * 24 * 60 * 60)
     session_absolute_timeout_seconds: int = Field(
@@ -105,6 +106,10 @@ class Settings(BaseSettings):
         self.password_verifier_file = _absolute_without_resolving_symlinks(
             self.password_verifier_file
         )
+        deploy_keys_dir = _resolved(
+            self.deploy_keys_dir or self.data_dir / "security" / "deploy-keys"
+        )
+        self.deploy_keys_dir = deploy_keys_dir
         # Preserve the configured final path so the key loader can reject a symlink itself.
         self.session_secret_file = _absolute_without_resolving_symlinks(self.session_secret_file)
 
@@ -120,6 +125,9 @@ class Settings(BaseSettings):
             self.data_dir,
             "password_verifier_file parent",
         )
+        _require_nested(deploy_keys_dir, self.data_dir, "deploy_keys_dir")
+        if deploy_keys_dir.is_relative_to(self.workspace_root):
+            raise ValueError("deploy_keys_dir must be outside workspace_root")
 
         if (
             self.public_origin.username is not None

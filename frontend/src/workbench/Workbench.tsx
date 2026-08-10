@@ -6,6 +6,7 @@ import { ApprovalDialog } from "../components/ApprovalDialog";
 import { Composer } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { CopyButton } from "../components/CopyButton";
+import { DeployKeyDialog } from "../components/DeployKeyDialog";
 import { FullAccessDialog } from "../components/FullAccessDialog";
 import { HealthStatus } from "../components/HealthStatus";
 import { RepositorySidebar } from "../components/RepositorySidebar";
@@ -123,6 +124,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     capabilityProjection?.repositoryId === selectedRepositoryId
       ? capabilityProjection.value
       : null;
+  const deployKeyMode = repositoryAction === "deploy-key"
+    ? "repository"
+    : repositoryAction === "connect-private" ? "private-clone" : null;
   const selectedRepository = repositories.find((item) => item.id === selectedRepositoryId) ?? null;
   const repositoryThreads = realtime.threads.filter((thread) => thread.repositoryId === selectedRepositoryId);
   const selectedThread = realtime.threads.find((thread) =>
@@ -663,7 +667,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
               setRemovalPreview(null);
               if (repository && (action === "remove" || action === "delete")) {
                 void repositoryRemovalPreview(repository.id).then(setRemovalPreview).catch(handleError);
-              } else if (repository) void githubCapability(repository.id).then(setGithub).catch(handleError);
+              } else if (repository && action !== "deploy-key") void githubCapability(repository.id).then(setGithub).catch(handleError);
             }}
           />
           <main className="conversation-column" id="conversation" tabIndex={-1} ref={mainRef}>
@@ -741,7 +745,17 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
           catch (caught: unknown) { handleError(caught); }
         }}
       />
-      <RepositoryTools action={repositoryAction} repository={actionRepository} jobs={jobs} github={github} pending={operationPending} removalPreview={removalPreview} onClose={() => setRepositoryAction(null)} onRetryJob={async (job) => {
+      <DeployKeyDialog
+        mode={deployKeyMode}
+        repository={actionRepository}
+        csrfToken={session.csrfToken}
+        onClose={() => setRepositoryAction(null)}
+        onCloneStarted={async () => {
+          await refreshRepositories();
+          dispatch({ type: "jobs", jobs: await listJobs() });
+        }}
+      />
+      <RepositoryTools action={deployKeyMode === null ? repositoryAction : null} repository={actionRepository} jobs={jobs} github={github} pending={operationPending} removalPreview={removalPreview} onClose={() => setRepositoryAction(null)} onRetryJob={async (job) => {
         if (job.repositoryId === null) return;
         try {
           const action = job.type.replace("git_", "");

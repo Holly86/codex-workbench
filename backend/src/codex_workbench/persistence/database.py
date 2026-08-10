@@ -110,6 +110,28 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        5,
+        """
+        CREATE TABLE deploy_key_credentials (
+            credential_id TEXT PRIMARY KEY,
+            repository_id TEXT UNIQUE,
+            github_slug TEXT NOT NULL UNIQUE,
+            active_created_at INTEGER NOT NULL,
+            candidate_created_at INTEGER,
+            retired_created_at INTEGER,
+            last_tested_at INTEGER,
+            last_success_at INTEGER,
+            last_test_succeeded INTEGER CHECK(last_test_succeeded IN (0, 1)),
+            last_test_key TEXT CHECK(last_test_key IN ('active', 'candidate')),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX deploy_key_credentials_repository_idx
+            ON deploy_key_credentials(repository_id);
+        """,
+    ),
 )
 
 

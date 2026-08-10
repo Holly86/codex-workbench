@@ -18,6 +18,7 @@ from codex_workbench.app_server.protocol import ProtocolAdapter
 from codex_workbench.app_server.supervisor import AppServerSupervisor, ProcessState
 from codex_workbench.app_server.transport import JsonObject, JsonScalar, JsonValue
 from codex_workbench.config import Settings
+from codex_workbench.deploy_keys import DeployKeyService
 from codex_workbench.domain.approvals import (
     ApprovalRecord,
     ApprovalRegistry,
@@ -64,10 +65,12 @@ class WorkbenchRuntime:
         self.settings = settings
         self.metadata = metadata
         self.repositories = RepositoryDiscovery(settings.repositories_root)
+        self.deploy_keys = DeployKeyService(settings, metadata)
         self.git = GitService(
             self.repositories,
             settings.repositories_root,
             output_limit=settings.max_command_output_bytes,
+            deploy_keys=self.deploy_keys,
         )
         self.host_capabilities: JsonObject = {}
         self.broker = RealtimeBroker(
@@ -114,6 +117,7 @@ class WorkbenchRuntime:
         return self.supervisor.status.state is ProcessState.READY
 
     async def start(self) -> None:
+        await self.deploy_keys.initialize()
         await self.uploads.initialize()
         # Protocol integration tests use a fake child and must not inherit unrelated host sandbox
         # constraints. The detector itself has fixture coverage; deployed environments are probed.

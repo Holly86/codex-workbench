@@ -51,6 +51,9 @@ class SecurityService:
             self.settings.database_path.parent,
             self.settings.password_verifier_file.parent,
         }
+        if self.settings.deploy_keys_dir is None:
+            raise RuntimeError("deploy key state directory is unavailable")
+        security_directories.add(self.settings.deploy_keys_dir)
         for directory in security_directories:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             metadata = directory.lstat()

@@ -814,6 +814,23 @@ button { -webkit-tap-highlight-color: transparent; }
 .repository-removal.is-destructive { padding: .75rem; border: 1px solid rgb(248 113 113 / 35%); border-radius: .7rem; background: rgb(127 29 29 / 10%); }
 .danger-action { color: #fff; border-color: #9f3a45; background: #7d2832; }
 .danger-action:hover:not(:disabled) { background: #96323e; }
+.repository-create-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.deploy-key-dialog { width: min(44rem, calc(100vw - 2rem)); }
+.deploy-key-dialog h3 { margin: 1rem 0 .45rem; font-size: .8rem; }
+.deploy-key-summary, .deploy-key-remote dl { display: grid; gap: .4rem; margin: .85rem 0; }
+.deploy-key-summary > div, .deploy-key-remote dl > div { display: grid; grid-template-columns: 10rem minmax(0, 1fr); gap: .65rem; }
+.deploy-key-summary dt, .deploy-key-remote dt { color: var(--muted); }
+.deploy-key-summary dd, .deploy-key-remote dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.deploy-key-public .code-shell, .deploy-key-rotation .code-shell { position: relative; }
+.deploy-key-public pre, .deploy-key-rotation pre { max-height: 8rem; margin: 0; padding: .8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #34383d; border-radius: .55rem; background: #111417; }
+.deploy-key-public .copy-button, .deploy-key-rotation .copy-button { position: absolute; top: .35rem; right: .35rem; }
+.deploy-key-instructions, .deploy-key-warning, .deploy-key-rotation, .deploy-key-remote { margin-top: .8rem; padding: .75rem; border: 1px solid #34383d; border-radius: .65rem; background: rgb(255 255 255 / 2%); }
+.deploy-key-instructions ol { margin: .45rem 0; padding-left: 1.25rem; }
+.deploy-key-instructions p, .deploy-key-warning p, .deploy-key-rotation p { color: var(--muted); }
+.deploy-key-actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .65rem; }
+.private-clone-controls { display: grid; gap: .65rem; margin-top: .8rem; }
+.confirmation-check { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: .5rem; margin: .9rem 0 .55rem; }
+.confirmation-check input { width: auto; margin-top: .15rem; }
 
 @media (max-width: 760px) {
   .repository-panel, .repository-panel.is-collapsed { display: flex; }

@@ -14,4 +14,9 @@ it("filters repositories and exposes a keyboard-accessible context menu", () => 
   fireEvent.click(screen.getByRole("button", { name: "codex-workbench Menü" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Commit…" }));
   expect(action).toHaveBeenCalledWith("commit", repository);
+  fireEvent.click(screen.getByRole("button", { name: "codex-workbench Menü" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "SSH / Deploy Key" }));
+  expect(action).toHaveBeenCalledWith("deploy-key", repository);
+  fireEvent.click(screen.getByRole("button", { name: "Privat" }));
+  expect(action).toHaveBeenCalledWith("connect-private", null);
 });

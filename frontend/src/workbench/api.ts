@@ -13,6 +13,8 @@ import type {
   GitHubCapability,
   GitStatus,
   NativeJob,
+  DeployKeyRemotePreview,
+  DeployKeyView,
 } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -170,6 +172,121 @@ export async function cloneRepositoryPreflight(
   return requireRecord(await requestJson("/api/repositories/clone/preflight", {
     method: "POST", body: JSON.stringify({ url }),
   }, csrfToken)) as { allowed: boolean; mode: "public_https" | "github_cli" | "ssh" | "unavailable"; message: string };
+}
+
+function parseDeployKey(value: unknown): DeployKeyView {
+  const deployKey = requireRecord(requireRecord(value).deployKey);
+  if (
+    typeof deployKey.credentialId !== "string" ||
+    typeof deployKey.githubRepository !== "string" ||
+    typeof deployKey.sshUrl !== "string" ||
+    !isRecord(deployKey.active) ||
+    typeof deployKey.active.publicKey !== "string" ||
+    typeof deployKey.active.fingerprint !== "string"
+  ) {
+    throw new ApiError(502, "invalid_response", "Ungültige Deploy-Key-Antwort.", null);
+  }
+  return deployKey as unknown as DeployKeyView;
+}
+
+export async function readRepositoryDeployKey(
+  repositoryId: string,
+): Promise<DeployKeyView | null> {
+  const body = requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/deploy-key`,
+    { method: "GET" },
+  ));
+  return body.deployKey === null ? null : parseDeployKey(body);
+}
+
+export async function createRepositoryDeployKey(
+  csrfToken: string, repositoryId: string,
+): Promise<DeployKeyView> {
+  return parseDeployKey(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/deploy-key`,
+    { method: "POST", body: "{}" }, csrfToken,
+  ));
+}
+
+export async function connectPrivateRepository(
+  csrfToken: string, githubRepository: string,
+): Promise<DeployKeyView> {
+  return parseDeployKey(await requestJson(
+    "/api/repositories/private-connect",
+    { method: "POST", body: JSON.stringify({ githubRepository }) }, csrfToken,
+  ));
+}
+
+export async function clonePrivateRepository(
+  csrfToken: string, name: string, credentialId: string,
+): Promise<NativeJob> {
+  return requireRecord(await requestJson(
+    "/api/repositories/private-clone",
+    { method: "POST", body: JSON.stringify({ name, credentialId, readme: false }) }, csrfToken,
+  )) as unknown as NativeJob;
+}
+
+export async function testDeployKey(
+  csrfToken: string, credentialId: string, candidate = false,
+): Promise<{ succeeded: boolean; deployKey: DeployKeyView }> {
+  const body = requireRecord(await requestJson(
+    `/api/deploy-keys/${encodeURIComponent(credentialId)}/test`,
+    { method: "POST", body: JSON.stringify({ candidate }) }, csrfToken,
+  ));
+  return { succeeded: body.succeeded === true, deployKey: parseDeployKey({ deployKey: body.deployKey }) };
+}
+
+async function deployKeyMutation(
+  csrfToken: string,
+  credentialId: string,
+  suffix: "rotate" | "promote",
+): Promise<DeployKeyView> {
+  return parseDeployKey(await requestJson(
+    `/api/deploy-keys/${encodeURIComponent(credentialId)}/${suffix}`,
+    { method: "POST", body: "{}" }, csrfToken,
+  ));
+}
+
+export function rotateDeployKey(csrfToken: string, credentialId: string): Promise<DeployKeyView> {
+  return deployKeyMutation(csrfToken, credentialId, "rotate");
+}
+
+export function promoteDeployKey(csrfToken: string, credentialId: string): Promise<DeployKeyView> {
+  return deployKeyMutation(csrfToken, credentialId, "promote");
+}
+
+export async function removeRetiredDeployKey(
+  csrfToken: string, credentialId: string,
+): Promise<DeployKeyView> {
+  return parseDeployKey(await requestJson(
+    `/api/deploy-keys/${encodeURIComponent(credentialId)}/retired`,
+    { method: "DELETE", body: "{}" }, csrfToken,
+  ));
+}
+
+export async function removeDeployKey(csrfToken: string, credentialId: string): Promise<void> {
+  await requestJson(
+    `/api/deploy-keys/${encodeURIComponent(credentialId)}`,
+    { method: "DELETE", body: "{}" }, csrfToken,
+  );
+}
+
+export async function deployKeyRemotePreview(
+  repositoryId: string,
+): Promise<DeployKeyRemotePreview> {
+  return requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/deploy-key/remote-preview`,
+    { method: "GET" },
+  )) as unknown as DeployKeyRemotePreview;
+}
+
+export async function switchOriginToDeployKey(
+  csrfToken: string, repositoryId: string, confirmation: string,
+): Promise<void> {
+  await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/deploy-key/switch-origin`,
+    { method: "POST", body: JSON.stringify({ confirmation }) }, csrfToken,
+  );
 }
 
 export async function updateRepository(

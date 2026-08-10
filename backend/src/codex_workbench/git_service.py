@@ -8,10 +8,15 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
 from codex_workbench.repositories import RepositoryDiscovery
+
+if TYPE_CHECKING:
+    from codex_workbench.deploy_keys import DeployKeyService
 
 _REF = re.compile(r"^(?![-./])(?!.*(?:\.\.|//|@\{|\\))[A-Za-z0-9._/-]{1,200}(?<![./])$")
 _REPOSITORY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -47,11 +52,13 @@ class GitService:
         *,
         output_limit: int,
         timeout_seconds: float = 30.0,
+        deploy_keys: DeployKeyService | None = None,
     ) -> None:
         self._repositories = repositories
         self._root = root
         self._output_limit = output_limit
         self._timeout = timeout_seconds
+        self._deploy_keys = deploy_keys
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def run(
@@ -67,11 +74,16 @@ class GitService:
             self._repositories.resolve_repository_id, repository_id
         )
         args, mutating = self._arguments(action, files=files, message=message, branch=branch)
+        environment = (
+            await self._deploy_keys.repository_environment(repository_id)
+            if self._deploy_keys is not None and action in {"fetch", "pull", "push"}
+            else None
+        )
         lock = self._locks.setdefault(repository_id, asyncio.Lock())
         if mutating:
             async with lock:
-                return await self._execute(cwd, args)
-        return await self._execute(cwd, args)
+                return await self._execute(cwd, args, environment=environment)
+        return await self._execute(cwd, args, environment=environment)
 
     async def create(self, name: str, *, readme: bool) -> GitResult:
         self.validate_name(name)
@@ -119,6 +131,34 @@ class GitService:
             ("clone", "--", safe_url, name),
             display=("clone", "--", self.redact_url(safe_url), name),
         )
+
+    async def clone_with_deploy_key(self, name: str, credential_id: str) -> GitResult:
+        if self._deploy_keys is None:
+            raise GitOperationError("deploy key service is unavailable")
+        self.validate_name(name)
+        root = self._root.resolve(strict=True)
+        target = root / name
+        if target.exists() or target.is_symlink():
+            raise GitOperationError("repository already exists")
+        url, environment = await self._deploy_keys.clone_environment(credential_id)
+        result = await self._execute(
+            root,
+            ("clone", "--", url, name),
+            display=("clone", "--", "github.com:repository", name),
+            environment=environment,
+        )
+        if result.exit_code != 0:
+            return result
+        try:
+            summary, _path = await asyncio.to_thread(
+                self._repositories.resolve_repository_id,
+                self.repository_id_for_name(name),
+            )
+            await self._deploy_keys.bind_after_clone(credential_id, summary.id)
+        except BaseException:
+            await asyncio.to_thread(self._remove_failed_clone, target)
+            raise
+        return result
 
     async def clone_preflight(self, url: str) -> dict[str, object]:
         safe_url = self.validate_clone_url(url)
@@ -256,6 +296,51 @@ class GitService:
             "webUrl": web_url,
         }
 
+    async def github_origin_slug(self, repository_id: str) -> str:
+        from codex_workbench.deploy_keys import normalize_github_repository
+
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        result = await self._execute(cwd, ("remote", "get-url", "origin"))
+        if result.exit_code != 0:
+            raise ValueError("origin remote is unavailable")
+        return normalize_github_repository(result.output.strip()).slug
+
+    async def deploy_key_remote_preview(self, repository_id: str) -> dict[str, object]:
+        if self._deploy_keys is None:
+            raise GitOperationError("deploy key service is unavailable")
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        current = await self._execute(cwd, ("remote", "get-url", "origin"))
+        if current.exit_code != 0:
+            raise ValueError("origin remote is unavailable")
+        new_url = await self._deploy_keys.verified_repository_url(repository_id)
+        return {
+            "currentUrl": self.redact_url(current.output.strip()),
+            "newUrl": new_url,
+        }
+
+    async def switch_origin_to_deploy_key(
+        self, repository_id: str, *, confirmation: str
+    ) -> dict[str, object]:
+        preview = await self.deploy_key_remote_preview(repository_id)
+        new_url = preview["newUrl"]
+        if not isinstance(new_url, str) or confirmation != new_url:
+            raise ValueError("origin change confirmation does not match")
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        result = await self._execute(
+            cwd,
+            ("remote", "set-url", "origin", new_url),
+            display=("remote", "set-url", "origin", "github.com:repository"),
+        )
+        if result.exit_code != 0:
+            raise GitOperationError("origin remote could not be changed")
+        return {"currentUrl": preview["currentUrl"], "newUrl": new_url, "changed": True}
+
     async def publish_github(
         self,
         repository_id: str,
@@ -351,6 +436,10 @@ class GitService:
         web = cls.github_web_url(value)
         return None if web is None else web.removeprefix("https://github.com/")
 
+    @staticmethod
+    def repository_id_for_name(name: str) -> str:
+        return sha256(name.encode("utf-8")).hexdigest()[:16]
+
     def _arguments(
         self, action: str, *, files: tuple[str, ...], message: str | None, branch: str | None
     ) -> tuple[tuple[str, ...], bool]:
@@ -410,7 +499,12 @@ class GitService:
         return value
 
     async def _execute(
-        self, cwd: Path, args: tuple[str, ...], *, display: tuple[str, ...] | None = None
+        self,
+        cwd: Path,
+        args: tuple[str, ...],
+        *,
+        display: tuple[str, ...] | None = None,
+        environment: dict[str, str] | None = None,
     ) -> GitResult:
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -420,7 +514,7 @@ class GitService:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=self._native_env(optional_locks=True),
+            env=self._git_environment(environment),
         )
         try:
             output, _ = await asyncio.wait_for(process.communicate(), timeout=self._timeout)
@@ -438,6 +532,20 @@ class GitService:
             round((time.monotonic() - started) * 1000),
             truncated,
         )
+
+    def _remove_failed_clone(self, target: Path) -> None:
+        root = self._root.resolve(strict=True)
+        resolved = target.resolve(strict=True)
+        if target.is_symlink() or resolved.parent != root or resolved == root:
+            raise GitOperationError("failed clone cleanup target is unsafe")
+        shutil.rmtree(resolved)
+
+    def _git_environment(self, selected: dict[str, str] | None) -> dict[str, str]:
+        if selected is None:
+            return self._native_env(optional_locks=True)
+        environment = dict(selected)
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        return environment
 
     async def _execute_external(
         self, args: tuple[str, ...], *, cwd: Path | None = None, timeout_seconds: float
