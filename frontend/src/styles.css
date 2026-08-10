@@ -555,6 +555,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .model-control { width: 10.5rem; }
 .reasoning-control { width: 7.3rem; }
 .access-control { width: 6.8rem; }
+.access-control.is-required { border-color: #9a6b2f; background: #332a1d; }
 .skills-control { width: 5.9rem; }
 .control-kicker { grid-column: 1; color: #858c95; font-size: .54rem; font-weight: 720; line-height: 1.05; letter-spacing: .07em; text-transform: uppercase; }
 .control-value { grid-column: 1; min-width: 0; overflow: hidden; font-size: .68rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -562,6 +563,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .control-count { min-width: 1.15rem; padding: .13rem .3rem; border-radius: 999px; background: #1c1f22; text-align: center; }
 .icon-control { width: 2.35rem; min-width: 2.35rem; display: grid; place-items: center; padding: 0; border-radius: 50%; font-size: 1rem; }
 .danger-selection { color: #ffe9af; border-color: #79622e; background: #352d1b; }
+.composer-access-message { margin: .35rem .15rem 0; color: #d8b978; font-size: .68rem; line-height: 1.35; }
 .composer-hint { min-width: 0; flex: 1; overflow: hidden; padding-inline: .2rem; color: #777e87; font-size: .58rem; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .composer-submit { width: 2.35rem !important; min-width: 2.35rem !important; min-height: 2.35rem !important; display: grid !important; place-items: center; margin: 0 !important; padding: 0 !important; border-radius: 50% !important; font-size: .95rem !important; }
 .composer .primary-action::after { content: none; }

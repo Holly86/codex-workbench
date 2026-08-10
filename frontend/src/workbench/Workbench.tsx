@@ -30,6 +30,7 @@ import {
   publishGithub,
   updateRepository,
 } from "./api";
+import { resolveSafeSandboxMode, sandboxAvailable } from "./access";
 import { useRealtime } from "./realtime";
 import type {
   ApprovalPolicy,
@@ -69,9 +70,12 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [sandboxMode, setSandboxMode] = useState<SandboxMode>("workspace-write");
+  const [sandboxMode, setSandboxMode] = useState<SandboxMode | null>(null);
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>("on-request");
-  const [capabilities, setCapabilities] = useState<WorkbenchCapabilities | null>(null);
+  const [capabilityProjection, setCapabilityProjection] = useState<{
+    repositoryId: string;
+    value: WorkbenchCapabilities;
+  } | null>(null);
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
   const [capability, setCapability] = useState<FullAccessCapability | null>(null);
@@ -81,6 +85,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [operationPending, setOperationPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [repositoryAction, setRepositoryAction] = useState<RepositoryAction | null>(null);
   const [actionRepository, setActionRepository] = useState<Repository | null>(null);
   const jobs = realtime.jobs;
@@ -88,11 +93,22 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [github, setGithub] = useState<GitHubCapability | null>(null);
   const mainRef = useRef<HTMLElement>(null);
 
+  const capabilities =
+    realtime.processConnection === "connected" &&
+    capabilityProjection?.repositoryId === selectedRepositoryId
+      ? capabilityProjection.value
+      : null;
   const selectedRepository = repositories.find((item) => item.id === selectedRepositoryId) ?? null;
   const repositoryThreads = realtime.threads.filter((thread) => thread.repositoryId === selectedRepositoryId);
   const selectedThread = realtime.threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const selectedApproval = realtime.approvals.find((approval) => approval.threadId === selectedThreadId) ?? realtime.approvals[0] ?? null;
   const working = selectedThread !== null && RUNNING_STATES.has(selectedThread.activity.state);
+  const activeFullAccessIntent =
+    capabilities !== null &&
+    fullAccessIntent?.repositoryId === selectedRepositoryId &&
+    sandboxAvailable(capabilities, "danger-full-access")
+      ? fullAccessIntent
+      : null;
 
   const handleError = useCallback((caught: unknown) => {
     if (caught instanceof ApiError && caught.status === 401) {
@@ -159,14 +175,22 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
 
   useEffect(() => {
     if (selectedRepositoryId === null || realtime.processConnection !== "connected") return;
+    let active = true;
     void readCapabilities(selectedRepositoryId).then((value) => {
-      setCapabilities(value);
+      if (!active) return;
+      setCapabilityProjection({ repositoryId: selectedRepositoryId, value });
       const defaultModel = value.models.find((item) => item.isDefault) ?? value.models[0];
-      const repository = repositories.find((item) => item.id === selectedRepositoryId);
-      setModel(repository?.preferences.model ?? defaultModel?.id ?? null);
-      setEffort(repository?.preferences.effort ?? defaultModel?.defaultReasoningEffort ?? null);
-    }).catch(handleError);
-  }, [selectedRepositoryId, realtime.processConnection, handleError, repositories]);
+      setModel((current) => value.models.some((item) => item.id === current) ? current : defaultModel?.id ?? null);
+      setEffort((current) => current ?? defaultModel?.defaultReasoningEffort ?? null);
+      setSandboxMode((current) => resolveSafeSandboxMode(value, current));
+      setCapability(null);
+      setFullAccessIntent(null);
+      setAccessError(null);
+    }).catch((caught: unknown) => {
+      if (active) handleError(caught);
+    });
+    return () => { active = false; };
+  }, [selectedRepositoryId, realtime.processConnection, handleError]);
 
   useEffect(() => {
     if (realtime.connection !== "connected") return;
@@ -178,12 +202,18 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   }, []);
 
   const selectRepository = (repositoryId: string) => {
+    const repository = repositories.find((item) => item.id === repositoryId);
     setThreadsLoading(true);
     setSelectedRepositoryId(repositoryId);
     setSelectedThreadId(null);
-    setSandboxMode("workspace-write");
+    setCapabilityProjection(null);
+    setSandboxMode(null);
     setApprovalPolicy("on-request");
+    setModel(repository?.preferences.model ?? null);
+    setEffort(repository?.preferences.effort ?? null);
     setCapability(null);
+    setFullAccessIntent(null);
+    setAccessError(null);
     setError(null);
   };
 
@@ -213,9 +243,17 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
 
   const selectThread = (thread: ThreadView) => {
     setSelectedThreadId(thread.id);
-    setSandboxMode(thread.sandboxMode);
     setApprovalPolicy(thread.approvalPolicy);
     setCapability(null);
+    if (capabilities === null || !sandboxAvailable(capabilities, thread.sandboxMode)) {
+      setSandboxMode(capabilities === null ? null : resolveSafeSandboxMode(capabilities, thread.sandboxMode));
+      setAccessError(capabilities === null
+        ? "Access-Optionen werden noch geladen. Bitte kurz warten."
+        : "Der Access-Modus dieses Threads ist auf diesem Host nicht verfügbar.");
+      return;
+    }
+    setSandboxMode(thread.sandboxMode);
+    setAccessError(null);
     if (thread.sandboxMode === "danger-full-access") {
       setFullAccessIntent({
         repositoryId: thread.repositoryId,
@@ -230,16 +268,20 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     }
   };
 
-  const performNewThread = async (suppliedCapability: FullAccessCapability | null) => {
-    if (selectedRepositoryId === null) return;
+  const performNewThread = async (
+    repositoryId: string,
+    mode: SandboxMode,
+    policy: ApprovalPolicy,
+    suppliedCapability: FullAccessCapability | null,
+  ) => {
     setOperationPending(true);
     setError(null);
     try {
       const thread = await startThread(
         session.csrfToken,
-        selectedRepositoryId,
-        sandboxMode,
-        approvalPolicy,
+        repositoryId,
+        mode,
+        policy,
         suppliedCapability,
       );
       dispatch({ type: "thread", thread });
@@ -254,7 +296,21 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
 
   const requestNewThread = () => {
     if (selectedRepository === null) return;
+    if (capabilities === null) {
+      setAccessError("Access-Optionen werden noch geladen. Bitte kurz warten.");
+      return;
+    }
+    if (sandboxMode === null || !sandboxAvailable(capabilities, sandboxMode)) {
+      setSandboxMode(resolveSafeSandboxMode(capabilities, sandboxMode));
+      setAccessError("Wähle einen auf diesem Host verfügbaren Access-Modus.");
+      return;
+    }
+    setAccessError(null);
     if (sandboxMode === "danger-full-access") {
+      if (capability !== null) {
+        void performNewThread(selectedRepository.id, sandboxMode, approvalPolicy, capability);
+        return;
+      }
       setFullAccessIntent({
         repositoryId: selectedRepository.id,
         repositoryName: selectedRepository.name,
@@ -264,12 +320,16 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         resumeThread: null,
       });
     } else {
-      void performNewThread(null);
+      void performNewThread(selectedRepository.id, sandboxMode, approvalPolicy, null);
     }
   };
 
   const requestFullAccessSelection = (policy: ApprovalPolicy) => {
     if (selectedRepository === null) return;
+    if (!sandboxAvailable(capabilities, "danger-full-access")) {
+      setAccessError("Full Access ist auf diesem Host nicht verfügbar.");
+      return;
+    }
     setFullAccessIntent({
       repositoryId: selectedRepository.id,
       repositoryName: selectedRepository.name,
@@ -281,22 +341,30 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   };
 
   const confirmFullAccess = async () => {
-    if (fullAccessIntent === null) return;
+    if (activeFullAccessIntent === null) return;
+    const intent = activeFullAccessIntent;
     setFullAccessPending(true);
     setError(null);
     try {
       const nextCapability = await prepareFullAccess(
         session.csrfToken,
-        fullAccessIntent.repositoryId,
-        fullAccessIntent.approvalPolicy,
-        fullAccessIntent.threadId,
+        intent.repositoryId,
+        intent.approvalPolicy,
+        intent.threadId,
       );
-      const intent = fullAccessIntent;
       setSandboxMode("danger-full-access");
       setApprovalPolicy(intent.approvalPolicy);
       setCapability(nextCapability);
+      setAccessError(null);
       setFullAccessIntent(null);
-      if (intent.after === "new") await performNewThread(nextCapability);
+      if (intent.after === "new") {
+        await performNewThread(
+          intent.repositoryId,
+          "danger-full-access",
+          intent.approvalPolicy,
+          nextCapability,
+        );
+      }
       if (intent.after === "resume" && intent.resumeThread !== null) {
         await performResume(intent.resumeThread, nextCapability);
       }
@@ -308,7 +376,14 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   };
 
   const sendMessage = async (message: string, uploads: UploadedImage[]): Promise<boolean> => {
-    if (selectedThread === null) return false;
+    if (
+      selectedThread === null ||
+      sandboxMode === null ||
+      !sandboxAvailable(capabilities, sandboxMode)
+    ) {
+      setAccessError("Wähle einen auf diesem Host verfügbaren Access-Modus.");
+      return false;
+    }
     setOperationPending(true);
     setError(null);
     try {
@@ -360,7 +435,13 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             onNewThread={requestNewThread}
             onRepositoryAction={(action, repository) => {
               if (action === "open" && repository) { selectRepository(repository.id); return; }
-              if (action === "new-thread" && repository) { selectRepository(repository.id); requestNewThread(); return; }
+              if (action === "new-thread" && repository) {
+                if (repository.id !== selectedRepositoryId) {
+                  selectRepository(repository.id);
+                  setAccessError("Access-Optionen werden geladen. Starte den Thread anschließend erneut.");
+                } else requestNewThread();
+                return;
+              }
               if (["fetch", "pull", "push"].includes(action) && repository) {
                 void gitAction(session.csrfToken, repository.id, action)
                   .then(() => listJobs())
@@ -401,13 +482,24 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
               effort={effort}
               sandboxMode={sandboxMode}
               approvalPolicy={approvalPolicy}
+              accessMessage={accessError ?? (capabilities === null
+                ? "Access-Optionen werden geladen …"
+                : sandboxMode === null
+                  ? "Access-Auswahl erforderlich. Full Access muss ausdrücklich bestätigt werden."
+                  : null)}
               onModelChange={(nextModel, nextEffort) => {
                 setModel(nextModel); setEffort(nextEffort);
                 if (selectedRepositoryId) void updateRepository(session.csrfToken, selectedRepositoryId, { model: nextModel, effort: nextEffort }).then((updated) => setRepositories((current) => current.map((item) => item.id === updated.id ? updated : item))).catch(handleError);
               }}
               onAccessChange={(nextSandbox, nextPolicy) => {
                 if (nextSandbox === "danger-full-access") requestFullAccessSelection(nextPolicy);
-                else { setSandboxMode(nextSandbox); setApprovalPolicy(nextPolicy); setCapability(null); }
+                else if (sandboxAvailable(capabilities, nextSandbox)) {
+                  setSandboxMode(nextSandbox);
+                  setApprovalPolicy(nextPolicy);
+                  setCapability(null);
+                  setFullAccessIntent(null);
+                  setAccessError(null);
+                } else setAccessError("Dieser Access-Modus ist auf dem Host nicht verfügbar.");
               }}
               onSend={sendMessage}
               onStop={async () => {
@@ -420,9 +512,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         </div>
       </div>
       <FullAccessDialog
-        open={fullAccessIntent !== null}
-        repository={fullAccessIntent?.repositoryName ?? ""}
-        approvalPolicy={fullAccessIntent?.approvalPolicy ?? approvalPolicy}
+        open={activeFullAccessIntent !== null}
+        repository={activeFullAccessIntent?.repositoryName ?? ""}
+        approvalPolicy={activeFullAccessIntent?.approvalPolicy ?? approvalPolicy}
         pending={fullAccessPending}
         onConfirm={() => void confirmFullAccess()}
         onCancel={() => setFullAccessIntent(null)}

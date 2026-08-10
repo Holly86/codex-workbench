@@ -35,8 +35,9 @@ interface ComposerProps {
   capabilities?: WorkbenchCapabilities | null;
   model?: string | null;
   effort?: string | null;
-  sandboxMode?: SandboxMode;
+  sandboxMode?: SandboxMode | null;
   approvalPolicy?: ApprovalPolicy;
+  accessMessage?: string | null;
   onModelChange?: (model: string, effort: string | null) => void;
   onAccessChange?: (sandbox: SandboxMode, approval: ApprovalPolicy) => void;
 }
@@ -52,10 +53,11 @@ function errorMessage(error: unknown): string {
 }
 
 export function Composer({ csrfToken, disabled, working, onSend, onStop, capabilities, model,
-  effort, sandboxMode = "workspace-write", approvalPolicy = "on-request",
+  effort, sandboxMode = null, approvalPolicy = "on-request", accessMessage = null,
   onModelChange = () => undefined, onAccessChange = () => undefined }: ComposerProps) {
   const inputId = useId();
   const pickerId = useId();
+  const accessMessageId = useId();
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -206,6 +208,15 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop, capabil
     ?? selectedModel?.reasoningEfforts.find((item) => item.value === selectedModel.defaultReasoningEffort)
     ?? selectedModel?.reasoningEfforts[0] ?? null;
   const capabilitiesLoading = capabilities === null || capabilities === undefined;
+  const accessLabel = capabilitiesLoading
+    ? "Lädt …"
+    : sandboxMode === "read-only"
+      ? "Read only"
+      : sandboxMode === "workspace-write"
+        ? "Workspace"
+        : sandboxMode === "danger-full-access"
+          ? "Full"
+          : "Auswahl erforderlich";
 
   return (
     <form
@@ -309,14 +320,16 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop, capabil
         <button
           ref={accessRef}
           type="button"
-          className={`composer-control access-control ${sandboxMode === "danger-full-access" ? "danger-selection" : ""}`}
-          aria-label={`Access: ${sandboxMode === "read-only" ? "Read only" : sandboxMode === "workspace-write" ? "Workspace" : "Full"}`}
+          className={`composer-control access-control ${sandboxMode === "danger-full-access" ? "danger-selection" : ""} ${sandboxMode === null ? "is-required" : ""}`}
+          aria-label={`Access: ${accessLabel}`}
+          aria-describedby={accessMessage !== null ? accessMessageId : undefined}
+          data-invalid={sandboxMode === null && !capabilitiesLoading ? "true" : undefined}
           aria-haspopup="menu"
           aria-expanded={openMenu === "access"}
           onClick={() => setOpenMenu(openMenu === "access" ? null : "access")}
         >
           <span className="control-kicker">Access</span>
-          <span className="control-value">{sandboxMode === "read-only" ? "Read only" : sandboxMode === "workspace-write" ? "Workspace" : "Full"}</span>
+          <span className="control-value">{accessLabel}</span>
           <span className="control-chevron" aria-hidden="true">⌄</span>
         </button>
         <button
@@ -339,6 +352,7 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop, capabil
           <button type="submit" className="primary-action composer-submit" disabled={!canSend}><span aria-hidden="true">↑</span><span className="sr-only">Senden</span></button>
         )}
       </div>
+      {accessMessage !== null ? <p id={accessMessageId} className="composer-access-message" role="status">{accessMessage}</p> : null}
       <AnchoredMenu anchorRef={addRef} open={openMenu === "add"} onClose={() => setOpenMenu(null)} ariaLabel="Hinzufügen" preferredPlacement="top">
         <p className="menu-heading">Hinzufügen</p>
         <label className="menu-item" htmlFor={pickerId}>
@@ -380,20 +394,21 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop, capabil
         <p className="menu-heading">Arbeitszugriff</p>
         {([['read-only','Read only','Lesen, nichts verändern'],['workspace-write','Workspace','Änderungen innerhalb des Repositorys'],['danger-full-access','Full access','Uneingeschränkter Agentenzugriff']] as const).map(([value,label,help]) => {
           const key = value === "read-only" ? "readOnly" : value === "workspace-write" ? "workspaceWrite" : "fullAccess";
-          const available = capabilities?.host?.sandbox[key].available ?? true;
+          const available = capabilities?.host?.sandbox[key].available === true;
+          const reason = capabilities?.host?.sandbox[key].reason;
           return <button type="button" role="menuitemradio" aria-checked={sandboxMode === value} key={value} disabled={!available} onClick={() => {
             onAccessChange(value, approvalPolicy);
             setOpenMenu(null);
           }}>
             <span className="menu-selection-mark" aria-hidden="true">{sandboxMode === value ? "✓" : ""}</span>
-            <span className="menu-copy"><strong>{label}</strong><span>{available ? help : "Auf diesem Host nicht verfügbar"}</span></span>
+            <span className="menu-copy"><strong>{label}</strong><span>{available ? help : capabilitiesLoading ? "Capabilities werden geladen …" : reason ?? "Auf diesem Host nicht verfügbar"}</span></span>
           </button>;
         })}
         <div className="menu-separator" role="separator" />
         <p className="menu-heading">Freigaben</p>
         {(['untrusted','on-request','never'] as const).map((value) => (
-          <button type="button" role="menuitemradio" aria-checked={approvalPolicy === value} key={value} onClick={() => {
-            onAccessChange(sandboxMode, value);
+          <button type="button" role="menuitemradio" aria-checked={approvalPolicy === value} key={value} disabled={sandboxMode === null} onClick={() => {
+            if (sandboxMode !== null) onAccessChange(sandboxMode, value);
             setOpenMenu(null);
           }}>
             <span className="menu-selection-mark" aria-hidden="true">{approvalPolicy === value ? "✓" : ""}</span>

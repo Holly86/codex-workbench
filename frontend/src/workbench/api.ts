@@ -213,18 +213,24 @@ export async function startThread(
   approvalPolicy: ApprovalPolicy,
   capability: FullAccessCapability | null,
 ): Promise<ThreadView> {
+  const payload: Record<string, unknown> = {
+    repositoryId,
+    sandboxMode,
+    approvalPolicy,
+  };
+  if (sandboxMode === "danger-full-access") {
+    if (capability === null) {
+      throw new Error("Full Access erfordert eine gültige Bestätigung.");
+    }
+    payload.confirmationId = capability.confirmationId;
+    payload.fullAccessScopeId = capability.scopeId;
+  }
   return parseThreadBody(
     await requestJson(
       "/api/threads",
       {
         method: "POST",
-        body: JSON.stringify({
-          repositoryId,
-          sandboxMode,
-          approvalPolicy,
-          confirmationId: capability?.confirmationId ?? null,
-          fullAccessScopeId: capability?.scopeId ?? null,
-        }),
+        body: JSON.stringify(payload),
       },
       csrfToken,
     ),
@@ -239,17 +245,23 @@ export async function resumeThread(
   approvalPolicy: ApprovalPolicy,
   capability: FullAccessCapability | null,
 ): Promise<ThreadView> {
+  const payload: Record<string, unknown> = {
+    repositoryId,
+    sandboxMode,
+    approvalPolicy,
+  };
+  if (sandboxMode === "danger-full-access") {
+    if (capability === null) {
+      throw new Error("Full Access erfordert eine gültige Bestätigung.");
+    }
+    payload.confirmationId = capability.confirmationId;
+  }
   return parseThreadBody(
     await requestJson(
       `/api/threads/${encodeURIComponent(threadId)}/resume`,
       {
         method: "POST",
-        body: JSON.stringify({
-          repositoryId,
-          sandboxMode,
-          approvalPolicy,
-          confirmationId: capability?.confirmationId ?? null,
-        }),
+        body: JSON.stringify(payload),
       },
       csrfToken,
     ),
@@ -273,20 +285,23 @@ export async function startTurn(
   model: string | null,
   effort: string | null,
 ): Promise<void> {
+  const payload: Record<string, unknown> = {
+    message,
+    images,
+    sandboxMode,
+    approvalPolicy,
+    model,
+    effort,
+    idempotencyKey: crypto.randomUUID(),
+  };
+  if (sandboxMode === "danger-full-access" && confirmationId !== null) {
+    payload.confirmationId = confirmationId;
+  }
   await requestJson(
     `/api/threads/${encodeURIComponent(threadId)}/turns`,
     {
       method: "POST",
-      body: JSON.stringify({
-        message,
-        images,
-        sandboxMode,
-        approvalPolicy,
-        confirmationId,
-        model,
-        effort,
-        idempotencyKey: crypto.randomUUID(),
-      }),
+      body: JSON.stringify(payload),
     },
     csrfToken,
   );

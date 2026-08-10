@@ -1,0 +1,26 @@
+import type { SandboxMode, WorkbenchCapabilities } from "./types";
+
+export function sandboxAvailable(
+  capabilities: WorkbenchCapabilities | null,
+  mode: SandboxMode,
+): boolean {
+  const sandbox = capabilities?.host?.sandbox;
+  if (sandbox === undefined) return false;
+  if (mode === "read-only") return sandbox.readOnly.available;
+  if (mode === "workspace-write") return sandbox.workspaceWrite.available;
+  return sandbox.fullAccess.available;
+}
+
+export function resolveSafeSandboxMode(
+  capabilities: WorkbenchCapabilities,
+  preferred: SandboxMode | null,
+): SandboxMode | null {
+  if (
+    preferred !== null &&
+    preferred !== "danger-full-access" &&
+    sandboxAvailable(capabilities, preferred)
+  ) return preferred;
+  if (sandboxAvailable(capabilities, "workspace-write")) return "workspace-write";
+  if (sandboxAvailable(capabilities, "read-only")) return "read-only";
+  return null;
+}
