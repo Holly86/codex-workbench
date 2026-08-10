@@ -1203,7 +1203,19 @@ class WorkbenchRuntime:
             raise RuntimeUnavailableError("app-server startup is disabled")
         if not self.app_server_ready:
             raise RuntimeUnavailableError("app-server is not ready")
-        return await self.supervisor.client.call(method, params, owner=owner)
+        generation = self.supervisor.status.generation
+        try:
+            return await self.supervisor.client.call(method, params, owner=owner)
+        except AppServerRequestError as exc:
+            logger.warning(
+                "app_server_request_error",
+                extra={
+                    "method": method,
+                    "error_code": exc.code,
+                    "generation": generation,
+                },
+            )
+            raise
 
     async def _call_for_generation(
         self,
