@@ -416,3 +416,7 @@ def test_websocket_handshake_uses_same_session_and_origin_boundary(tmp_path: Pat
             snapshot = websocket.receive_json()
             assert snapshot["type"] == "connection.snapshot"
             assert snapshot["snapshot"]["connection"]["state"] == "disconnected"
+            websocket.send_json({"type": "disconnect"})
+            with pytest.raises(WebSocketDisconnect) as closed:
+                websocket.receive_json()
+            assert closed.value.code == 4400
