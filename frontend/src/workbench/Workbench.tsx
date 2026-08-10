@@ -8,6 +8,8 @@ import { Conversation } from "../components/Conversation";
 import { FullAccessDialog } from "../components/FullAccessDialog";
 import { HealthStatus } from "../components/HealthStatus";
 import { RepositorySidebar } from "../components/RepositorySidebar";
+import type { RepositoryAction } from "../components/RepositorySidebar";
+import { RepositoryTools } from "../components/RepositoryTools";
 import { UsagePanel } from "../components/UsagePanel";
 import {
   decideApproval,
@@ -20,6 +22,13 @@ import {
   resumeThread,
   startThread,
   startTurn,
+  cloneRepository,
+  createRepository,
+  gitAction,
+  githubCapability,
+  listJobs,
+  publishGithub,
+  updateRepository,
 } from "./api";
 import { useRealtime } from "./realtime";
 import type {
@@ -30,6 +39,8 @@ import type {
   ThreadView,
   UploadedImage,
   WorkbenchCapabilities,
+  GitHubCapability,
+  NativeJob,
 } from "./types";
 
 interface WorkbenchProps {
@@ -71,6 +82,11 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [threadsLoading, setThreadsLoading] = useState(false);
   const [operationPending, setOperationPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [repositoryAction, setRepositoryAction] = useState<RepositoryAction | null>(null);
+  const [actionRepository, setActionRepository] = useState<Repository | null>(null);
+  const [jobs, setJobs] = useState<NativeJob[]>([]);
+  const observedCloneJobs = useRef(new Set<string>());
+  const [github, setGithub] = useState<GitHubCapability | null>(null);
   const mainRef = useRef<HTMLElement>(null);
 
   const selectedRepository = repositories.find((item) => item.id === selectedRepositoryId) ?? null;
@@ -86,6 +102,12 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     }
     setError(caught instanceof Error ? caught.message : "Die Aktion ist fehlgeschlagen.");
   }, [onSessionExpired]);
+
+  const refreshRepositories = useCallback(async () => {
+    const values = await listRepositories();
+    setRepositories(values);
+    setSelectedRepositoryId((current) => current ?? values[0]?.id ?? null);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -103,6 +125,21 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       });
     return () => controller.abort();
   }, [handleError]);
+
+  useEffect(() => {
+    const refresh = () => void listJobs().then(setJobs).catch(handleError);
+    refresh();
+    const interval = window.setInterval(refresh, 1500);
+    return () => window.clearInterval(interval);
+  }, [handleError]);
+
+  useEffect(() => {
+    const completed = jobs.filter((job) => job.type === "git_clone" && job.status === "succeeded" && !observedCloneJobs.current.has(job.id));
+    if (completed.length > 0) {
+      completed.forEach((job) => observedCloneJobs.current.add(job.id));
+      void refreshRepositories().catch(handleError);
+    }
+  }, [jobs, refreshRepositories, handleError]);
 
   useEffect(() => {
     if (selectedRepositoryId === null) return;
@@ -123,10 +160,11 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     void readCapabilities(selectedRepositoryId).then((value) => {
       setCapabilities(value);
       const defaultModel = value.models.find((item) => item.isDefault) ?? value.models[0];
-      setModel((current) => current ?? defaultModel?.id ?? null);
-      setEffort((current) => current ?? defaultModel?.defaultReasoningEffort ?? null);
+      const repository = repositories.find((item) => item.id === selectedRepositoryId);
+      setModel(repository?.preferences.model ?? defaultModel?.id ?? null);
+      setEffort(repository?.preferences.effort ?? defaultModel?.defaultReasoningEffort ?? null);
     }).catch(handleError);
-  }, [selectedRepositoryId, realtime.processConnection, handleError]);
+  }, [selectedRepositoryId, realtime.processConnection, handleError, repositories]);
 
   useEffect(() => {
     if (realtime.connection !== "connected") return;
@@ -318,11 +356,23 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             onSelectRepository={selectRepository}
             onSelectThread={selectThread}
             onNewThread={requestNewThread}
+            onRepositoryAction={(action, repository) => {
+              if (action === "open" && repository) { selectRepository(repository.id); return; }
+              if (action === "new-thread" && repository) { selectRepository(repository.id); requestNewThread(); return; }
+              if (["fetch", "pull", "push"].includes(action) && repository) {
+                void gitAction(session.csrfToken, repository.id, action).then(() => listJobs().then(setJobs)).catch(handleError); return;
+              }
+              if (action === "github" && repository) {
+                void githubCapability(repository.id).then((value) => { if (value.webUrl) window.open(value.webUrl, "_blank", "noopener,noreferrer"); }).catch(handleError); return;
+              }
+              setActionRepository(repository); setRepositoryAction(action);
+              if (repository) void githubCapability(repository.id).then(setGithub).catch(handleError);
+            }}
           />
           <main className="conversation-column" id="conversation" tabIndex={-1} ref={mainRef}>
             <header className="thread-header">
               <div>
-                <p className="repository-crumb">{selectedRepository?.name ?? "Kein Repository gewählt"} / main</p>
+                <p className="repository-crumb">{selectedRepository?.name ?? "Kein Repository gewählt"}{selectedRepository ? ` · ${selectedRepository.status.detached ? "detached" : selectedRepository.status.branch ?? "no branch"}` : ""}{selectedRepository && !selectedRepository.status.clean ? ` · ${String(selectedRepository.status.staged + selectedRepository.status.modified + selectedRepository.status.untracked)} Änderungen${selectedRepository.status.ahead ? ` · ↑${String(selectedRepository.status.ahead)}` : ""}` : ""}</p>
                 <h2>{selectedThread?.name ?? (selectedThread?.preview || "Codex Conversation")}</h2>
               </div>
               <div className="thread-meta"><span>{capabilities?.models.find((item) => item.id === model)?.displayName ?? "Model"}</span><span>{working ? "Working" : "Ready"}</span><button type="button" aria-label="Thread-Menü" aria-haspopup="menu">…</button></div>
@@ -346,7 +396,10 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
               effort={effort}
               sandboxMode={sandboxMode}
               approvalPolicy={approvalPolicy}
-              onModelChange={(nextModel, nextEffort) => { setModel(nextModel); setEffort(nextEffort); }}
+              onModelChange={(nextModel, nextEffort) => {
+                setModel(nextModel); setEffort(nextEffort);
+                if (selectedRepositoryId) void updateRepository(session.csrfToken, selectedRepositoryId, { model: nextModel, effort: nextEffort }).then((updated) => setRepositories((current) => current.map((item) => item.id === updated.id ? updated : item))).catch(handleError);
+              }}
               onAccessChange={(nextSandbox, nextPolicy) => {
                 if (nextSandbox === "danger-full-access") requestFullAccessSelection(nextPolicy);
                 else { setSandboxMode(nextSandbox); setApprovalPolicy(nextPolicy); setCapability(null); }
@@ -377,6 +430,22 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
           catch (caught: unknown) { handleError(caught); }
         }}
       />
+      <RepositoryTools action={repositoryAction} repository={actionRepository} jobs={jobs} github={github} pending={operationPending} onClose={() => setRepositoryAction(null)} onSubmit={async (values) => {
+        setOperationPending(true); setError(null);
+        try {
+          if (repositoryAction === "create") await createRepository(session.csrfToken, String(values.name), Boolean(values.readme));
+          else if (repositoryAction === "clone") await cloneRepository(session.csrfToken, String(values.name), String(values.url));
+          else if (repositoryAction === "rename" && actionRepository) {
+            const updated = await updateRepository(session.csrfToken, actionRepository.id, { displayName: String(values.name) });
+            setRepositories((current) => current.map((item) => item.id === updated.id ? updated : item));
+          } else if (repositoryAction === "commit" && actionRepository) {
+            await gitAction(session.csrfToken, actionRepository.id, "add", { files: values.selected as string[] });
+            await gitAction(session.csrfToken, actionRepository.id, "commit", { message: String(values.message) });
+          } else if (repositoryAction === "branches" && actionRepository) await gitAction(session.csrfToken, actionRepository.id, values.branchOperation === "switch" ? "branch-switch" : "branch-create", { branch: String(values.branch) });
+          else if (repositoryAction === "publish" && actionRepository && github?.account) await publishGithub(session.csrfToken, actionRepository.id, { owner: github.account, name: String(values.name), visibility: values.visibility as "private" | "public", initialPush: true, publicConfirmation: values.visibility === "public" ? String(values.confirmation) : null });
+          await refreshRepositories(); setJobs(await listJobs()); setRepositoryAction(null);
+        } catch (caught) { handleError(caught); } finally { setOperationPending(false); }
+      }} />
     </>
   );
 }

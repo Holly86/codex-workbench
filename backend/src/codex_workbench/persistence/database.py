@@ -86,6 +86,19 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE repository_preferences (
+            repository_id TEXT PRIMARY KEY,
+            relative_path TEXT NOT NULL UNIQUE,
+            display_name TEXT,
+            model TEXT,
+            reasoning_effort TEXT,
+            updated_at INTEGER NOT NULL
+        );
+        """,
+    ),
 )
 
 

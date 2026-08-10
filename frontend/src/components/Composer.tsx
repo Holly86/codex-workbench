@@ -274,8 +274,8 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop, capabil
             onClick={() => setOpenMenu(openMenu === "access" ? null : "access")}>Access: {sandboxMode === "read-only" ? "Read only" : sandboxMode === "workspace-write" ? "Workspace" : "Full"} ▾</button>
           {openMenu === "access" ? <div className="composer-popover" role="menu"><p>Arbeitszugriff</p>
             {([['read-only','Read only','Lesen, nichts verändern'],['workspace-write','Workspace','Änderungen im Repository'],['danger-full-access','Full access','Uneingeschränkter Agentenzugriff']] as const).map(([value,label,help]) =>
-              <button type="button" role="menuitemradio" aria-checked={sandboxMode === value} key={value}
-                onClick={() => { onAccessChange(value, approvalPolicy); setOpenMenu(null); }}><strong>{label}</strong><span>{help}</span></button>)}
+              { const key = value === "read-only" ? "readOnly" : value === "workspace-write" ? "workspaceWrite" : "fullAccess"; const available = capabilities?.host?.sandbox[key].available ?? true; return <button type="button" role="menuitemradio" aria-checked={sandboxMode === value} key={value} disabled={!available} title={!available ? "Die lokale Linux-Sandbox wird vom Host-Kernel nicht unterstützt." : undefined}
+                onClick={() => { onAccessChange(value, approvalPolicy); setOpenMenu(null); }}><strong>{label}</strong><span>{available ? help : "Nicht verfügbar auf diesem Host"}</span></button>; })}
             <p>Approval</p>{(['untrusted','on-request','never'] as const).map((value) => <button type="button"
               role="menuitemradio" aria-checked={approvalPolicy === value} key={value}
               onClick={() => { onAccessChange(sandboxMode, value); setOpenMenu(null); }}>{value}</button>)}

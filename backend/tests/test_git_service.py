@@ -33,7 +33,9 @@ def test_repository_names_reject_traversal_and_injection(name: str) -> None:
         GitService.validate_name(name)
 
 
-@pytest.mark.parametrize("url", ["file:///tmp/repo", "/tmp/repo", "../repo", "-u", "http://host/repo"])
+@pytest.mark.parametrize(
+    "url", ["file:///tmp/repo", "/tmp/repo", "../repo", "-u", "http://host/repo"]
+)
 def test_clone_urls_reject_local_and_unsupported_values(url: str) -> None:
     with pytest.raises(ValueError):
         GitService.validate_clone_url(url)

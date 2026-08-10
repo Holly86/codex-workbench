@@ -78,6 +78,17 @@ docker-compose exec -T backend sh -c '
     printf "app_server_help=available\n"
     printf "uid=%s gid=%s\n" "$(id -u)" "$(id -g)"
     printf "HOME=%s\nCODEX_HOME=%s\n" "$HOME" "$CODEX_HOME"
+    arg0="$CODEX_HOME/tmp/arg0"
+    if [ -d "$arg0" ]; then
+        foreign=$(find "$arg0" -mindepth 1 -maxdepth 2 ! -user "$(id -u)" -print -quit 2>/dev/null || true)
+        if [ -n "$foreign" ]; then
+            printf "codex_arg0_temp_ownership=foreign_owner_detected\n"
+        else
+            printf "codex_arg0_temp_ownership=ok\n"
+        fi
+    else
+        printf "codex_arg0_temp_ownership=not_present\n"
+    fi
     for directory in /home/workbench/.codex /workspace /workspace/repositories /var/lib/codex-workbench /var/lib/codex-workbench/state /var/lib/codex-workbench/uploads /var/lib/codex-workbench/security /tmp; do
         readable=false
         writable=false

@@ -1,5 +1,10 @@
 # Codex Workbench
 
+The Workbench includes conversation-focused Codex controls, native Git status and operations,
+repository create/clone flows, capability-gated GitHub publication, reconnect-safe native jobs,
+and host-aware sandbox selection. Native repository operations do not start Codex turns or consume
+model tokens.
+
 Codex Workbench is a self-hosted, browser-based, single-user client for the official OpenAI Codex
 app-server. It runs Codex CLI 0.146.0 as one supervised backend child and provides a same-origin,
 authenticated conversation UI without exposing Codex authentication, raw protocol messages, or

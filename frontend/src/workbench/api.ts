@@ -9,6 +9,9 @@ import type {
   ThreadView,
   UploadedImage,
   WorkbenchCapabilities,
+  GitHubCapability,
+  GitStatus,
+  NativeJob,
 } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -81,7 +84,14 @@ function parseRepositories(value: unknown): Repository[] {
     if (!isRecord(entry) || typeof entry.id !== "string" || typeof entry.name !== "string") {
       return [];
     }
-    return [{ id: entry.id, name: entry.name }];
+    const status = isRecord(entry.status) ? entry.status : {
+      branch: null, detached: false, upstream: null, upstreamMissing: true, ahead: 0, behind: 0,
+      staged: 0, modified: 0, untracked: 0, conflicts: 0, clean: true, changes: [], observedAt: 0,
+    };
+    return [{ ...entry, directoryName: typeof entry.directoryName === "string" ? entry.directoryName : entry.name,
+      status, preferences: isRecord(entry.preferences) ? entry.preferences : { model: null, effort: null },
+      renameCapabilities: isRecord(entry.renameCapabilities) ? entry.renameCapabilities : { displayName: true, directory: false, remote: false },
+    } as unknown as Repository];
   });
 }
 
@@ -125,6 +135,62 @@ export async function readCapabilities(repositoryId: string): Promise<WorkbenchC
     throw new ApiError(502, "invalid_response", "Ungültige Capability-Antwort.", null);
   }
   return value as unknown as WorkbenchCapabilities;
+}
+
+export async function gitStatus(repositoryId: string): Promise<GitStatus> {
+  return requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/git/status`, { method: "GET" },
+  )) as unknown as GitStatus;
+}
+
+export async function gitAction(
+  csrfToken: string, repositoryId: string, action: string,
+  options: { files?: string[]; message?: string; branch?: string } = {},
+): Promise<Record<string, unknown>> {
+  return requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/git`,
+    { method: "POST", body: JSON.stringify({ action, files: options.files ?? [], message: options.message ?? null, branch: options.branch ?? null }) }, csrfToken,
+  ));
+}
+
+export async function createRepository(csrfToken: string, name: string, readme: boolean): Promise<void> {
+  await requestJson("/api/repositories/create", { method: "POST", body: JSON.stringify({ name, readme }) }, csrfToken);
+}
+
+export async function cloneRepository(csrfToken: string, name: string, url: string): Promise<NativeJob> {
+  return requireRecord(await requestJson("/api/repositories/clone", {
+    method: "POST", body: JSON.stringify({ name, url, readme: false }),
+  }, csrfToken)) as unknown as NativeJob;
+}
+
+export async function updateRepository(
+  csrfToken: string, repositoryId: string,
+  values: { displayName?: string | null; model?: string | null; effort?: string | null },
+): Promise<Repository> {
+  return requireRecord(await requestJson(`/api/repositories/${encodeURIComponent(repositoryId)}`, {
+    method: "PATCH", body: JSON.stringify(values),
+  }, csrfToken)) as unknown as Repository;
+}
+
+export async function listJobs(): Promise<NativeJob[]> {
+  const body = requireRecord(await requestJson("/api/jobs", { method: "GET" }));
+  return Array.isArray(body.jobs) ? body.jobs as NativeJob[] : [];
+}
+
+export async function githubCapability(repositoryId: string): Promise<GitHubCapability> {
+  return requireRecord(await requestJson(
+    `/api/github/capability?repositoryId=${encodeURIComponent(repositoryId)}`, { method: "GET" },
+  )) as unknown as GitHubCapability;
+}
+
+export async function publishGithub(
+  csrfToken: string, repositoryId: string,
+  values: { owner: string; name: string; visibility: "private" | "public"; initialPush: boolean; publicConfirmation: string | null },
+): Promise<NativeJob> {
+  return requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/github/publish`,
+    { method: "POST", body: JSON.stringify({ ...values, remote: "origin" }) }, csrfToken,
+  )) as unknown as NativeJob;
 }
 
 export async function listThreads(repositoryId: string, signal?: AbortSignal): Promise<ThreadView[]> {

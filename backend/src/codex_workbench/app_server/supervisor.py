@@ -113,9 +113,7 @@ async def check_codex_version(
     except OSError as exc:
         raise CodexVersionCheckError(VersionCheckReason.EXECUTION_FAILED) from exc
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=timeout_seconds
-        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
     except asyncio.CancelledError:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)

@@ -1,9 +1,25 @@
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Literal
 
 from codex_workbench.config import Settings
+
+_EXECUTABLE_FIXTURE_ROOT = Path(
+    tempfile.mkdtemp(prefix=".exec-fixtures-", dir=Path(__file__).parent)
+)
+atexit.register(shutil.rmtree, _EXECUTABLE_FIXTURE_ROOT, ignore_errors=True)
+
+
+def executable_fixture(name: str, body: str, *, executable: bool = True) -> Path:
+    """Create executable fixtures on the repository mount, not a potentially noexec /tmp."""
+    path = _EXECUTABLE_FIXTURE_ROOT / name
+    path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8", newline="\n")
+    path.chmod(0o700 if executable else 0o600)
+    return path
 
 
 def build_settings(

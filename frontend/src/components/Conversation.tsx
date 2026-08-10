@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ThreadItem, ThreadView } from "../workbench/types";
+import { CopyButton } from "./CopyButton";
 
 interface ConversationProps {
   thread: ThreadView | null;
@@ -62,10 +63,11 @@ function ConversationItem({ item }: { item: ThreadItem }) {
   if (item.type === "userMessage") {
     const text = item.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "";
     const images = item.content?.filter((part) => part.type === "image").length ?? 0;
-    return <article className="message user-message"><p>{text}</p>{images > 0 ? <span>{images} Bildanhang/-anhänge</span> : null}</article>;
+    return <article className="message user-message"><p>{text}</p>{images > 0 ? <span>{images} Bildanhang/-anhänge</span> : null}<div className="message-actions"><CopyButton text={text} label="Eigene Nachricht kopieren" /></div></article>;
   }
   if (item.type === "agentMessage") {
-    return <article className="message agent-message"><p>{item.text ?? ""}</p></article>;
+    const text = item.text ?? "";
+    return <article className="message agent-message"><RichText text={text} /><div className="message-actions"><CopyButton text={plainText(text)} label="Assistant-Antwort kopieren" /></div></article>;
   }
   if (item.type === "reasoning") {
     const summary = Array.isArray(item.summary) ? item.summary.join("\n") : item.summary;
@@ -76,8 +78,9 @@ function ConversationItem({ item }: { item: ThreadItem }) {
       <details className="activity-item" open={item.status === "inProgress"}>
         <summary>Befehl · {item.status ?? "Status unbekannt"}</summary>
         <code>{item.command ?? "Befehl nicht verfügbar"}</code>
+        <CopyButton text={item.command ?? ""} label="Befehl kopieren" />
         {item.cwdDisplay !== null && item.cwdDisplay !== undefined ? <span>Arbeitsbereich: {item.cwdDisplay}</span> : null}
-        {item.output ? <pre>{item.output}</pre> : null}
+        {item.output ? <div className="code-shell"><CopyButton text={item.output} label="Output kopieren" /><pre>{item.output}</pre></div> : null}
       </details>
     );
   }
@@ -85,7 +88,7 @@ function ConversationItem({ item }: { item: ThreadItem }) {
     return (
       <details className="activity-item" open>
         <summary>Dateiänderung · {item.status ?? "aktualisiert"}</summary>
-        {item.changes?.map((change, index) => <pre key={`${change.path ?? "file"}-${String(index)}`}>{change.path ?? "Datei"}\n{change.diff}</pre>)}
+        {item.changes?.map((change, index) => <div className="code-shell" key={`${change.path ?? "file"}-${String(index)}`}><CopyButton text={change.diff} label="Datei-Diff kopieren" /><pre>{change.path ?? "Datei"}\n{change.diff}</pre></div>)}
       </details>
     );
   }
@@ -93,4 +96,18 @@ function ConversationItem({ item }: { item: ThreadItem }) {
     return <article className="plan-item"><strong>Plan</strong>{item.text ? <p>{item.text}</p> : null}{item.plan && item.plan.length > 0 ? <ol>{item.plan.map((step, index) => <li key={`${step.step}-${String(index)}`}><span>{step.status}</span> {step.step}</li>)}</ol> : null}</article>;
   }
   return <article className="activity-item"><span>{item.type}</span>{item.text ? <p>{item.text}</p> : null}</article>;
+}
+
+function plainText(value: string): string {
+  return value.replace(/```[^\n]*\n([\s\S]*?)```/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
+}
+
+function RichText({ text }: { text: string }) {
+  const parts = text.split(/(```[^\n]*\n[\s\S]*?```)/g);
+  return <>{parts.map((part, index) => {
+    const match = /^```([^\n]*)\n([\s\S]*?)```$/.exec(part);
+    if (match === null) return <p key={String(index)}>{part}</p>;
+    const code = match[2] ?? "";
+    return <div className="code-shell" key={String(index)}>{match[1] ? <span className="code-language">{match[1]}</span> : null}<CopyButton text={code} label="Code kopieren" /><pre><code>{code}</code></pre></div>;
+  })}</>;
 }

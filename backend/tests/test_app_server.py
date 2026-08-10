@@ -28,7 +28,7 @@ from codex_workbench.app_server.transport import (
     SubprocessJsonlTransport,
 )
 from codex_workbench.config import Settings
-from tests.helpers import build_settings
+from tests.helpers import build_settings, executable_fixture
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "fake_codex.py"
 
@@ -43,10 +43,7 @@ _FIXTURE = Path(__file__).parent / "fixtures" / "fake_codex.py"
     ],
 )
 def test_version_parser_accepts_only_the_supported_cli_line(stdout: bytes) -> None:
-    assert (
-        parse_codex_version_output(stdout, b"", expected_version="0.146.0")
-        == "0.146.0"
-    )
+    assert parse_codex_version_output(stdout, b"", expected_version="0.146.0") == "0.146.0"
 
 
 @pytest.mark.parametrize(
@@ -78,10 +75,10 @@ def test_version_parser_fails_closed_with_a_safe_reason(
 
 
 def _version_probe(tmp_path: Path, body: str, *, executable: bool = True) -> Path:
-    probe = tmp_path / "codex-version-probe"
-    probe.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8", newline="\n")
-    probe.chmod(0o700 if executable else 0o600)
-    return probe
+    del tmp_path
+    return executable_fixture(
+        "codex-version-probe-" + str(abs(hash(body))), body, executable=executable
+    )
 
 
 async def _run_version_probe(path: Path, *, probe_timeout: float = 1.0) -> str:

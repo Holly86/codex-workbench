@@ -1,5 +1,14 @@
 # Architecture
 
+Native Git and GitHub operations use a closed, typed background-job registry owned by the backend.
+They never traverse the Codex app-server and remain active when browser or WebSocket subscribers
+disconnect. Repository identity deliberately separates a persistent Workbench display name from the
+filesystem directory and remote repository name; this release only permits display-name rename.
+
+Host sandbox availability is established by a practical startup probe. The browser receives only
+abstract mode availability, while the runtime independently rejects unavailable modes so a stale or
+malicious client cannot trigger a silent access escalation.
+
 ## Context and system boundary
 
 Codex Workbench owns browser interaction, single-user authentication, safe workspace selection,

@@ -4,7 +4,28 @@ export type ApprovalPolicy = "untrusted" | "on-request" | "never";
 export interface Repository {
   id: string;
   name: string;
-  branch?: string | null;
+  directoryName: string;
+  status: GitStatus;
+  preferences: { model: string | null; effort: string | null };
+  renameCapabilities: { displayName: boolean; directory: boolean; remote: boolean };
+}
+
+export interface GitChange { path: string; staged: boolean; kind: string }
+export interface GitStatus {
+  branch: string | null; detached: boolean; upstream: string | null; upstreamMissing: boolean;
+  ahead: number; behind: number; staged: number; modified: number; untracked: number;
+  conflicts: number; clean: boolean; changes: GitChange[]; observedAt: number;
+}
+export interface NativeJob {
+  id: string; repositoryId: string | null; repositoryName: string;
+  type: "git_clone" | "git_fetch" | "git_pull" | "git_push" | "github_publish";
+  status: "queued" | "running" | "succeeded" | "failed"; startedAt: number;
+  endedAt: number | null; exitCode: number | null; output: string; error: string | null;
+  command: string; durationMs: number | null;
+}
+export interface GitHubCapability {
+  available: boolean; authenticated: boolean; account?: string | null; reason?: string | null;
+  published?: boolean; remoteUrl?: string | null; webUrl?: string | null;
 }
 
 export interface ModelCapability {
@@ -22,6 +43,7 @@ export interface WorkbenchCapabilities {
   skills: Array<{ name: string; description: string; enabled: boolean }>;
   plugins: Array<{ id: string; name: string; installed: boolean; enabled: boolean }>;
   native: { models: boolean; skills: boolean; plugins: boolean; apps: boolean };
+  host?: { sandbox: Record<"workspaceWrite" | "readOnly" | "fullAccess", { available: boolean; reason: string | null }> };
 }
 
 export type ActivityState =
@@ -172,6 +194,7 @@ export interface Snapshot {
   threads: ThreadView[];
   pendingApprovals: Approval[];
   rateLimits: RateLimits;
+  jobs?: NativeJob[];
 }
 
 export interface FullAccessCapability {

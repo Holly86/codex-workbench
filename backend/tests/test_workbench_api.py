@@ -129,6 +129,21 @@ def test_thread_turn_stream_approval_usage_and_interrupt_flow(tmp_path: Path) ->
             assert "remainingQuota" not in usage
             approval_id = approval["id"]
 
+        # Closing the browser transport must not interrupt the backend-owned turn.
+        with client.websocket_connect(
+            "/ws/events", headers={"Origin": settings.canonical_public_origin}
+        ) as reconnected:
+            reconnected.send_json(
+                {
+                    "type": "subscribe",
+                    "csrfToken": headers["X-CSRF-Token"],
+                    "lastSequence": 0,
+                }
+            )
+            resumed_snapshot = reconnected.receive_json()["snapshot"]
+            assert resumed_snapshot["threads"][0]["activeTurnId"] is not None
+            assert resumed_snapshot["pendingApprovals"][0]["id"] == approval_id
+
         decision = client.post(
             f"/api/approvals/{approval_id}/decision",
             json={"decision": "decline"},

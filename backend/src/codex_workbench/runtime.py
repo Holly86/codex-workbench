@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
+from typing import cast
 
 from codex_workbench.app_server.protocol import ProtocolAdapter
 from codex_workbench.app_server.supervisor import AppServerSupervisor, ProcessState
@@ -20,6 +21,8 @@ from codex_workbench.domain.approvals import (
 from codex_workbench.domain.capabilities import FullAccessRegistry
 from codex_workbench.domain.projection import DomainProjection, ProjectedThread
 from codex_workbench.git_service import GitService
+from codex_workbench.host_capabilities import detect_sandbox_capabilities
+from codex_workbench.jobs import BackgroundJobRegistry
 from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference
 from codex_workbench.realtime.broker import RealtimeBroker
 from codex_workbench.repositories import RepositoryDiscovery, RepositorySummary
@@ -47,6 +50,8 @@ class WorkbenchRuntime:
             settings.repositories_root,
             output_limit=settings.max_command_output_bytes,
         )
+        self.jobs = BackgroundJobRegistry()
+        self.host_capabilities: JsonObject = {}
         self.broker = RealtimeBroker(
             history_size=settings.realtime_history_size,
             subscriber_queue_size=settings.realtime_client_queue_size,
@@ -84,6 +89,18 @@ class WorkbenchRuntime:
 
     async def start(self) -> None:
         await self.uploads.initialize()
+        # Protocol integration tests use a fake child and must not inherit unrelated host sandbox
+        # constraints. The detector itself has fixture coverage; deployed environments are probed.
+        if self.settings.environment == "test":
+            self.host_capabilities = {
+                "sandbox": {
+                    "workspaceWrite": {"available": True, "reason": None},
+                    "readOnly": {"available": True, "reason": None},
+                    "fullAccess": {"available": True, "reason": None},
+                }
+            }
+        else:
+            self.host_capabilities = await detect_sandbox_capabilities()
         if self.settings.app_server_start_enabled:
             await self.projection.connection_state("connecting", 0)
             await self.supervisor.start()
@@ -91,6 +108,7 @@ class WorkbenchRuntime:
             await self.projection.connection_state("disconnected", 0, "disabled")
 
     async def stop(self) -> None:
+        await self.jobs.stop()
         for task in self._approval_expiry_tasks.values():
             task.cancel()
         if self._approval_expiry_tasks:
@@ -100,6 +118,50 @@ class WorkbenchRuntime:
 
     async def list_repositories(self) -> tuple[RepositorySummary, ...]:
         return await self.repositories.list_repositories()
+
+    async def repository_browser_dict(self, summary: RepositorySummary) -> JsonObject:
+        preference = await asyncio.to_thread(self.metadata.repository_preferences, summary.id)
+        return {
+            "id": summary.id,
+            "name": (preference or {}).get("display_name") or summary.name,
+            "directoryName": summary.name,
+            "status": self._json_object(await self.git.status(summary.id)),
+            "preferences": {
+                "model": (preference or {}).get("model"),
+                "effort": (preference or {}).get("reasoning_effort"),
+            },
+            "renameCapabilities": {"displayName": True, "directory": False, "remote": False},
+        }
+
+    async def update_repository_preferences(
+        self,
+        repository_id: str,
+        *,
+        display_name: str | None,
+        model: str | None,
+        effort: str | None,
+    ) -> JsonObject:
+        summary, _path = await asyncio.to_thread(
+            self.repositories.resolve_repository_id, repository_id
+        )
+        if display_name is not None:
+            display_name = display_name.strip()
+            if (
+                not display_name
+                or len(display_name) > 80
+                or any(char in display_name for char in "\x00\r\n")
+            ):
+                raise ValueError("invalid display name")
+        await asyncio.to_thread(
+            self.metadata.upsert_repository_preferences,
+            repository_id,
+            summary.relative_path,
+            display_name=display_name,
+            model=model,
+            reasoning_effort=effort,
+            updated_at=int(time.time()),
+        )
+        return await self.repository_browser_dict(summary)
 
     def consume_mutation(self, session_id: str) -> RateLimitDecision:
         return self._mutation_limiter.consume(session_id)
@@ -199,6 +261,7 @@ class WorkbenchRuntime:
             "skills": skills,
             "plugins": plugins,
             "native": {"models": True, "skills": True, "plugins": True, "apps": False},
+            "host": self.host_capabilities,
         }
 
     async def list_threads(self, repository_id: str, session_id: str) -> tuple[JsonObject, ...]:
@@ -253,6 +316,7 @@ class WorkbenchRuntime:
         summary, path = await asyncio.to_thread(
             self.repositories.resolve_repository_id, repository_id
         )
+        self._require_sandbox_available(sandbox_mode)
         self.protocol.validate_permission_selection(sandbox_mode, approval_policy)
         if sandbox_mode == "danger-full-access":
             await self.full_access.consume(
@@ -309,6 +373,7 @@ class WorkbenchRuntime:
         summary, path = await asyncio.to_thread(
             self.repositories.resolve_repository_id, repository_id
         )
+        self._require_sandbox_available(sandbox_mode)
         self.protocol.validate_permission_selection(sandbox_mode, approval_policy)
         read = await self._call(
             "thread/read", {"threadId": thread_id, "includeTurns": False}, owner=session_id
@@ -416,6 +481,7 @@ class WorkbenchRuntime:
             )
             if path != thread.repository_path:
                 raise ValueError("thread repository changed")
+            self._require_sandbox_available(sandbox_mode)
             self.protocol.validate_permission_selection(sandbox_mode, approval_policy)
             activating_full_access = sandbox_mode == "danger-full-access" and (
                 thread.sandbox_mode != "danger-full-access"
@@ -550,9 +616,11 @@ class WorkbenchRuntime:
 
     async def snapshot(self, session_id: str) -> JsonObject:
         pending = await self.approvals.list_pending(session_id)
-        return self.projection.snapshot(
+        snapshot = self.projection.snapshot(
             session_id, tuple(record.browser_dict() for record in pending)
         )
+        snapshot["jobs"] = list(await self.jobs.list_for_session(session_id))
+        return snapshot
 
     async def invalidate_session(self, session_id: str) -> None:
         invalidated = await self.approvals.invalidate_session(session_id)
@@ -712,12 +780,30 @@ class WorkbenchRuntime:
         return value
 
     @staticmethod
+    def _json_object(value: dict[str, object]) -> JsonObject:
+        # GitService returns browser primitives only; this boundary keeps transport typing strict.
+        return cast(JsonObject, value)
+
+    @staticmethod
     def _array(value: JsonValue | None) -> list[JsonValue]:
         return value if isinstance(value, list) else []
 
     @staticmethod
     def _safe_string(value: JsonValue | None) -> str:
         return value if isinstance(value, str) else ""
+
+    def _require_sandbox_available(self, sandbox_mode: str) -> None:
+        key = {
+            "workspace-write": "workspaceWrite",
+            "read-only": "readOnly",
+            "danger-full-access": "fullAccess",
+        }.get(sandbox_mode)
+        if key is None:
+            return
+        sandbox = self.host_capabilities.get("sandbox")
+        capability = sandbox.get(key) if isinstance(sandbox, dict) else None
+        if isinstance(capability, dict) and capability.get("available") is False:
+            raise ValueError("sandbox mode is unavailable on this host")
 
     @staticmethod
     def _thread_cwd_matches(thread: JsonObject, repository_path: Path) -> bool:

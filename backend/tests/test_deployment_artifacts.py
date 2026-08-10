@@ -50,14 +50,9 @@ def test_backend_image_preserves_the_complete_pinned_codex_layout() -> None:
     )
     assert "COPY --from=codex-cli /usr/local/bin/codex" not in dockerfile
     assert "libstdc++6" in dockerfile
-    assert (
-        "ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex"
-        in dockerfile
-    )
+    assert "ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex" in dockerfile
     assert not re.search(r"@openai/codex@latest(?:\s|\"|$)", dockerfile)
-    verifier_call = (
-        '/usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"'
-    )
+    verifier_call = '/usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"'
     assert dockerfile.count(verifier_call) == 2
 
     for runtime_path in (

@@ -107,6 +107,141 @@ class GitService:
             display=("clone", "--", self.redact_url(safe_url), name),
         )
 
+    async def status(self, repository_id: str) -> dict[str, object]:
+        result = await self.run(repository_id, "status")
+        branch: str | None = None
+        upstream: str | None = None
+        ahead = behind = staged = modified = untracked = conflicts = 0
+        detached = False
+        changes: list[dict[str, object]] = []
+        for line in result.output.splitlines():
+            if line.startswith("# branch.head "):
+                value = line.removeprefix("# branch.head ")
+                detached = value == "(detached)"
+                branch = None if detached else value
+            elif line.startswith("# branch.upstream "):
+                upstream = line.removeprefix("# branch.upstream ")
+            elif line.startswith("# branch.ab "):
+                match = re.fullmatch(r"# branch\.ab \+(\d+) -(\d+)", line)
+                if match:
+                    ahead, behind = int(match.group(1)), int(match.group(2))
+            elif line.startswith("? "):
+                untracked += 1
+                changes.append({"path": line[2:], "staged": False, "kind": "untracked"})
+            elif line.startswith(("1 ", "2 ", "u ")):
+                parts = line.split(" ")
+                xy = parts[1] if len(parts) > 1 else ".."
+                path = parts[-1] if parts else ""
+                is_conflict = line.startswith("u ") or "U" in xy
+                conflicts += int(is_conflict)
+                staged += int(xy[0] not in {".", "?"})
+                modified += int(xy[1] not in {".", "?"})
+                changes.append(
+                    {
+                        "path": path,
+                        "staged": xy[0] not in {".", "?"},
+                        "kind": "conflict" if is_conflict else "modified",
+                    }
+                )
+        return {
+            "branch": branch,
+            "detached": detached,
+            "upstream": upstream,
+            "upstreamMissing": upstream is None,
+            "ahead": ahead,
+            "behind": behind,
+            "staged": staged,
+            "modified": modified,
+            "untracked": untracked,
+            "conflicts": conflicts,
+            "clean": not changes,
+            "changes": changes,
+            "observedAt": int(time.time()),
+        }
+
+    async def github_capability(self, repository_id: str | None = None) -> dict[str, object]:
+        executable = shutil.which("gh")
+        if executable is None:
+            return {"available": False, "authenticated": False, "reason": "gh_not_installed"}
+        account: str | None = None
+        try:
+            probe = await self._execute_external(
+                (executable, "api", "user", "--jq", ".login"), timeout_seconds=10
+            )
+            if probe.exit_code == 0:
+                candidate = probe.output.strip()
+                if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", candidate):
+                    account = candidate
+        except GitOperationError:
+            pass
+        remote_url: str | None = None
+        web_url: str | None = None
+        published = False
+        if repository_id is not None:
+            result = await self.run(repository_id, "remotes")
+            for line in result.output.splitlines():
+                fields = line.split()
+                if len(fields) >= 3 and fields[0] == "origin" and fields[2] == "(fetch)":
+                    remote_url = self.redact_url(fields[1])
+                    web_url = self.github_web_url(remote_url)
+                    published = web_url is not None
+                    break
+        return {
+            "available": True,
+            "authenticated": account is not None,
+            "account": account,
+            "reason": None if account else "gh_not_authenticated",
+            "published": published,
+            "remoteUrl": remote_url,
+            "webUrl": web_url,
+        }
+
+    async def publish_github(
+        self,
+        repository_id: str,
+        *,
+        owner: str,
+        name: str,
+        visibility: str,
+        remote: str,
+        initial_push: bool,
+        public_confirmation: str | None,
+    ) -> GitResult:
+        if visibility not in {"private", "public"}:
+            raise ValueError("invalid visibility")
+        self.validate_name(name)
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", owner):
+            raise ValueError("invalid owner")
+        if remote != "origin":
+            raise ValueError("unsupported remote")
+        if visibility == "public" and public_confirmation != name:
+            raise ValueError("public confirmation does not match")
+        capability = await self.github_capability(repository_id)
+        if capability.get("authenticated") is not True or capability.get("account") != owner:
+            raise GitOperationError("GitHub is not authenticated")
+        executable = shutil.which("gh")
+        if executable is None:
+            raise GitOperationError("GitHub CLI is unavailable")
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        args = [
+            executable,
+            "repo",
+            "create",
+            f"{owner}/{name}",
+            f"--{visibility}",
+            "--source",
+            ".",
+            "--remote",
+            remote,
+        ]
+        if initial_push:
+            args.append("--push")
+        lock = self._locks.setdefault(repository_id, asyncio.Lock())
+        async with lock:
+            return await self._execute_external(tuple(args), cwd=cwd, timeout_seconds=120)
+
     @staticmethod
     def validate_name(name: str) -> None:
         if not _REPOSITORY_NAME.fullmatch(name) or name in {".", ".."} or name.endswith(".git"):
@@ -135,13 +270,17 @@ class GitService:
             return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
         return re.sub(r"^[^@\s]+@", "", value)
 
-    def github_capability(self) -> dict[str, object]:
-        executable = shutil.which("gh")
-        return {
-            "available": executable is not None,
-            "authenticated": False,
-            "reason": "authentication_not_probed" if executable else "gh_not_installed",
-        }
+    @staticmethod
+    def github_web_url(value: str) -> str | None:
+        parsed = urlsplit(value)
+        if parsed.hostname == "github.com":
+            path = parsed.path.removesuffix(".git").strip("/")
+        else:
+            match = re.fullmatch(r"(?:[^@]+@)?github\.com:([^\s]+?)(?:\.git)?", value)
+            path = match.group(1) if match else ""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", path):
+            return None
+        return f"https://github.com/{path}"
 
     def _arguments(
         self, action: str, *, files: tuple[str, ...], message: str | None, branch: str | None
@@ -231,6 +370,40 @@ class GitService:
         shown = display or args
         return GitResult(
             "git " + " ".join(shown),
+            process.returncode or 0,
+            safe_output,
+            round((time.monotonic() - started) * 1000),
+            truncated,
+        )
+
+    async def _execute_external(
+        self, args: tuple[str, ...], *, cwd: Path | None = None, timeout_seconds: float
+    ) -> GitResult:
+        started = time.monotonic()
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=cwd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                "GIT_TERMINAL_PROMPT": "0",
+            },
+        )
+        try:
+            output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            raise GitOperationError("native operation timed out") from None
+        truncated = len(output) > self._output_limit
+        safe_output = output[: self._output_limit].decode("utf-8", errors="replace")
+        display = "gh " + " ".join(args[2:]) if Path(args[0]).name == "gh" else Path(args[0]).name
+        return GitResult(
+            display,
             process.returncode or 0,
             safe_output,
             round((time.monotonic() - started) * 1000),

@@ -125,6 +125,55 @@ class MetadataRepository:
             for row in rows
         )
 
+    def repository_preferences(self, repository_id: str) -> dict[str, str | None] | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT relative_path, display_name, model, reasoning_effort "
+                "FROM repository_preferences WHERE repository_id = ?",
+                (repository_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "relative_path": cast(str, row["relative_path"]),
+            "display_name": cast(str | None, row["display_name"]),
+            "model": cast(str | None, row["model"]),
+            "reasoning_effort": cast(str | None, row["reasoning_effort"]),
+        }
+
+    def upsert_repository_preferences(
+        self,
+        repository_id: str,
+        relative_path: str,
+        *,
+        display_name: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        updated_at: int,
+    ) -> None:
+        with self._database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO repository_preferences(
+                    repository_id, relative_path, display_name, model, reasoning_effort, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repository_id) DO UPDATE SET
+                    relative_path = excluded.relative_path,
+                    display_name = excluded.display_name,
+                    model = excluded.model,
+                    reasoning_effort = excluded.reasoning_effort,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    repository_id,
+                    relative_path,
+                    display_name,
+                    model,
+                    reasoning_effort,
+                    updated_at,
+                ),
+            )
+
     def create_upload(self, record: UploadRecord) -> None:
         with self._database.connect() as connection:
             connection.execute(

@@ -165,6 +165,13 @@ bound runtime/output, validate relative file/ref/remote inputs, redact URL crede
 mutations. They use the existing session, exact Origin, CSRF, JSON-content and mutation-rate-limit
 boundary and never call app-server or create a model turn.
 
+Long native mutations use a closed job registry with only `git_clone`, `git_fetch`, `git_pull`,
+`git_push`, and `github_publish`. Jobs retain their server-side task when browser subscriptions
+disconnect; there is no browser-supplied executable, argument vector, environment, cwd, or cancel
+primitive. GitHub public publication additionally requires an exact repository-name confirmation
+validated by the backend. Repository rename changes only Workbench display metadata; directory and
+remote identity never change implicitly.
+
 ## Secret handling and logging
 
 The Codex-home mount is visible only to the backend container and app-server child. It is never

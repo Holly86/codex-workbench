@@ -502,3 +502,12 @@ Nebenwirkung eines Workbench-Rollbacks erfolgen.
   Abgelaufene Dateien können daher bis zum nächsten dieser Ereignisse liegen bleiben.
 - Tatsächliche linux/amd64-, seccomp/Landlock-, Netzwerk-, Health-, Recreate- und Last-Eigenschaften
   können erst auf der DS918+ freigegeben werden. Der verbindliche Ablauf steht im Testplan.
+# Codex arg0 Temp-Hygiene
+
+Workbench und Codex dürfen niemals als root gestartet werden. Fremde Eigentümer unter
+`CODEX_HOME/tmp/arg0` können bereits bei `codex --version` eine stderr-Warnung erzeugen; die
+Readiness-Prüfung weist dies absichtlich zurück. Installer und Diagnose melden diesen Zustand,
+ändern ihn aber nicht. Eine Reparatur darf ausschließlich den flüchtigen Bereich
+`CODEX_HOME/tmp/arg0` betreffen und muss auf dem Host mit der konfigurierten Workbench-UID/GID
+erfolgen. Ein rekursives `chown` über das gesamte `CODEX_HOME` ist ausdrücklich unzulässig, weil
+dort Authentifizierung, Konfiguration und Threaddaten liegen.

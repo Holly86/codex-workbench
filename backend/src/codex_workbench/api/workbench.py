@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from http import HTTPStatus
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +16,8 @@ from codex_workbench.app_server.protocol import (
     SUPPORTED_SANDBOX_MODES,
 )
 from codex_workbench.domain.capabilities import FullAccessConfirmationError
+from codex_workbench.git_service import GitOperationError
+from codex_workbench.jobs import JobType
 from codex_workbench.runtime import (
     RuntimeConflictError,
     RuntimeUnavailableError,
@@ -109,6 +111,21 @@ class RepositoryCloneRequest(RepositoryCreateRequest):
     url: Annotated[str, Field(min_length=1, max_length=2048)]
 
 
+class RepositoryPreferencesRequest(StrictModel):
+    displayName: Annotated[str | None, Field(max_length=80)] = None
+    model: Annotated[str | None, Field(max_length=200)] = None
+    effort: Annotated[str | None, Field(pattern=r"^(none|minimal|low|medium|high|xhigh)$")] = None
+
+
+class GitHubPublishRequest(StrictModel):
+    owner: Annotated[str, Field(min_length=1, max_length=39)]
+    name: Annotated[str, Field(min_length=1, max_length=64)]
+    visibility: Literal["private", "public"] = "private"
+    remote: Literal["origin"] = "origin"
+    initialPush: bool = True
+    publicConfirmation: Annotated[str | None, Field(max_length=64)] = None
+
+
 def _runtime(request: Request) -> WorkbenchRuntime:
     runtime = getattr(request.app.state, "runtime", None)
     if not isinstance(runtime, WorkbenchRuntime):
@@ -144,6 +161,12 @@ def _safe_error(exc: BaseException) -> JSONResponse:
         )
     if isinstance(exc, RuntimeConflictError):
         return api_error(HTTPStatus.CONFLICT, "operation_conflict", str(exc))
+    if isinstance(exc, GitOperationError):
+        return api_error(
+            HTTPStatus.BAD_GATEWAY,
+            "native_operation_failed",
+            "Die native Git- oder GitHub-Operation ist fehlgeschlagen.",
+        )
     if isinstance(exc, FullAccessConfirmationError):
         return api_error(
             HTTPStatus.FORBIDDEN,
@@ -168,7 +191,13 @@ async def repositories(request: Request) -> JSONResponse:
     try:
         values = await _runtime(request).list_repositories()
         return JSONResponse(
-            {"repositories": [{"id": item.id, "name": item.name} for item in values]}
+            {
+                "repositories": list(
+                    await asyncio.gather(
+                        *(_runtime(request).repository_browser_dict(item) for item in values)
+                    )
+                )
+            }
         )
     except Exception as exc:
         return _safe_error(exc)
@@ -185,10 +214,10 @@ async def capabilities(request: Request, repositoryId: str | None = None) -> JSO
 
 
 @router.get("/github/capability")
-async def github_capability(request: Request) -> JSONResponse:
+async def github_capability(request: Request, repositoryId: str | None = None) -> JSONResponse:
     try:
         _session(request)
-        return JSONResponse(_runtime(request).git.github_capability())
+        return JSONResponse(await _runtime(request).git.github_capability(repositoryId))
     except Exception as exc:
         return _safe_error(exc)
 
@@ -213,8 +242,14 @@ async def clone_repository(payload: RepositoryCloneRequest, request: Request) ->
     if limited is not None:
         return limited
     try:
-        result = await runtime.git.clone(payload.name, payload.url)
-        return JSONResponse(result.browser_dict(), status_code=HTTPStatus.CREATED)
+        job = await runtime.jobs.start(
+            owner_session_id=session.id,
+            repository_id=None,
+            repository_name=payload.name,
+            job_type="git_clone",
+            operation=lambda: runtime.git.clone(payload.name, payload.url),
+        )
+        return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
     except Exception as exc:
         return _safe_error(exc)
 
@@ -228,6 +263,18 @@ async def git_operation(
     if limited is not None:
         return limited
     try:
+        if payload.action in {"fetch", "pull", "push"}:
+            summary, _path = await asyncio.to_thread(
+                runtime.repositories.resolve_repository_id, repository_id
+            )
+            job = await runtime.jobs.start(
+                owner_session_id=session.id,
+                repository_id=repository_id,
+                repository_name=summary.name,
+                job_type=cast(JobType, f"git_{payload.action}"),
+                operation=lambda: runtime.git.run(repository_id, payload.action),
+            )
+            return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
         result = await runtime.git.run(
             repository_id,
             payload.action,
@@ -236,6 +283,79 @@ async def git_operation(
             branch=payload.branch,
         )
         return JSONResponse(result.browser_dict())
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.get("/repositories/{repository_id}/git/status")
+async def git_status(repository_id: str, request: Request) -> JSONResponse:
+    try:
+        _session(request)
+        return JSONResponse(await _runtime(request).git.status(repository_id))
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.patch("/repositories/{repository_id}")
+async def update_repository(
+    repository_id: str, payload: RepositoryPreferencesRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            await runtime.update_repository_preferences(
+                repository_id,
+                display_name=payload.displayName,
+                model=payload.model,
+                effort=payload.effort,
+            )
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.get("/jobs")
+async def jobs(request: Request) -> JSONResponse:
+    try:
+        session = _session(request)
+        return JSONResponse(
+            {"jobs": list(await _runtime(request).jobs.list_for_session(session.id))}
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/{repository_id}/github/publish")
+async def publish_github(
+    repository_id: str, payload: GitHubPublishRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        summary, _path = await asyncio.to_thread(
+            runtime.repositories.resolve_repository_id, repository_id
+        )
+        job = await runtime.jobs.start(
+            owner_session_id=session.id,
+            repository_id=repository_id,
+            repository_name=summary.name,
+            job_type="github_publish",
+            operation=lambda: runtime.git.publish_github(
+                repository_id,
+                owner=payload.owner,
+                name=payload.name,
+                visibility=payload.visibility,
+                remote=payload.remote,
+                initial_push=payload.initialPush,
+                public_confirmation=payload.publicConfirmation,
+            ),
+        )
+        return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
     except Exception as exc:
         return _safe_error(exc)
 

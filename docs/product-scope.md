@@ -23,6 +23,8 @@ The completed “Managed App Server, Streaming and Permissions” vertical slice
 - private, validated multi-image uploads and official `localImage` turn inputs;
 - native model/reasoning discovery and turn overrides, path-free skills/plugin discovery;
 - bounded native Git operations and validated local repository creation/clone without Codex turns;
+- structured Git status, closed background Git jobs, commit/branch/repository dialogs, safe display
+  names, capability-gated GitHub publication, clipboard actions and host-sandbox capability UX;
 - a responsive conversation-first React UI with all authentication, empty, loading, failure,
   reconnect, approval, streaming, upload, and session-expired states;
 - non-root Compose artifacts, read-only image roots, persistent targeted mounts, limits, and probes;

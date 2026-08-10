@@ -597,6 +597,15 @@ notice "Codex-Home Eigentümer: $codex_owner; Workspace Eigentümer: $workspace_
     || fail "Codex-Home muss $puid:$pgid gehören; der Installer ändert es nicht."
 [ "$workspace_owner" = "$puid:$pgid" ] \
     || fail "Workspace muss $puid:$pgid gehören; der Installer ändert ihn nicht."
+codex_arg0="$codex_home/tmp/arg0"
+if [ -d "$codex_arg0" ]; then
+    foreign_arg0=$(find "$codex_arg0" -mindepth 1 -maxdepth 2 ! -user "$puid" -print -quit 2>/dev/null || true)
+    if [ -n "$foreign_arg0" ]; then
+        notice "Codex-Temp-Hygiene: Unter CODEX_HOME/tmp/arg0 existieren Einträge mit fremdem Eigentümer. Der Installer ändert sie nicht. Reparatur ausschließlich für diesen Tempbereich durchführen."
+    else
+        status "Codex-Temp-Hygiene: arg0-Eigentümer sind konsistent."
+    fi
+fi
 
 command -v docker >/dev/null 2>&1 \
     || fail "Docker ist nicht verfügbar; backend-net kann nicht geprüft werden."

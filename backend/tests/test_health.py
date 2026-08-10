@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from codex_workbench.config import Settings
 from codex_workbench.main import create_app
 from codex_workbench.runtime import WorkbenchRuntime
-from tests.helpers import build_settings
+from tests.helpers import build_settings, executable_fixture
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "fake_codex.py"
 
@@ -79,13 +79,7 @@ def test_readiness_is_200_after_supported_app_server_initializes(tmp_path: Path)
 
 
 def test_readiness_is_503_after_version_check_fails(tmp_path: Path) -> None:
-    incompatible = tmp_path / "incompatible-codex"
-    incompatible.write_text(
-        "#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.147.0'\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    incompatible.chmod(0o700)
+    incompatible = executable_fixture("incompatible-codex", "printf '%s\\n' 'codex-cli 0.147.0'")
     app = create_app(_app_server_settings(tmp_path, incompatible))
     with TestClient(app) as client:
         response = client.get("/api/health/ready")
@@ -106,9 +100,7 @@ def test_production_exposes_health_but_not_api_schema(tmp_path: Path) -> None:
             "X-Forwarded-Host": settings.public_authority,
             "X-Forwarded-Proto": settings.public_scheme,
         }
-        unauthenticated_schema_response = client.get(
-            "/api/openapi.json", headers=proxy_headers
-        )
+        unauthenticated_schema_response = client.get("/api/openapi.json", headers=proxy_headers)
         client.post(
             "/api/auth/setup",
             json={"password": "correct horse battery staple"},
