@@ -171,8 +171,8 @@ function AuthPage({ children }: { children: ReactNode }) {
   return (
     <main className="auth-page">
       <div className="auth-brand">
-        <p className="eyebrow">Local agent workspace</p>
-        <h1>Codex Workbench</h1>
+        <img className="auth-logo" src="/brand/codex-workbench-logo.png" alt="" />
+        <h1 className="sr-only">Codex Workbench</h1>
       </div>
       {children}
     </main>

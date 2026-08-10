@@ -25,6 +25,9 @@ class ReconciliationMetadata:
     def upsert_thread(self, reference: ThreadReference) -> None:
         self.upserts.append(reference)
 
+    def repository_registration_state(self, _repository_id: str) -> str | None:
+        return None
+
 
 @pytest.mark.asyncio
 async def test_stale_thread_is_isolated_and_warning_is_deduplicated(

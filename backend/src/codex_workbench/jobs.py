@@ -63,6 +63,7 @@ class BackgroundJobRegistry:
         self._update_handler = update_handler
         self._jobs: dict[str, BackgroundJob] = {}
         self._tasks: set[asyncio.Task[None]] = set()
+        self._blocked_repositories: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def start(
@@ -84,6 +85,8 @@ class BackgroundJobRegistry:
             started_at=int(time.time()),
         )
         async with self._lock:
+            if repository_id is not None and repository_id in self._blocked_repositories:
+                raise RuntimeError("repository operations are temporarily blocked")
             self._jobs[job.id] = job
             self._trim()
         await self._notify(job)
@@ -97,6 +100,29 @@ class BackgroundJobRegistry:
             values = [job for job in self._jobs.values() if job.owner_session_id == session_id]
         values.sort(key=lambda job: job.started_at, reverse=True)
         return tuple(job.browser_dict() for job in values)
+
+    async def has_active_repository_job(self, repository_id: str) -> bool:
+        async with self._lock:
+            return any(
+                job.repository_id == repository_id and job.status in {"queued", "running"}
+                for job in self._jobs.values()
+            )
+
+    async def reserve_repository_removal(self, repository_id: str) -> bool:
+        async with self._lock:
+            if repository_id in self._blocked_repositories:
+                return False
+            if any(
+                job.repository_id == repository_id and job.status in {"queued", "running"}
+                for job in self._jobs.values()
+            ):
+                return False
+            self._blocked_repositories.add(repository_id)
+            return True
+
+    async def release_repository_removal(self, repository_id: str) -> None:
+        async with self._lock:
+            self._blocked_repositories.discard(repository_id)
 
     async def stop(self) -> None:
         # Application shutdown is the only lifecycle boundary allowed to cancel jobs.

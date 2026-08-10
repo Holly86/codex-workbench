@@ -99,6 +99,17 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
         );
         """,
     ),
+    (
+        4,
+        """
+        CREATE TABLE repository_registrations (
+            repository_id TEXT PRIMARY KEY,
+            relative_path TEXT NOT NULL UNIQUE,
+            state TEXT NOT NULL CHECK(state IN ('removed', 'deleted')),
+            updated_at INTEGER NOT NULL
+        );
+        """,
+    ),
 )
 
 

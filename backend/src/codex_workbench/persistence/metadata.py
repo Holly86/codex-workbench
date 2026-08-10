@@ -125,6 +125,51 @@ class MetadataRepository:
             for row in rows
         )
 
+    def list_repository_threads(self, repository_id: str) -> tuple[ThreadReference, ...]:
+        return tuple(
+            reference for reference in self.list_threads()
+            if reference.repository_id == repository_id
+        )
+
+    def delete_thread(self, thread_id: str) -> None:
+        with self._database.connect() as connection:
+            connection.execute("DELETE FROM workbench_threads WHERE thread_id = ?", (thread_id,))
+
+    def hidden_repository_ids(self) -> frozenset[str]:
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT repository_id FROM repository_registrations"
+            ).fetchall()
+        return frozenset(cast(str, row[0]) for row in rows)
+
+    def repository_registration_state(self, repository_id: str) -> str | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT state FROM repository_registrations WHERE repository_id = ?",
+                (repository_id,),
+            ).fetchone()
+        return None if row is None else cast(str, row[0])
+
+    def mark_repository_unavailable(
+        self, repository_id: str, relative_path: str, *, state: str, updated_at: int
+    ) -> None:
+        if state not in {"removed", "deleted"}:
+            raise ValueError("invalid repository registration state")
+        with self._database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO repository_registrations(
+                    repository_id, relative_path, state, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(repository_id) DO UPDATE SET
+                    relative_path = excluded.relative_path,
+                    state = excluded.state,
+                    updated_at = excluded.updated_at
+                """,
+                (repository_id, relative_path, state, updated_at),
+            )
+
     def repository_preferences(self, repository_id: str) -> dict[str, str | None] | None:
         with self._database.connect() as connection:
             row = connection.execute(

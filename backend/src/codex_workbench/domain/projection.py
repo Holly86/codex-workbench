@@ -42,6 +42,7 @@ class ProjectedThread:
     turns: list[ProjectedTurn] = field(default_factory=list)
     usage: JsonObject | None = None
     latest_diff: str | None = None
+    repository_available: bool = True
 
 
 class DomainProjection:
@@ -72,6 +73,7 @@ class DomainProjection:
         session_id: str,
         sandbox_mode: str,
         approval_policy: str,
+        repository_available: bool = True,
     ) -> ProjectedThread:
         thread_id = self._required_string(raw_thread, "id")
         now = int(time.time())
@@ -92,6 +94,7 @@ class DomainProjection:
             created_at=created,
             updated_at=updated,
             turns=self._project_turns(raw_thread.get("turns"), repository_path),
+            repository_available=repository_available,
         )
         for turn in projection.turns:
             if turn.status == "inProgress":
@@ -103,6 +106,11 @@ class DomainProjection:
                 projection.active_turn_id = existing.active_turn_id
                 projection.usage = existing.usage
             self._threads[thread_id] = projection
+        self._activity.reconcile(
+            thread_id,
+            active=projection.active_turn_id is not None,
+            status=projection.status,
+        )
         await asyncio.to_thread(
             self._metadata.upsert_thread,
             ThreadReference(
@@ -283,14 +291,6 @@ class DomainProjection:
         payload: JsonObject = {"state": state, "generation": generation, "message": message}
         self._connection = payload
         for thread in tuple(self._threads.values()):
-            if state in {"reconnecting", "failed", "disconnected"}:
-                activity = self._activity.reconnecting(thread.id)
-                await self.broker.publish(
-                    thread.session_id,
-                    "activity.updated",
-                    self._activity_browser_dict(activity, thread.repository_path),
-                    thread_id=thread.id,
-                )
             await self.broker.publish(thread.session_id, "connection.state", payload)
 
     def snapshot(self, session_id: str, pending_approvals: tuple[JsonObject, ...]) -> JsonObject:
@@ -306,6 +306,20 @@ class DomainProjection:
                 session_id, {"available": False, "observedAt": int(time.time())}
             ),
         }
+
+    def repository_has_active_turn(self, repository_id: str) -> bool:
+        return any(
+            thread.repository_id == repository_id and thread.active_turn_id is not None
+            for thread in self._threads.values()
+        )
+
+    def forget_thread(self, thread_id: str) -> None:
+        self._threads.pop(thread_id, None)
+
+    def mark_repository_unavailable(self, repository_id: str) -> None:
+        for thread in self._threads.values():
+            if thread.repository_id == repository_id:
+                thread.repository_available = False
 
     def thread_browser_dict(self, thread: ProjectedThread) -> JsonObject:
         turns: list[JsonValue] = []
@@ -332,6 +346,7 @@ class DomainProjection:
                 self._activity.snapshot(thread.id), thread.repository_path
             ),
             "latestDiff": thread.latest_diff,
+            "repositoryAvailable": thread.repository_available,
         }
 
     def require_thread(self, thread_id: str) -> ProjectedThread:
@@ -501,6 +516,10 @@ class DomainProjection:
         elif method == "thread/status/changed":
             thread.status = self._thread_status(params.get("status"))
             return "thread.status", {"status": thread.status}
+        elif method == "thread/name/updated":
+            thread.name = self._optional_text(params.get("threadName"), 200)
+            thread.updated_at = int(time.time())
+            return "thread.name", {"name": thread.name}
         elif method == "thread/compacted":
             return "context.compacted", {"status": "completed"}
         return "compatibility.unknown", {"protocolMethod": method}

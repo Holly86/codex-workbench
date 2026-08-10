@@ -143,7 +143,107 @@ class WorkbenchRuntime:
         await self.supervisor.stop()
 
     async def list_repositories(self) -> tuple[RepositorySummary, ...]:
-        return await self.repositories.list_repositories()
+        repositories = await self.repositories.list_repositories()
+        hidden = await asyncio.to_thread(self.metadata.hidden_repository_ids)
+        return tuple(repository for repository in repositories if repository.id not in hidden)
+
+    async def repository_removal_preview(
+        self, repository_id: str, session_id: str
+    ) -> JsonObject:
+        summary, _path = await asyncio.to_thread(
+            self.repositories.resolve_repository_id, repository_id
+        )
+        status = await self.git.status(repository_id)
+        references = await asyncio.to_thread(
+            self.metadata.list_repository_threads, repository_id
+        )
+        blockers: list[JsonValue] = []
+        if references:
+            await self._reconcile()
+            if any(reference.thread_id in self._unavailable_threads for reference in references):
+                blockers.append("turn_state_unknown")
+        if self.projection.repository_has_active_turn(repository_id):
+            blockers.append("active_turn")
+        if await self.jobs.has_active_repository_job(repository_id):
+            blockers.append("active_job")
+        dirty = not bool(status.get("clean", False))
+        return {
+            "repositoryId": summary.id,
+            "repositoryName": summary.name,
+            "relativePath": summary.relative_path,
+            "threadCount": len(references),
+            "hasUncommittedChanges": dirty,
+            "blockedReasons": blockers,
+            "canRemove": not blockers,
+            "canDelete": not blockers,
+            "sessionBound": bool(session_id),
+        }
+
+    async def remove_repository(
+        self,
+        repository_id: str,
+        session_id: str,
+        *,
+        confirmation: str,
+        delete_threads: bool,
+        delete_local: bool,
+    ) -> JsonObject:
+        summary, _path = await asyncio.to_thread(
+            self.repositories.resolve_repository_id, repository_id
+        )
+        if confirmation != summary.name:
+            raise RuntimeConflictError("repository confirmation does not match")
+        if not await self.jobs.reserve_repository_removal(repository_id):
+            raise RuntimeConflictError("repository has an active job")
+        try:
+            if self.projection.repository_has_active_turn(repository_id):
+                raise RuntimeConflictError("repository has an active turn")
+            references = await asyncio.to_thread(
+                self.metadata.list_repository_threads, repository_id
+            )
+            if references:
+                await self._reconcile()
+                if any(
+                    reference.thread_id in self._unavailable_threads
+                    for reference in references
+                ):
+                    raise RuntimeConflictError("repository turn state is unavailable")
+                if self.projection.repository_has_active_turn(repository_id):
+                    raise RuntimeConflictError("repository has an active turn")
+            if delete_threads:
+                for reference in references:
+                    await self._call(
+                        "thread/delete",
+                        {"threadId": reference.thread_id},
+                        owner=session_id,
+                    )
+                for reference in references:
+                    await asyncio.to_thread(self.metadata.delete_thread, reference.thread_id)
+                    self.projection.forget_thread(reference.thread_id)
+            if delete_local:
+                await asyncio.to_thread(self.repositories.delete_repository, repository_id)
+            self.projection.mark_repository_unavailable(repository_id)
+            await asyncio.to_thread(
+                self.metadata.mark_repository_unavailable,
+                repository_id,
+                summary.relative_path,
+                state="deleted" if delete_local else "removed",
+                updated_at=int(time.time()),
+            )
+            await asyncio.to_thread(
+                self.metadata.audit,
+                "repository_deleted" if delete_local else "repository_removed",
+                occurred_at=int(time.time()),
+                session_id=session_id,
+                repository_id=repository_id,
+            )
+            return {
+                "repositoryId": repository_id,
+                "state": "deleted" if delete_local else "removed",
+                "threadsDeleted": len(references) if delete_threads else 0,
+            }
+        finally:
+            await self.jobs.release_repository_removal(repository_id)
 
     async def repository_browser_dict(self, summary: RepositorySummary) -> JsonObject:
         preference = await asyncio.to_thread(self.metadata.repository_preferences, summary.id)
@@ -661,30 +761,69 @@ class WorkbenchRuntime:
         return browser
 
     async def read_thread(self, thread_id: str, session_id: str) -> JsonObject:
-        thread = self.projection.require_thread(thread_id)
-        if thread.session_id != session_id:
-            raise ValueError("thread is unavailable")
-        _, validated_path = await asyncio.to_thread(
-            self.repositories.resolve_repository_id, thread.repository_id
-        )
-        if validated_path != thread.repository_path:
-            raise ValueError("thread repository changed")
+        try:
+            thread = self.projection.require_thread(thread_id)
+        except ValueError:
+            reference = await asyncio.to_thread(self.metadata.get_thread, thread_id)
+            if reference is None:
+                raise ValueError("thread is unavailable") from None
+            try:
+                summary, validated_path = await asyncio.to_thread(
+                    self.repositories.resolve_repository_id, reference.repository_id
+                )
+                repository_id = summary.id
+                repository_name = summary.name
+                relative_path = summary.relative_path
+                repository_available = (
+                    await asyncio.to_thread(
+                        self.metadata.repository_registration_state, reference.repository_id
+                    )
+                    is None
+                )
+            except ValueError:
+                validated_path = await asyncio.to_thread(
+                    self.repositories.reference_path, reference.repository_relative_path
+                )
+                repository_id = reference.repository_id
+                repository_name = validated_path.name
+                relative_path = reference.repository_relative_path
+                repository_available = False
+            sandbox_mode = reference.sandbox_mode
+            approval_policy = reference.approval_policy
+        else:
+            if thread.session_id != session_id:
+                raise ValueError("thread is unavailable")
+            if thread.repository_available:
+                _, validated_path = await asyncio.to_thread(
+                    self.repositories.resolve_repository_id, thread.repository_id
+                )
+                if validated_path != thread.repository_path:
+                    raise ValueError("thread repository changed")
+            else:
+                validated_path = thread.repository_path
+            repository_id = thread.repository_id
+            repository_name = thread.repository_name
+            relative_path = thread.repository_relative_path
+            sandbox_mode = thread.sandbox_mode
+            approval_policy = thread.approval_policy
+            repository_available = thread.repository_available
         result = await self._call(
             "thread/read", {"threadId": thread_id, "includeTurns": True}, owner=session_id
         )
         response = self._object(result, "thread/read result")
         raw_thread = self._object(response.get("thread"), "thread/read thread")
-        if not self._thread_cwd_matches(raw_thread, validated_path):
+        if not self._thread_cwd_reference_matches(raw_thread, validated_path):
             raise ValueError("thread working directory changed")
         refreshed = await self.projection.register_thread(
             raw_thread,
-            repository_id=thread.repository_id,
-            repository_name=thread.repository_name,
+            repository_id=repository_id,
+            repository_name=repository_name,
             repository_path=validated_path,
-            repository_relative_path=thread.repository_relative_path,
+            repository_relative_path=relative_path,
             session_id=session_id,
-            sandbox_mode=thread.sandbox_mode,
-            approval_policy=thread.approval_policy,
+            sandbox_mode=sandbox_mode,
+            approval_policy=approval_policy,
+            repository_available=repository_available,
         )
         return self.projection.thread_browser_dict(refreshed)
 
@@ -712,6 +851,8 @@ class WorkbenchRuntime:
                 "awaiting_approval",
             }:
                 raise RuntimeConflictError("a turn is already running")
+            if not thread.repository_available:
+                raise RuntimeConflictError("thread repository is unavailable")
             summary, path = await asyncio.to_thread(
                 self.repositories.resolve_repository_id, thread.repository_id
             )
@@ -981,8 +1122,23 @@ class WorkbenchRuntime:
         references = await asyncio.to_thread(self.metadata.list_threads)
         for reference in references:
             try:
-                summary, path = await asyncio.to_thread(
-                    self.repositories.resolve_repository_id, reference.repository_id
+                try:
+                    summary, path = await asyncio.to_thread(
+                        self.repositories.resolve_repository_id, reference.repository_id
+                    )
+                    repository_name = summary.name
+                    relative_path = summary.relative_path
+                except ValueError:
+                    path = await asyncio.to_thread(
+                        self.repositories.reference_path, reference.repository_relative_path
+                    )
+                    repository_name = path.name
+                    relative_path = reference.repository_relative_path
+                repository_available = (
+                    await asyncio.to_thread(
+                        self.metadata.repository_registration_state, reference.repository_id
+                    )
+                    is None
                 )
                 result = await self._call(
                     "thread/read",
@@ -991,17 +1147,18 @@ class WorkbenchRuntime:
                 )
                 response = self._object(result, "thread/read reconciliation")
                 raw = self._object(response.get("thread"), "thread/read thread")
-                if not self._thread_cwd_matches(raw, path):
+                if not self._thread_cwd_reference_matches(raw, path):
                     raise ValueError("thread cwd no longer matches its repository")
                 thread = await self.projection.register_thread(
                     raw,
-                    repository_id=summary.id,
-                    repository_name=summary.name,
+                    repository_id=reference.repository_id,
+                    repository_name=repository_name,
                     repository_path=path,
-                    repository_relative_path=summary.relative_path,
+                    repository_relative_path=relative_path,
                     session_id=reference.last_session_id,
                     sandbox_mode=reference.sandbox_mode,
                     approval_policy=reference.approval_policy,
+                    repository_available=repository_available,
                 )
                 await self.broker.publish(
                     thread.session_id,
@@ -1046,7 +1203,19 @@ class WorkbenchRuntime:
             raise RuntimeUnavailableError("app-server startup is disabled")
         if not self.app_server_ready:
             raise RuntimeUnavailableError("app-server is not ready")
-        return await self.supervisor.client.call(method, params, owner=owner)
+        generation = self.supervisor.status.generation
+        try:
+            return await self.supervisor.client.call(method, params, owner=owner)
+        except AppServerRequestError as exc:
+            logger.warning(
+                "app_server_request_error",
+                extra={
+                    "method": method,
+                    "error_code": exc.code,
+                    "generation": generation,
+                },
+            )
+            raise
 
     async def _call_for_generation(
         self,
@@ -1104,6 +1273,16 @@ class WorkbenchRuntime:
             return False
         try:
             return Path(cwd).resolve(strict=True) == repository_path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return False
+
+    @staticmethod
+    def _thread_cwd_reference_matches(thread: JsonObject, repository_path: Path) -> bool:
+        cwd = thread.get("cwd")
+        if not isinstance(cwd, str):
+            return False
+        try:
+            return Path(cwd).resolve(strict=False) == repository_path.resolve(strict=False)
         except (OSError, RuntimeError):
             return False
 

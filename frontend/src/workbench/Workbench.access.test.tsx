@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   readRateLimits: vi.fn(),
   startThread: vi.fn(),
   prepareFullAccess: vi.fn(),
+  readThread: vi.fn(),
   dispatch: vi.fn(),
 }));
 
@@ -27,15 +28,19 @@ vi.mock("./api", () => ({
   prepareFullAccess: mocks.prepareFullAccess,
   readRateLimits: mocks.readRateLimits,
   readCapabilities: mocks.readCapabilities,
+  readThread: mocks.readThread,
   resumeThread: vi.fn(),
   startThread: mocks.startThread,
   startTurn: vi.fn(),
   cloneRepository: vi.fn(),
+  cloneRepositoryPreflight: vi.fn(),
   createRepository: vi.fn(),
   gitAction: vi.fn(),
   githubCapability: vi.fn(),
   listJobs: vi.fn(),
   publishGithub: vi.fn(),
+  removeRepository: vi.fn(),
+  repositoryRemovalPreview: vi.fn(),
   updateRepository: vi.fn(),
 }));
 
@@ -128,6 +133,7 @@ function renderWorkbench(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/");
   mocks.listRepositories.mockResolvedValue([repository]);
   mocks.listThreads.mockResolvedValue([]);
   mocks.readRateLimits.mockResolvedValue({ available: false, observedAt: 0 });
@@ -136,7 +142,12 @@ beforeEach(() => {
     _repositoryId: string,
     mode: SandboxMode,
   ) => Promise.resolve(thread(mode)));
-  mocks.prepareFullAccess.mockResolvedValue(fullAccessCapability);
+  mocks.prepareFullAccess.mockImplementation((
+    _csrf: string,
+    _repositoryId: string,
+    policy: "untrusted" | "on-request" | "never",
+  ) => Promise.resolve({ ...fullAccessCapability, approvalPolicy: policy }));
+  mocks.readThread.mockResolvedValue(thread("workspace-write"));
 });
 
 test("does not POST New Thread while host capabilities are loading", async () => {
@@ -151,15 +162,29 @@ test("does not POST New Thread while host capabilities are loading", async () =>
   expect(await screen.findByText("Access-Optionen werden noch geladen. Bitte kurz warten.")).toBeInTheDocument();
 });
 
-test("does not POST an unavailable Workspace mode when only Full Access is available", async () => {
+test("defaults a Full-only host to Full Access and Never before confirmation", async () => {
   mocks.readCapabilities.mockResolvedValue(capabilities(false, false, true));
   renderWorkbench();
 
-  await screen.findByRole("button", { name: "Access: Auswahl erforderlich" });
+  await screen.findByRole("button", { name: "Access: Full" });
   fireEvent.click(screen.getByRole("button", { name: "Neuer Thread" }));
 
+  expect(await screen.findByText("never")).toBeInTheDocument();
   expect(mocks.startThread).not.toHaveBeenCalled();
-  expect(screen.getByText("Wähle einen auf diesem Host verfügbaren Access-Modus.")).toBeInTheDocument();
+  expect(mocks.prepareFullAccess).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: "Full Access aktivieren" }));
+
+  await waitFor(() => expect(mocks.prepareFullAccess).toHaveBeenCalledWith(
+    "csrf", repository.id, "never", null,
+  ));
+  await waitFor(() => expect(mocks.startThread).toHaveBeenCalledWith(
+    "csrf",
+    repository.id,
+    "danger-full-access",
+    "never",
+    { ...fullAccessCapability, approvalPolicy: "never" },
+  ));
 });
 
 test("uses Workspace without Full Access preparation when the host supports it", async () => {
@@ -175,11 +200,24 @@ test("uses Workspace without Full Access preparation when the host supports it",
   expect(mocks.prepareFullAccess).not.toHaveBeenCalled();
 });
 
-test("creates Full Access only after explicit selection and confirmation", async () => {
-  mocks.readCapabilities.mockResolvedValue(capabilities(false, false, true));
+test("uses Read only instead of Full Access when Read only is available", async () => {
+  mocks.readCapabilities.mockResolvedValue(capabilities(false, true, true));
   renderWorkbench();
 
-  fireEvent.click(await screen.findByRole("button", { name: "Access: Auswahl erforderlich" }));
+  await screen.findByRole("button", { name: "Access: Read only" });
+  fireEvent.click(screen.getByRole("button", { name: "Neuer Thread" }));
+
+  await waitFor(() => expect(mocks.startThread).toHaveBeenCalledWith(
+    "csrf", repository.id, "read-only", "on-request", null,
+  ));
+  expect(mocks.prepareFullAccess).not.toHaveBeenCalled();
+});
+
+test("creates Full Access only after explicit selection and confirmation", async () => {
+  mocks.readCapabilities.mockResolvedValue(capabilities(true, true, true));
+  renderWorkbench();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Access: Workspace" }));
   fireEvent.click(screen.getByRole("menuitemradio", { name: /Full access Uneingeschränkter/ }));
   fireEvent.click(screen.getByRole("checkbox"));
   fireEvent.click(screen.getByRole("button", { name: "Full Access aktivieren" }));
@@ -235,4 +273,28 @@ test("clears a Full Access capability when switching repositories", async () => 
   await waitFor(() => expect(mocks.startThread).toHaveBeenCalledWith(
     "csrf", secondRepository.id, "workspace-write", "on-request", null,
   ));
+});
+
+test("applies Full Access and Never when a repository switch reveals a Full-only host", async () => {
+  const secondRepository: Repository = {
+    ...repository,
+    id: "fedcba9876543210",
+    name: "second-repository",
+    directoryName: "second-repository",
+  };
+  mocks.listRepositories.mockResolvedValue([repository, secondRepository]);
+  mocks.readCapabilities.mockImplementation((repositoryId: string) => Promise.resolve(
+    repositoryId === secondRepository.id
+      ? capabilities(false, false, true)
+      : capabilities(true, true, true),
+  ));
+  renderWorkbench();
+
+  await screen.findByRole("button", { name: "Access: Workspace" });
+  fireEvent.click(screen.getByRole("button", { name: /second-repository main Clean/ }));
+  await screen.findByRole("button", { name: "Access: Full" });
+  fireEvent.click(screen.getByRole("button", { name: "Neuer Thread" }));
+
+  expect(await screen.findByText("never")).toBeInTheDocument();
+  expect(mocks.startThread).not.toHaveBeenCalled();
 });

@@ -178,6 +178,38 @@ def test_thread_turn_stream_approval_usage_and_interrupt_flow(tmp_path: Path) ->
         assert interrupted.json()["status"] == "interrupting"
 
 
+def test_repository_remove_requires_preview_and_exact_confirmation(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    _repository(settings)
+    repository_path = settings.repositories_root / "sample"
+    with TestClient(create_app(settings)) as client:
+        headers = _auth(client, settings)
+        repository_id = client.get("/api/repositories").json()["repositories"][0]["id"]
+
+        preview = client.get(f"/api/repositories/{repository_id}/removal-preview")
+        assert preview.status_code == 200
+        assert preview.json()["relativePath"] == "sample"
+        assert preview.json()["blockedReasons"] == []
+
+        rejected = client.post(
+            f"/api/repositories/{repository_id}/remove",
+            json={"confirmation": "wrong", "deleteThreads": False},
+            headers=headers,
+        )
+        assert rejected.status_code == 409
+        assert repository_path.is_dir()
+
+        removed = client.post(
+            f"/api/repositories/{repository_id}/remove",
+            json={"confirmation": "sample", "deleteThreads": False},
+            headers=headers,
+        )
+        assert removed.status_code == 200
+        assert removed.json()["state"] == "removed"
+        assert repository_path.is_dir()
+        assert client.get("/api/repositories").json()["repositories"] == []
+
+
 def test_full_access_is_one_use_bound_and_allows_never_policy(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     _repository(settings)

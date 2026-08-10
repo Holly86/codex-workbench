@@ -1,4 +1,4 @@
-import { resolveSafeSandboxMode } from "./access";
+import { resolveDefaultSandboxMode, resolveSafeSandboxMode } from "./access";
 import type { WorkbenchCapabilities } from "./types";
 
 function capabilities(
@@ -39,4 +39,13 @@ test("replaces an unavailable Workspace preference with an available safe mode",
 test("requires explicit selection when only Full Access is available", () => {
   expect(resolveSafeSandboxMode(capabilities(false, false, true), "workspace-write")).toBeNull();
   expect(resolveSafeSandboxMode(capabilities(false, false, true), "danger-full-access")).toBeNull();
+});
+
+test("defaults to Full Access only when no safe sandbox is available", () => {
+  expect(resolveDefaultSandboxMode(capabilities(true, true, true), null))
+    .toBe("workspace-write");
+  expect(resolveDefaultSandboxMode(capabilities(false, true, true), null))
+    .toBe("read-only");
+  expect(resolveDefaultSandboxMode(capabilities(false, false, true), null))
+    .toBe("danger-full-access");
 });
