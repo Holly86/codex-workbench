@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { Repository, ThreadView } from "../workbench/types";
+import { AnchoredMenu } from "./AnchoredMenu";
 
 export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "publish" | "github" | "rename" | "settings" | "create" | "clone";
 
@@ -15,6 +16,31 @@ interface RepositorySidebarProps {
   onRepositoryAction: (action: RepositoryAction, repository: Repository | null) => void;
 }
 
+const REPOSITORY_ACTION_GROUPS: Array<Array<{ action: RepositoryAction; label: string }>> = [
+  [
+    { action: "open", label: "Öffnen" },
+    { action: "new-thread", label: "Neuer Thread" },
+  ],
+  [
+    { action: "status", label: "Git-Status" },
+    { action: "changes", label: "Änderungen" },
+    { action: "commit", label: "Commit…" },
+    { action: "branches", label: "Branches…" },
+  ],
+  [
+    { action: "fetch", label: "Fetch" },
+    { action: "pull", label: "Pull – nur Fast-forward" },
+    { action: "push", label: "Push" },
+    { action: "remote", label: "Remote & Clone" },
+  ],
+  [
+    { action: "publish", label: "Auf GitHub veröffentlichen" },
+    { action: "github", label: "Auf GitHub öffnen" },
+    { action: "rename", label: "Anzeigenamen ändern" },
+    { action: "settings", label: "Repository-Einstellungen" },
+  ],
+];
+
 export function RepositorySidebar({
   repositories,
   selectedRepositoryId,
@@ -28,80 +54,188 @@ export function RepositorySidebar({
 }: RepositorySidebarProps) {
   const [query, setQuery] = useState("");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("workbench.sidebar.collapsed") === "true");
+  const [collapsed, setCollapsed] = useState(() => {
+    const saved = localStorage.getItem("workbench.sidebar.collapsed");
+    if (saved !== null) return saved === "true";
+    return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+  });
   const searchRef = useRef<HTMLInputElement>(null);
+  const menuAnchorRef = useRef<HTMLButtonElement>(null);
+
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault(); searchRef.current?.focus();
+        event.preventDefault();
+        if (collapsed) setCollapsed(false);
+        window.setTimeout(() => searchRef.current?.focus());
       }
       if (event.key === "Escape") setOpenMenu(null);
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
+  }, [collapsed]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const narrow = window.matchMedia("(max-width: 760px)");
+    const closeForNarrowViewport = (event: MediaQueryListEvent | MediaQueryList) => {
+      if (event.matches) setCollapsed(true);
+    };
+    closeForNarrowViewport(narrow);
+    narrow.addEventListener("change", closeForNarrowViewport);
+    return () => narrow.removeEventListener("change", closeForNarrowViewport);
   }, []);
+
+  const setSidebarCollapsed = (next: boolean) => {
+    setCollapsed(next);
+    localStorage.setItem("workbench.sidebar.collapsed", String(next));
+  };
+  const closeOnNarrow = () => {
+    if (typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches) {
+      setSidebarCollapsed(true);
+    }
+  };
   const normalized = query.trim().toLocaleLowerCase();
-  const filteredRepositories = repositories.filter((repository) => !normalized || repository.name.toLocaleLowerCase().includes(normalized));
-  const filteredThreads = threads.filter((thread) => !normalized || (thread.name ?? thread.preview).toLocaleLowerCase().includes(normalized));
+  const filteredRepositories = repositories.filter((repository) =>
+    !normalized || `${repository.name} ${repository.status.branch ?? ""}`.toLocaleLowerCase().includes(normalized));
+  const filteredThreads = threads.filter((thread) =>
+    !normalized || (thread.name ?? thread.preview).toLocaleLowerCase().includes(normalized));
+  const menuRepository = repositories.find((repository) => repository.id === openMenu) ?? null;
+
   return (
-    <nav className={`repository-panel ${collapsed ? "is-collapsed" : ""}`} aria-label="Repositories">
-      <button type="button" className="sidebar-collapse" aria-label={collapsed ? "Sidebar erweitern" : "Sidebar einklappen"} aria-expanded={!collapsed} onClick={() => { const next = !collapsed; setCollapsed(next); localStorage.setItem("workbench.sidebar.collapsed", String(next)); }}>☰</button>
-      <button className="new-thread-action" type="button" disabled={selectedRepositoryId === null} onClick={onNewThread}><span>＋</span> Neuer Thread</button>
-      <div className="repository-create-actions"><button type="button" onClick={() => onRepositoryAction("create", null)}>New repository</button><button type="button" onClick={() => onRepositoryAction("clone", null)}>Clone</button></div>
-      <label className="sidebar-search"><span className="sr-only">Repositories und Threads suchen</span><input ref={searchRef} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Suchen  Ctrl K" /></label>
-      <div className="panel-heading"><h2>Projekte</h2></div>
-      {repositories.length === 0 && !loading ? <p className="phase-note">Keine direkten Repositories gefunden.</p> : null}
-      <ul className="repository-list">
-        {filteredRepositories.map((repository) => (
-          <li key={repository.id} className="repository-row">
-            <button
-              type="button"
-              aria-current={repository.id === selectedRepositoryId ? "page" : undefined}
-              onClick={() => onSelectRepository(repository.id)}
-            >
-              <span className="repository-glyph" aria-hidden="true">◇</span><span className="repository-title"><strong>{repository.name}</strong><small>{repository.status.detached ? "Detached HEAD" : repository.status.branch ?? "No branch"}{repository.status.clean ? " · Clean" : ` · ${String(repository.status.staged + repository.status.modified + repository.status.untracked)} changes`}</small></span>
-            </button>
-            <button type="button" className="repository-menu-trigger" aria-label={`${repository.name} Menü`} aria-haspopup="menu" aria-expanded={openMenu === repository.id} onClick={() => setOpenMenu(openMenu === repository.id ? null : repository.id)}>…</button>
-            {openMenu === repository.id ? <div className="repository-context-menu" role="menu">{[
-              ["open","Open"],["new-thread","New Thread"],["status","Git Status"],["changes","Changes"],["fetch","Fetch"],["pull","Pull --ff-only"],["push","Push"],["commit","Commit…"],["branches","Branches…"],["remote","Clone / Remote"],["publish","Publish to GitHub"],["github","Open on GitHub"],["rename","Rename display name"],["settings","Settings"],
-            ].map(([action,label]) => <button type="button" role="menuitem" key={action} disabled={action === "github" && !repository.status.upstream} onClick={() => { onRepositoryAction(action as RepositoryAction, repository); setOpenMenu(null); }}>{label}</button>)}</div> : null}
-          </li>
-        ))}
-      </ul>
-      {selectedRepositoryId !== null ? (
-        <section className="thread-navigation" aria-labelledby="threads-heading">
-          <div className="panel-heading">
-            <h2 id="threads-heading">Threads</h2>
-            <span>{threads.length}</span>
-          </div>
-          {loading ? <div className="thread-skeleton" role="status" aria-label="Threads werden geladen"><span /><span /><span /></div> : null}
-          {!loading && threads.length === 0 ? <p className="phase-note">Noch keine Threads.</p> : null}
-          <ul className="thread-list">
-            {filteredThreads.map((thread) => (
-              <li key={thread.id}>
-                <button
-                  type="button"
-                  aria-current={thread.id === selectedThreadId ? "page" : undefined}
-                  onClick={() => onSelectThread(thread)}
-                >
-                  <strong>{thread.name ?? (thread.preview || "Neuer Thread")}</strong>
-                  <span className={`thread-state is-${thread.activity.state}`}><i aria-hidden="true" />{activityLabel(thread.activity.state)} · {formatActivityTime(thread.updatedAt)}</span>
-                </button>
-              </li>
-            ))}
+    <>
+      <button
+        type="button"
+        className="mobile-sidebar-trigger"
+        aria-label={collapsed ? "Navigation öffnen" : "Navigation schließen"}
+        aria-controls="repository-sidebar"
+        aria-expanded={!collapsed}
+        onClick={() => setSidebarCollapsed(!collapsed)}
+      >
+        <span aria-hidden="true">{collapsed ? "☰" : "×"}</span>
+      </button>
+      {!collapsed ? <button type="button" className="sidebar-scrim" aria-label="Navigation schließen" onClick={() => setSidebarCollapsed(true)} /> : null}
+      <nav id="repository-sidebar" className={`repository-panel ${collapsed ? "is-collapsed" : ""}`} aria-label="Repositories">
+        <div className="sidebar-header">
+          <div className="sidebar-heading"><span className="sidebar-heading-icon" aria-hidden="true">⌁</span><strong>Workspace</strong></div>
+          <button type="button" className="sidebar-collapse" aria-label={collapsed ? "Sidebar erweitern" : "Sidebar einklappen"} aria-expanded={!collapsed} onClick={() => setSidebarCollapsed(!collapsed)}>
+            <span aria-hidden="true">{collapsed ? "›" : "‹"}</span>
+          </button>
+        </div>
+        <button className="new-thread-action" type="button" disabled={selectedRepositoryId === null} onClick={() => { onNewThread(); closeOnNarrow(); }}>
+          <span aria-hidden="true">＋</span><span className="new-thread-label">Neuer Thread</span>
+        </button>
+        <div className="repository-create-actions" aria-label="Repository-Aktionen">
+          <button type="button" onClick={() => onRepositoryAction("create", null)}><span aria-hidden="true">□＋</span> Neu</button>
+          <button type="button" onClick={() => onRepositoryAction("clone", null)}><span aria-hidden="true">↓</span> Klonen</button>
+        </div>
+        <label className="sidebar-search">
+          <span className="search-icon" aria-hidden="true">⌕</span>
+          <span className="sr-only">Repositories und Threads suchen</span>
+          <input ref={searchRef} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Suchen" />
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <section className="repository-navigation" aria-labelledby="projects-heading">
+          <div className="panel-heading"><h2 id="projects-heading">Projekte</h2><span>{filteredRepositories.length}</span></div>
+          {repositories.length === 0 && !loading ? <p className="sidebar-empty">Keine Repositories gefunden.</p> : null}
+          {repositories.length > 0 && filteredRepositories.length === 0 ? <p className="sidebar-empty">Keine passenden Projekte.</p> : null}
+          <ul className="repository-list">
+            {filteredRepositories.map((repository) => {
+              const changeCount = repository.status.staged + repository.status.modified + repository.status.untracked;
+              return (
+                <li key={repository.id} className="repository-row">
+                  <button
+                    type="button"
+                    className="repository-select"
+                    title={collapsed ? repository.name : undefined}
+                    aria-current={repository.id === selectedRepositoryId ? "page" : undefined}
+                    onClick={() => { onSelectRepository(repository.id); closeOnNarrow(); }}
+                  >
+                    <span className="repository-glyph" aria-hidden="true">◇</span>
+                    <span className="repository-title">
+                      <strong>{repository.name}</strong>
+                      <small><span>{repository.status.detached ? "Detached HEAD" : repository.status.branch ?? "Kein Branch"}</span><span className={repository.status.clean ? "repo-clean" : "repo-changed"}>{repository.status.clean ? "Clean" : `${String(changeCount)} geändert`}</span></small>
+                    </span>
+                  </button>
+                  <button
+                    ref={openMenu === repository.id ? menuAnchorRef : undefined}
+                    type="button"
+                    className="repository-menu-trigger"
+                    aria-label={`${repository.name} Menü`}
+                    aria-haspopup="menu"
+                    aria-expanded={openMenu === repository.id}
+                    onClick={(event) => {
+                      menuAnchorRef.current = event.currentTarget;
+                      setOpenMenu(openMenu === repository.id ? null : repository.id);
+                    }}
+                  >
+                    <span aria-hidden="true">•••</span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </section>
-      ) : null}
-    </nav>
+
+        {selectedRepositoryId !== null ? (
+          <section className="thread-navigation" aria-labelledby="threads-heading">
+            <div className="panel-heading"><h2 id="threads-heading">Threads</h2><span>{threads.length}</span></div>
+            {loading ? <div className="thread-skeleton" role="status" aria-label="Threads werden geladen"><span /><span /><span /></div> : null}
+            {!loading && threads.length === 0 ? <p className="sidebar-empty">Noch keine Threads.</p> : null}
+            {!loading && threads.length > 0 && filteredThreads.length === 0 ? <p className="sidebar-empty">Keine passenden Threads.</p> : null}
+            <ul className="thread-list">
+              {filteredThreads.map((thread) => {
+                const label = activityLabel(thread.activity.state);
+                return (
+                  <li key={thread.id} className={`thread-row is-${thread.activity.state}`}>
+                    <button
+                      type="button"
+                      aria-current={thread.id === selectedThreadId ? "page" : undefined}
+                      onClick={() => { onSelectThread(thread); closeOnNarrow(); }}
+                    >
+                      <span className="thread-title">{thread.name ?? (thread.preview || "Neuer Thread")}</span>
+                      <span className="thread-meta-row"><span className="thread-state"><i aria-hidden="true" />{label}</span><time>{formatActivityTime(thread.updatedAt)}</time></span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        ) : null}
+      </nav>
+      <AnchoredMenu anchorRef={menuAnchorRef} open={menuRepository !== null} onClose={() => setOpenMenu(null)} ariaLabel={menuRepository === null ? "Repository-Menü" : `${menuRepository.name} Aktionen`} width={272} align="end">
+        {menuRepository === null ? null : REPOSITORY_ACTION_GROUPS.map((group, groupIndex) => (
+          <Fragment key={group[0]?.action ?? String(groupIndex)}>
+            {groupIndex > 0 ? <div className="menu-separator" role="separator" /> : null}
+            {group.map(({ action, label }) => (
+              <button
+                type="button"
+                role="menuitem"
+                key={action}
+                disabled={action === "github" && !menuRepository.status.upstream}
+                onClick={() => {
+                  onRepositoryAction(action, menuRepository);
+                  setOpenMenu(null);
+                  closeOnNarrow();
+                }}
+              >
+                <span>{label}</span>
+              </button>
+            ))}
+          </Fragment>
+        ))}
+      </AnchoredMenu>
+    </>
   );
 }
 
 function activityLabel(state: ThreadView["activity"]["state"]): string {
-  if (["starting", "thinking", "planning", "reading", "searching", "executing", "editing", "testing", "responding", "reconnecting"].includes(state)) return "Working";
-  if (state === "awaiting_approval") return "Waiting for approval";
-  if (state === "failed") return "Failed";
-  if (state === "cancelled") return "Cancelled";
-  return state === "completed" ? "Completed" : "";
+  if (["starting", "thinking", "planning", "reading", "searching", "executing", "editing", "testing", "responding", "reconnecting"].includes(state)) return "Läuft";
+  if (state === "awaiting_approval") return "Freigabe nötig";
+  if (state === "failed") return "Fehlgeschlagen";
+  if (state === "cancelled") return "Abgebrochen";
+  return state === "completed" ? "Abgeschlossen" : "Bereit";
 }
 
 function formatActivityTime(timestamp: number): string {

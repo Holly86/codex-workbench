@@ -340,12 +340,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         <header className="topbar compact-topbar">
           <div className="brand"><span className="brand-mark" aria-hidden="true">⌘</span><h1>Codex Workbench</h1></div>
           <div className="topbar-actions">
-            <span className={`connection-state is-${realtime.connection}`} role="status" title={connectionLabel(realtime.connection, realtime.processConnection)}>
-              <span className="status-dot" aria-hidden="true" />
-              <span className="sr-only">{connectionLabel(realtime.connection, realtime.processConnection)}</span>
-            </span>
             <HealthStatus
               processConnection={realtime.processConnection}
+              realtimeConnection={realtime.connection}
               capabilities={capabilities?.status ?? null}
             />
             <button type="button" className="secondary-action" disabled={logoutPending} onClick={() => void performLogout()}>{logoutPending ? "Abmelden …" : "Abmelden"}</button>
@@ -379,11 +376,11 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
           />
           <main className="conversation-column" id="conversation" tabIndex={-1} ref={mainRef}>
             <header className="thread-header">
-              <div>
+              <div className="thread-heading">
                 <p className="repository-crumb">{selectedRepository?.name ?? "Kein Repository gewählt"}{selectedRepository ? ` · ${selectedRepository.status.detached ? "detached" : selectedRepository.status.branch ?? "no branch"}` : ""}{selectedRepository && !selectedRepository.status.clean ? ` · ${String(selectedRepository.status.staged + selectedRepository.status.modified + selectedRepository.status.untracked)} Änderungen${selectedRepository.status.ahead ? ` · ↑${String(selectedRepository.status.ahead)}` : ""}` : ""}</p>
                 <h2>{selectedThread?.name ?? (selectedThread?.preview || "Codex Conversation")}</h2>
               </div>
-              <div className="thread-meta"><span>{capabilities?.models.find((item) => item.id === model)?.displayName ?? "Model"}</span><span>{working ? "Working" : "Ready"}</span><button type="button" aria-label="Thread-Menü" aria-haspopup="menu">…</button></div>
+              <div className="thread-meta"><span>{capabilities?.models.find((item) => item.id === model)?.displayName ?? "Model"}</span><span className={`thread-runtime is-${working ? "working" : "ready"}`}><i aria-hidden="true" />{working ? "Läuft" : "Bereit"}</span></div>
               {selectedThread?.fullAccess === true ? (
                 <strong className="full-access-badge">Full Access aktiv</strong>
               ) : sandboxMode === "danger-full-access" ? (
@@ -458,12 +455,4 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       }} />
     </>
   );
-}
-
-function connectionLabel(socket: string, process: string): string {
-  if (socket === "reconnecting") return "Verbindung wird wiederhergestellt …";
-  if (socket !== "connected") return "Realtime wird verbunden …";
-  if (process === "connected") return "Codex verbunden";
-  if (process === "reconnecting") return "Codex startet neu …";
-  return `Codex ${process}`;
 }
