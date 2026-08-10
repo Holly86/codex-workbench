@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -14,6 +15,9 @@ from codex_workbench.git_service import GitResult
 
 type JobType = Literal["git_clone", "git_fetch", "git_pull", "git_push", "github_publish"]
 type JobStatus = Literal["queued", "running", "succeeded", "failed"]
+type JobUpdateHandler = Callable[[str, JsonObject], Awaitable[None]]
+
+logger = logging.getLogger("codex_workbench.jobs")
 
 
 @dataclass(slots=True)
@@ -52,8 +56,11 @@ class BackgroundJob:
 class BackgroundJobRegistry:
     """Own tasks independently from browser/WebSocket lifetimes."""
 
-    def __init__(self, *, history_limit: int = 100) -> None:
+    def __init__(
+        self, *, history_limit: int = 100, update_handler: JobUpdateHandler | None = None
+    ) -> None:
         self._history_limit = history_limit
+        self._update_handler = update_handler
         self._jobs: dict[str, BackgroundJob] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
@@ -79,6 +86,7 @@ class BackgroundJobRegistry:
         async with self._lock:
             self._jobs[job.id] = job
             self._trim()
+        await self._notify(job)
         task = asyncio.create_task(self._run(job, operation), name=f"workbench-{job_type}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -99,6 +107,7 @@ class BackgroundJobRegistry:
 
     async def _run(self, job: BackgroundJob, operation: Callable[[], Awaitable[GitResult]]) -> None:
         job.status = "running"
+        await self._notify(job)
         try:
             result = await operation()
             job.command = result.command
@@ -113,6 +122,17 @@ class BackgroundJobRegistry:
             job.error = "Die native Operation konnte nicht abgeschlossen werden."
         finally:
             job.ended_at = int(time.time())
+            await self._notify(job)
+
+    async def _notify(self, job: BackgroundJob) -> None:
+        if self._update_handler is not None:
+            try:
+                await self._update_handler(job.owner_session_id, job.browser_dict())
+            except Exception as exc:
+                logger.warning(
+                    "job_realtime_update_failed",
+                    extra={"error_type": type(exc).__name__},
+                )
 
     def _trim(self) -> None:
         if len(self._jobs) <= self._history_limit:

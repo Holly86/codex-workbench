@@ -43,8 +43,19 @@ export interface WorkbenchCapabilities {
   skills: Array<{ name: string; description: string; enabled: boolean }>;
   plugins: Array<{ id: string; name: string; installed: boolean; enabled: boolean }>;
   native: { models: boolean; skills: boolean; plugins: boolean; apps: boolean };
+  status: {
+    overall: "ready" | "partial" | "unavailable";
+    generation: number;
+    cached: boolean;
+    stale: boolean;
+    models: CapabilityAvailability;
+    skills: CapabilityAvailability;
+    plugins: CapabilityAvailability;
+  };
   host?: { sandbox: Record<"workspaceWrite" | "readOnly" | "fullAccess", { available: boolean; reason: string | null }> };
 }
+
+export interface CapabilityAvailability { available: boolean; reason: string | null }
 
 export type ActivityState =
   | "idle"
@@ -195,6 +206,7 @@ export interface Snapshot {
   pendingApprovals: Approval[];
   rateLimits: RateLimits;
   jobs?: NativeJob[];
+  unavailableThreads?: Array<{ id: string; repositoryId: string; status: "unavailable"; reason: string }>;
 }
 
 export interface FullAccessCapability {

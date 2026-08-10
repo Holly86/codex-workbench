@@ -49,7 +49,7 @@ test("renders the protected accessible shell after session validation", async ()
   expect(screen.getByRole("main")).toHaveAttribute("id", "conversation");
   await waitFor(() => expect(screen.getByRole("main")).toHaveFocus());
   expect(screen.getByRole("form", { name: "Nachricht verfassen" })).toBeInTheDocument();
-  expect(await screen.findByText("Backend bereit")).toBeInTheDocument();
+  expect(await screen.findByText("Backend verbunden")).toBeInTheDocument();
 });
 
 test("completes first-start setup and clears password fields", async () => {

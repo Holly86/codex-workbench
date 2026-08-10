@@ -6,6 +6,7 @@ from typing import cast
 
 import pytest
 
+from codex_workbench.app_server.transport import JsonObject
 from codex_workbench.git_service import GitResult, GitService
 from codex_workbench.host_capabilities import detect_sandbox_capabilities
 from codex_workbench.jobs import BackgroundJobRegistry
@@ -14,7 +15,12 @@ from codex_workbench.repositories import RepositoryDiscovery
 
 @pytest.mark.asyncio
 async def test_background_job_survives_caller_lifetime_and_is_reconnect_projected() -> None:
-    registry = BackgroundJobRegistry()
+    updates: list[JsonObject] = []
+
+    async def updated(_session_id: str, payload: JsonObject) -> None:
+        updates.append(payload)
+
+    registry = BackgroundJobRegistry(update_handler=updated)
     release = asyncio.Event()
 
     async def operation() -> GitResult:
@@ -39,6 +45,7 @@ async def test_background_job_survives_caller_lifetime_and_is_reconnect_projecte
     assert snapshot["id"] == job.id
     assert snapshot["status"] == "succeeded"
     assert snapshot["output"] == "done"
+    assert [update["status"] for update in updates] == ["queued", "running", "succeeded"]
 
 
 @pytest.mark.asyncio

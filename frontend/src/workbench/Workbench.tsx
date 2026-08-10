@@ -40,7 +40,6 @@ import type {
   UploadedImage,
   WorkbenchCapabilities,
   GitHubCapability,
-  NativeJob,
 } from "./types";
 
 interface WorkbenchProps {
@@ -84,7 +83,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [error, setError] = useState<string | null>(null);
   const [repositoryAction, setRepositoryAction] = useState<RepositoryAction | null>(null);
   const [actionRepository, setActionRepository] = useState<Repository | null>(null);
-  const [jobs, setJobs] = useState<NativeJob[]>([]);
+  const jobs = realtime.jobs;
   const observedCloneJobs = useRef(new Set<string>());
   const [github, setGithub] = useState<GitHubCapability | null>(null);
   const mainRef = useRef<HTMLElement>(null);
@@ -127,11 +126,14 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   }, [handleError]);
 
   useEffect(() => {
-    const refresh = () => void listJobs().then(setJobs).catch(handleError);
-    refresh();
-    const interval = window.setInterval(refresh, 1500);
+    if (realtime.connection === "connected") return;
+    const refresh = () => void listJobs()
+      .then((nextJobs) => dispatch({ type: "jobs", jobs: nextJobs }))
+      .catch(handleError);
+    void refresh();
+    const interval = window.setInterval(refresh, 15_000);
     return () => window.clearInterval(interval);
-  }, [handleError]);
+  }, [realtime.connection, handleError, dispatch]);
 
   useEffect(() => {
     const completed = jobs.filter((job) => job.type === "git_clone" && job.status === "succeeded" && !observedCloneJobs.current.has(job.id));
@@ -342,7 +344,10 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
               <span className="status-dot" aria-hidden="true" />
               <span className="sr-only">{connectionLabel(realtime.connection, realtime.processConnection)}</span>
             </span>
-            <HealthStatus />
+            <HealthStatus
+              processConnection={realtime.processConnection}
+              capabilities={capabilities?.status ?? null}
+            />
             <button type="button" className="secondary-action" disabled={logoutPending} onClick={() => void performLogout()}>{logoutPending ? "Abmelden …" : "Abmelden"}</button>
           </div>
         </header>
@@ -360,7 +365,10 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
               if (action === "open" && repository) { selectRepository(repository.id); return; }
               if (action === "new-thread" && repository) { selectRepository(repository.id); requestNewThread(); return; }
               if (["fetch", "pull", "push"].includes(action) && repository) {
-                void gitAction(session.csrfToken, repository.id, action).then(() => listJobs().then(setJobs)).catch(handleError); return;
+                void gitAction(session.csrfToken, repository.id, action)
+                  .then(() => listJobs())
+                  .then((nextJobs) => dispatch({ type: "jobs", jobs: nextJobs }))
+                  .catch(handleError); return;
               }
               if (action === "github" && repository) {
                 void githubCapability(repository.id).then((value) => { if (value.webUrl) window.open(value.webUrl, "_blank", "noopener,noreferrer"); }).catch(handleError); return;
@@ -443,7 +451,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             await gitAction(session.csrfToken, actionRepository.id, "commit", { message: String(values.message) });
           } else if (repositoryAction === "branches" && actionRepository) await gitAction(session.csrfToken, actionRepository.id, values.branchOperation === "switch" ? "branch-switch" : "branch-create", { branch: String(values.branch) });
           else if (repositoryAction === "publish" && actionRepository && github?.account) await publishGithub(session.csrfToken, actionRepository.id, { owner: github.account, name: String(values.name), visibility: values.visibility as "private" | "public", initialPush: true, publicConfirmation: values.visibility === "public" ? String(values.confirmation) : null });
-          await refreshRepositories(); setJobs(await listJobs()); setRepositoryAction(null);
+          await refreshRepositories();
+          dispatch({ type: "jobs", jobs: await listJobs() });
+          setRepositoryAction(null);
         } catch (caught) { handleError(caught); } finally { setOperationPending(false); }
       }} />
     </>

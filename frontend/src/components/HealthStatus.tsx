@@ -1,30 +1,45 @@
 import { useEffect, useState } from "react";
 
-type ConnectionState = "checking" | "ready" | "unavailable";
+import type { WorkbenchCapabilities } from "../workbench/types";
 
-const labels: Record<ConnectionState, string> = {
-  checking: "Verbindung wird geprüft",
-  ready: "Backend bereit",
-  unavailable: "Backend nicht erreichbar",
-};
+type BackendState = "checking" | "connected" | "unavailable";
+type CapabilityStatus = WorkbenchCapabilities["status"];
 
-export function HealthStatus() {
-  const [state, setState] = useState<ConnectionState>("checking");
+interface HealthStatusProps {
+  processConnection: string;
+  capabilities: CapabilityStatus | null;
+}
+
+export function HealthStatus({ processConnection, capabilities }: HealthStatusProps) {
+  const [backend, setBackend] = useState<BackendState>("checking");
+  const [runtimeReady, setRuntimeReady] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
 
     const checkHealth = async () => {
       try {
-        const response = await fetch("/api/health/ready", {
+        const live = await fetch("/api/health/live", {
           cache: "no-store",
           credentials: "same-origin",
           signal: controller.signal,
         });
-        setState(response.ok ? "ready" : "unavailable");
+        if (!live.ok) {
+          setBackend("unavailable");
+          setRuntimeReady(false);
+          return;
+        }
+        setBackend("connected");
+        const ready = await fetch("/api/health/ready", {
+          cache: "no-store",
+          credentials: "same-origin",
+          signal: controller.signal,
+        });
+        setRuntimeReady(ready.ok);
       } catch {
         if (!controller.signal.aborted) {
-          setState("unavailable");
+          setBackend("unavailable");
+          setRuntimeReady(false);
         }
       }
     };
@@ -42,8 +57,33 @@ export function HealthStatus() {
 
   return (
     <div className="health-status" role="status" aria-live="polite">
-      <span className="status-dot" data-state={state} aria-hidden="true" />
-      <span>{labels[state]}</span>
+      <span className="status-dot" data-state={backend} aria-hidden="true" />
+      <span>{backendLabel(backend)}</span>
+      <span>{runtimeLabel(backend, runtimeReady, processConnection)}</span>
+      <span>{capabilityLabel(capabilities)}</span>
     </div>
   );
+}
+
+function backendLabel(state: BackendState): string {
+  if (state === "checking") return "Backend wird geprüft";
+  return state === "connected" ? "Backend verbunden" : "Backend nicht erreichbar";
+}
+
+function runtimeLabel(backend: BackendState, ready: boolean, connection: string): string {
+  if (backend !== "connected") return "Codex Runtime: unbekannt";
+  if (connection === "reconnecting") return "Codex wird neu verbunden …";
+  if (ready && connection === "connected") return "Codex Runtime bereit";
+  return "Codex Runtime derzeit nicht verfügbar";
+}
+
+function capabilityLabel(status: CapabilityStatus | null): string {
+  if (status === null) return "Capabilities werden geladen";
+  if (status.overall === "ready") return "Capabilities bereit";
+  if (!status.plugins.available && status.models.available) {
+    return "Plugins konnten nicht geladen werden";
+  }
+  return status.overall === "partial"
+    ? "Capabilities teilweise verfügbar"
+    : "Capabilities nicht verfügbar";
 }

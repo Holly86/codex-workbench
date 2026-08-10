@@ -3,6 +3,7 @@ import { useEffect, useReducer, useRef } from "react";
 import type {
   Activity,
   Approval,
+  NativeJob,
   RateLimits,
   Snapshot,
   ThreadItem,
@@ -30,6 +31,7 @@ export interface RealtimeState {
   lastSequence: number;
   missedEvents: boolean;
   timeline: Record<string, TimelineEntry[]>;
+  jobs: NativeJob[];
 }
 
 const unavailableRates: RateLimits = { available: false, observedAt: 0 };
@@ -44,6 +46,7 @@ export const initialRealtimeState: RealtimeState = {
   lastSequence: 0,
   missedEvents: false,
   timeline: {},
+  jobs: [],
 };
 
 type Action =
@@ -52,6 +55,7 @@ type Action =
   | { type: "threads"; threads: ThreadView[] }
   | { type: "repositoryThreads"; repositoryId: string; threads: ThreadView[] }
   | { type: "thread"; thread: ThreadView }
+  | { type: "jobs"; jobs: NativeJob[] }
   | { type: "event"; event: EventEnvelope };
 
 interface EventEnvelope {
@@ -87,6 +91,13 @@ function asApproval(value: unknown): Approval | null {
     return null;
   }
   return value as unknown as Approval;
+}
+
+function asJob(value: unknown): NativeJob | null {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.status !== "string") {
+    return null;
+  }
+  return value as unknown as NativeJob;
 }
 
 function replaceThread(threads: ThreadView[], next: ThreadView): ThreadView[] {
@@ -202,6 +213,7 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   let rateLimits = state.rateLimits;
   let processConnection = state.processConnection;
   let generation = state.generation;
+  let jobs = state.jobs;
 
   if (["thread.started", "thread.resumed", "thread.reconciled", "thread.snapshot"].includes(event.type)) {
     const thread = asThread(event.payload);
@@ -220,6 +232,9 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   } else if (event.type === "connection.state") {
     if (typeof event.payload.state === "string") processConnection = event.payload.state;
     if (typeof event.payload.generation === "number") generation = event.payload.generation;
+  } else if (event.type === "job.updated") {
+    const job = asJob(event.payload);
+    if (job !== null) jobs = [job, ...jobs.filter((item) => item.id !== job.id)];
   } else if (event.type === "turn.started") {
     const turnId = event.payload.turnId;
     if (typeof turnId === "string") {
@@ -349,6 +364,7 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
     rateLimits,
     processConnection,
     generation,
+    jobs,
     timeline,
     lastSequence: event.sequence,
   };
@@ -365,6 +381,7 @@ function reducer(state: RealtimeState, action: Action): RealtimeState {
     ],
   };
   if (action.type === "thread") return { ...state, threads: replaceThread(state.threads, action.thread) };
+  if (action.type === "jobs") return { ...state, jobs: action.jobs };
   if (action.type === "snapshot") {
     return {
       ...state,
@@ -376,6 +393,7 @@ function reducer(state: RealtimeState, action: Action): RealtimeState {
       connection: "connected",
       lastSequence: action.latest,
       missedEvents: action.missed,
+      jobs: action.snapshot.jobs ?? [],
     };
   }
   return applyEvent(state, action.event);

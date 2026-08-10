@@ -140,7 +140,7 @@ class ProcessState(StrEnum):
     INITIALIZING = "initializing"
     READY = "ready"
     DRAINING = "draining"
-    BACKOFF = "backoff"
+    RESTARTING = "restarting"
     FAILED = "failed"
 
 
@@ -185,6 +185,7 @@ class AppServerSupervisor:
         self._transport: SubprocessJsonlTransport | None = None
         self._restart_times: deque[float] = deque()
         self._restart_task: asyncio.Task[None] | None = None
+        self._stability_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._lifecycle_lock = asyncio.Lock()
 
@@ -214,6 +215,7 @@ class AppServerSupervisor:
             if self._state is not ProcessState.STOPPED:
                 return
             self._stopping = False
+            self._restart_times.clear()
             self._version = None
             self._error_code = None
             self._state = ProcessState.CHECKING
@@ -266,6 +268,11 @@ class AppServerSupervisor:
             restart.cancel()
             await asyncio.gather(restart, return_exceptions=True)
         self._restart_task = None
+        stability = self._stability_task
+        if stability is not None and not stability.done():
+            stability.cancel()
+            await asyncio.gather(stability, return_exceptions=True)
+        self._stability_task = None
         client = self._client
         transport = self._transport
         self._client = None
@@ -309,12 +316,20 @@ class AppServerSupervisor:
             extra={"generation": generation, "codex_version": self._version},
         )
         await self._ready_handler(generation)
+        self._stability_task = asyncio.create_task(
+            self._reset_restart_budget_after_stable_window(generation),
+            name="app-server-stability-window",
+        )
 
     async def _on_disconnect(self, generation: int, exc: BaseException) -> None:
         if generation != self._generation or self._stopping:
             return
         self._state = ProcessState.FAILED
         self._error_code = type(exc).__name__
+        stability = self._stability_task
+        if stability is not None and not stability.done():
+            stability.cancel()
+        self._stability_task = None
         await self._external_disconnect_handler(generation, exc)
         await self._schedule_restart()
 
@@ -337,10 +352,26 @@ class AppServerSupervisor:
             self._settings.app_server_backoff_initial_seconds * (2 ** (attempt - 1)),
             self._settings.app_server_backoff_max_seconds,
         )
-        self._state = ProcessState.BACKOFF
+        self._state = ProcessState.RESTARTING
         self._restart_task = asyncio.create_task(
             self._restart_after(delay), name="app-server-restart"
         )
+
+    async def _reset_restart_budget_after_stable_window(self, generation: int) -> None:
+        try:
+            await asyncio.sleep(self._settings.app_server_restart_window_seconds)
+            if (
+                not self._stopping
+                and generation == self._generation
+                and self._state is ProcessState.READY
+            ):
+                self._restart_times.clear()
+                logger.info(
+                    "app_server_restart_budget_reset",
+                    extra={"generation": generation},
+                )
+        except asyncio.CancelledError:
+            raise
 
     async def _restart_after(self, delay: float) -> None:
         await asyncio.sleep(delay)

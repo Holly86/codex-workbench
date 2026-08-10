@@ -101,6 +101,9 @@ def main() -> int:
                 pending_out_of_order.clear()
         elif method == "test/never":
             continue
+        elif method == "test/notifyThenRespond":
+            send({"method": "test/notification", "params": {}})
+            send({"id": request_id, "result": {"ok": True}})
         elif method == "thread/list":
             active_cwd = params.get("cwd", active_cwd)
             active_thread = thread(active_cwd)
@@ -115,6 +118,9 @@ def main() -> int:
                 }
             )
         elif method == "model/list":
+            if scenario == "model_error":
+                send({"id": request_id, "error": {"code": -32001, "message": "model failed"}})
+                continue
             send(
                 {
                     "id": request_id,
@@ -140,6 +146,9 @@ def main() -> int:
                 }
             )
         elif method == "skills/list":
+            if scenario == "skills_error":
+                send({"id": request_id, "error": {"code": -32002, "message": "skills failed"}})
+                continue
             send(
                 {
                     "id": request_id,
@@ -162,6 +171,14 @@ def main() -> int:
                 }
             )
         elif method == "plugin/list":
+            if scenario == "plugin_method_not_found":
+                send({"id": request_id, "error": {"code": -32601, "message": "not found"}})
+                continue
+            if scenario == "plugin_invalid_params":
+                send({"id": request_id, "error": {"code": -32602, "message": "invalid"}})
+                continue
+            if scenario == "plugin_eof":
+                return 19
             send(
                 {
                     "id": request_id,

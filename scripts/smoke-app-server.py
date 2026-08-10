@@ -128,8 +128,29 @@ async def smoke() -> dict[str, object]:
         rate_limits_available = False
         thread_started = False
         turn_result = "not_attempted"
+        capability_probe: dict[str, object] = {}
         try:
             await client.initialize()
+            for capability, method, params in (
+                ("models", "model/list", {"includeHidden": False}),
+                (
+                    "skills",
+                    "skills/list",
+                    {"cwds": [str(fixture_repository)], "forceReload": False},
+                ),
+                ("plugins", "plugin/list", {"cwds": [str(fixture_repository)]}),
+            ):
+                try:
+                    result = await client.call(method, params, owner="runtime-smoke")
+                    capability_probe[capability] = {
+                        "available": isinstance(result, dict),
+                        "errorCode": None,
+                    }
+                except AppServerRequestError as exc:
+                    capability_probe[capability] = {
+                        "available": False,
+                        "errorCode": exc.code,
+                    }
             try:
                 account = await client.call(
                     "account/read", {"refreshToken": False}, owner="runtime-smoke"
@@ -180,6 +201,7 @@ async def smoke() -> dict[str, object]:
             "rateLimitsAvailable": rate_limits_available,
             "threadStarted": thread_started,
             "turnResult": turn_result,
+            "capabilityProbe": capability_probe,
             "notificationMethods": sorted(set(notifications)),
         }
 

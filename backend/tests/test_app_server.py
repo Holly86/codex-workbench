@@ -9,6 +9,8 @@ import pytest
 
 from codex_workbench.app_server.client import AppServerClient
 from codex_workbench.app_server.correlation import (
+    AppServerDisconnectedError,
+    AppServerRequestError,
     AppServerRequestTimeoutError,
     RequestCorrelator,
 )
@@ -232,6 +234,47 @@ async def test_unknown_response_ids_timeouts_and_cancellation_are_bounded() -> N
 
 
 @pytest.mark.asyncio
+async def test_json_rpc_error_and_handler_error_do_not_disconnect_client() -> None:
+    disconnected = asyncio.Event()
+
+    async def failing_notification(
+        _generation: int, _method: str, _params: JsonObject
+    ) -> None:
+        raise ValueError("projection failed")
+
+    async def noop_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def disconnect(_generation: int, _error: BaseException) -> None:
+        disconnected.set()
+
+    transport = _transport("plugin_method_not_found")
+    await transport.start()
+    client = AppServerClient(
+        transport,
+        generation=1,
+        application_version="0.1.0",
+        request_timeout_seconds=2,
+        notification_handler=failing_notification,
+        server_request_handler=noop_request,
+        disconnect_handler=disconnect,
+    )
+    try:
+        await client.initialize()
+        with pytest.raises(AppServerRequestError) as captured:
+            await client.call("plugin/list", {"cwds": []}, owner="test")
+        assert captured.value.code == -32601
+        assert await client.call("test/notifyThenRespond", {}, owner="test") == {"ok": True}
+        assert await client.call("model/list", {}, owner="test")
+        assert not disconnected.is_set()
+    finally:
+        await client.close()
+        await transport.stop()
+
+
+@pytest.mark.asyncio
 async def test_malformed_json_is_a_transport_failure() -> None:
     disconnected: asyncio.Future[BaseException] = asyncio.get_running_loop().create_future()
 
@@ -448,6 +491,60 @@ async def test_supervisor_stops_after_bounded_crash_restarts(tmp_path: Path) -> 
         assert supervisor.status.error_code == "restart_limit_reached"
         assert supervisor.status.generation == 3
         assert terminal_failures == [(3, "restart_limit_reached")]
+    finally:
+        await supervisor.stop()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_restarts_after_capability_eof(tmp_path: Path) -> None:
+    settings = _supervisor_settings(tmp_path, restart_limit=2)
+    environment = dict(os.environ)
+    environment["FAKE_CODEX_SCENARIO"] = "plugin_eof"
+
+    def factory(_generation: int) -> SubprocessJsonlTransport:
+        return SubprocessJsonlTransport(
+            (str(_FIXTURE), "app-server", "--stdio"),
+            environment=environment,
+            shutdown_timeout_seconds=0.5,
+        )
+
+    async def noop_notification(_generation: int, _method: str, _params: JsonObject) -> None:
+        return None
+
+    async def noop_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def noop_disconnect(_generation: int, _error: BaseException) -> None:
+        return None
+
+    async def noop_ready(_generation: int) -> None:
+        return None
+
+    async def version() -> str:
+        return "0.146.0"
+
+    supervisor = AppServerSupervisor(
+        settings,
+        notification_handler=noop_notification,
+        server_request_handler=noop_request,
+        disconnect_handler=noop_disconnect,
+        ready_handler=noop_ready,
+        transport_factory=factory,
+        version_checker=version,
+    )
+    try:
+        await supervisor.start()
+        with pytest.raises(AppServerDisconnectedError):
+            await supervisor.client.call("plugin/list", {"cwds": []}, owner="test")
+        for _ in range(100):
+            if supervisor.status.state is ProcessState.READY and supervisor.status.generation == 2:
+                break
+            await asyncio.sleep(0.02)
+        assert supervisor.status.state is ProcessState.READY
+        assert supervisor.status.generation == 2
+        assert supervisor.status.restart_attempts == 1
     finally:
         await supervisor.stop()
 

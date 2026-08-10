@@ -5,9 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from codex_workbench.app_server.correlation import (
+    AppServerDisconnectedError,
+    AppServerRequestError,
+    AppServerRequestTimeoutError,
+)
 from codex_workbench.app_server.protocol import ProtocolAdapter
 from codex_workbench.app_server.supervisor import AppServerSupervisor, ProcessState
 from codex_workbench.app_server.transport import JsonObject, JsonScalar, JsonValue
@@ -32,6 +38,13 @@ from codex_workbench.uploads import UploadService
 logger = logging.getLogger("codex_workbench.runtime")
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilityCacheEntry:
+    generation: int
+    expires_at: float
+    value: JsonObject
+
+
 class RuntimeUnavailableError(RuntimeError):
     pass
 
@@ -50,12 +63,12 @@ class WorkbenchRuntime:
             settings.repositories_root,
             output_limit=settings.max_command_output_bytes,
         )
-        self.jobs = BackgroundJobRegistry()
         self.host_capabilities: JsonObject = {}
         self.broker = RealtimeBroker(
             history_size=settings.realtime_history_size,
             subscriber_queue_size=settings.realtime_client_queue_size,
         )
+        self.jobs = BackgroundJobRegistry(update_handler=self._on_job_updated)
         self.projection = DomainProjection(
             self.broker,
             metadata,
@@ -77,6 +90,12 @@ class WorkbenchRuntime:
         )
         self._thread_mutations: dict[str, asyncio.Lock] = {}
         self._approval_expiry_tasks: dict[str, asyncio.Task[None]] = {}
+        self._capability_cache: dict[str, CapabilityCacheEntry] = {}
+        self._capability_flights: dict[str, asyncio.Task[JsonObject]] = {}
+        self._capability_cooldowns: dict[tuple[str, str], float] = {}
+        self._capability_lock = asyncio.Lock()
+        self._reconciliation_failures: set[str] = set()
+        self._unavailable_threads: dict[str, tuple[str, JsonObject]] = {}
         self._mutation_limiter = LoginRateLimiter(
             address_limit=settings.mutation_rate_limit_requests,
             global_limit=settings.mutation_rate_limit_global_requests,
@@ -166,18 +185,82 @@ class WorkbenchRuntime:
     def consume_mutation(self, session_id: str) -> RateLimitDecision:
         return self._mutation_limiter.consume(session_id)
 
-    async def capabilities(self, repository_id: str | None, session_id: str) -> JsonObject:
-        """Return only schema-backed, browser-safe capability metadata."""
+    async def capabilities(
+        self,
+        repository_id: str | None,
+        session_id: str,
+        *,
+        refresh: bool = False,
+    ) -> JsonObject:
+        """Return cached, fail-soft, schema-backed browser capability metadata."""
         cwd: str | None = None
         if repository_id is not None:
             _summary, path = await asyncio.to_thread(
                 self.repositories.resolve_repository_id, repository_id
             )
             cwd = str(path)
-        models_raw = self._object(
-            await self._call("model/list", {"includeHidden": False}, owner=session_id),
-            "model/list result",
-        ).get("data")
+        key = repository_id or "__global__"
+        generation = self.supervisor.status.generation
+        now = time.monotonic()
+        async with self._capability_lock:
+            cached = self._capability_cache.get(key)
+            if refresh:
+                self._capability_cache.pop(key, None)
+                for cooldown_key in tuple(self._capability_cooldowns):
+                    if cooldown_key[0] == key:
+                        self._capability_cooldowns.pop(cooldown_key, None)
+            elif (
+                cached is not None
+                and cached.generation == generation
+                and cached.expires_at > now
+            ):
+                return self._capability_cache_view(cached.value, cached=True, stale=False)
+            elif cached is not None and not self.app_server_ready:
+                return self._capability_cache_view(cached.value, cached=True, stale=True)
+            flight = self._capability_flights.get(key)
+            if flight is None:
+                flight = asyncio.create_task(
+                    self._discover_capabilities(key, cwd, session_id, generation),
+                    name=f"capability-discovery-{key[-8:]}",
+                )
+                self._capability_flights[key] = flight
+                flight.add_done_callback(
+                    lambda completed: self._complete_capability_flight(
+                        key, generation, completed
+                    )
+                )
+        value = await asyncio.shield(flight)
+        return self._capability_cache_view(value, cached=False, stale=False)
+
+    def _complete_capability_flight(
+        self, key: str, generation: int, task: asyncio.Task[JsonObject]
+    ) -> None:
+        if self._capability_flights.get(key) is task:
+            self._capability_flights.pop(key, None)
+        if task.cancelled() or self.supervisor.status.generation != generation:
+            return
+        try:
+            value = task.result()
+        except Exception:
+            return
+        self._capability_cache[key] = CapabilityCacheEntry(
+            generation=generation,
+            expires_at=time.monotonic() + self.settings.capability_cache_ttl_seconds,
+            value=value,
+        )
+
+    async def _discover_capabilities(
+        self, key: str, cwd: str | None, session_id: str, generation: int
+    ) -> JsonObject:
+        states: JsonObject = {}
+        models_result, model_reason = await self._capability_request(
+            key,
+            "model_list",
+            "model/list",
+            {"includeHidden": False},
+            session_id,
+        )
+        models_raw = models_result.get("data") if models_result is not None else None
         models: list[JsonValue] = []
         if isinstance(models_raw, list):
             for value in models_raw:
@@ -216,16 +299,22 @@ class WorkbenchRuntime:
                         ],
                     }
                 )
+        states["models"] = self._capability_state(model_reason)
         skills: list[JsonValue] = []
         plugins: list[JsonValue] = []
+        skill_reason: str | None = None
+        plugin_reason: str | None = None
         if cwd is not None:
-            skill_payload = self._object(
-                await self._call(
-                    "skills/list", {"cwds": [cwd], "forceReload": False}, owner=session_id
-                ),
-                "skills/list result",
+            skill_payload, skill_reason = await self._capability_request(
+                key,
+                "skills_list",
+                "skills/list",
+                {"cwds": [cwd], "forceReload": False},
+                session_id,
             )
-            for entry in self._array(skill_payload.get("data")):
+            for entry in self._array(
+                skill_payload.get("data") if skill_payload is not None else None
+            ):
                 if not isinstance(entry, dict):
                     continue
                 for skill in self._array(entry.get("skills")):
@@ -239,11 +328,16 @@ class WorkbenchRuntime:
                                 "enabled": skill.get("enabled") is True,
                             }
                         )
-            plugin_payload = self._object(
-                await self._call("plugin/list", {"cwds": [cwd]}, owner=session_id),
-                "plugin/list result",
+            plugin_payload, plugin_reason = await self._capability_request(
+                key,
+                "plugin_list",
+                "plugin/list",
+                {"cwds": [cwd]},
+                session_id,
             )
-            for marketplace in self._array(plugin_payload.get("marketplaces")):
+            for marketplace in self._array(
+                plugin_payload.get("marketplaces") if plugin_payload is not None else None
+            ):
                 if not isinstance(marketplace, dict):
                     continue
                 for plugin in self._array(marketplace.get("plugins")):
@@ -256,13 +350,87 @@ class WorkbenchRuntime:
                                 "enabled": plugin.get("enabled") is True,
                             }
                         )
+        states["skills"] = self._capability_state(skill_reason)
+        states["plugins"] = self._capability_state(plugin_reason)
+        available = sum(
+            1
+            for value in states.values()
+            if isinstance(value, dict) and value.get("available") is True
+        )
+        overall = "ready" if available == 3 else "unavailable" if available == 0 else "partial"
         return {
             "models": models,
             "skills": skills,
             "plugins": plugins,
-            "native": {"models": True, "skills": True, "plugins": True, "apps": False},
+            "native": {
+                "models": model_reason is None,
+                "skills": skill_reason is None,
+                "plugins": plugin_reason is None,
+                "apps": False,
+            },
             "host": self.host_capabilities,
+            "status": {
+                "overall": overall,
+                "generation": generation,
+                "cached": False,
+                "stale": False,
+                **states,
+            },
         }
+
+    async def _capability_request(
+        self,
+        key: str,
+        capability: str,
+        method: str,
+        params: JsonObject,
+        owner: str,
+    ) -> tuple[JsonObject | None, str | None]:
+        cooldown_key = (key, capability)
+        retry_at = self._capability_cooldowns.get(cooldown_key)
+        if retry_at is not None and retry_at > time.monotonic():
+            return None, "transport_cooldown"
+        try:
+            result = await self._call(method, params, owner=owner)
+            if not isinstance(result, dict):
+                raise ValueError("invalid capability response")
+            self._capability_cooldowns.pop(cooldown_key, None)
+            return result, None
+        except AppServerRequestError as exc:
+            if exc.code == -32601:
+                reason = "unsupported"
+            elif exc.code == -32602:
+                reason = "invalid_params"
+            else:
+                reason = "json_rpc_error"
+        except AppServerRequestTimeoutError:
+            reason = "timeout"
+        except AppServerDisconnectedError:
+            reason = "transport_failure"
+            self._capability_cooldowns[cooldown_key] = (
+                time.monotonic() + self.settings.capability_failure_cooldown_seconds
+            )
+        except (RuntimeUnavailableError, ConnectionError):
+            reason = "runtime_unavailable"
+        except Exception:
+            reason = "invalid_response"
+        logger.warning(
+            "capability_request_failed",
+            extra={"capability": capability, "error_class": reason},
+        )
+        return None, reason
+
+    @staticmethod
+    def _capability_state(reason: str | None) -> JsonObject:
+        return {"available": reason is None, "reason": reason}
+
+    @staticmethod
+    def _capability_cache_view(value: JsonObject, *, cached: bool, stale: bool) -> JsonObject:
+        view = dict(value)
+        raw_status = value.get("status")
+        if isinstance(raw_status, dict):
+            view["status"] = {**raw_status, "cached": cached, "stale": stale}
+        return view
 
     async def list_threads(self, repository_id: str, session_id: str) -> tuple[JsonObject, ...]:
         summary, path = await asyncio.to_thread(
@@ -620,6 +788,11 @@ class WorkbenchRuntime:
             session_id, tuple(record.browser_dict() for record in pending)
         )
         snapshot["jobs"] = list(await self.jobs.list_for_session(session_id))
+        snapshot["unavailableThreads"] = [
+            value
+            for owner_session_id, value in self._unavailable_threads.values()
+            if owner_session_id == session_id
+        ]
         return snapshot
 
     async def invalidate_session(self, session_id: str) -> None:
@@ -632,6 +805,9 @@ class WorkbenchRuntime:
     async def _on_notification(self, generation: int, method: str, params: JsonObject) -> None:
         if generation != self.supervisor.status.generation:
             return
+        if method == "skills/changed":
+            async with self._capability_lock:
+                self._capability_cache.clear()
         if method == "serverRequest/resolved":
             request_id = params.get("requestId")
             if isinstance(request_id, str | int) and not isinstance(request_id, bool):
@@ -649,6 +825,9 @@ class WorkbenchRuntime:
                 )
                 for record in invalidated:
                     await self.projection.publish_approval_resolved(thread_id, record.id)
+
+    async def _on_job_updated(self, session_id: str, job: JsonObject) -> None:
+        await self.broker.publish(session_id, "job.updated", job)
 
     async def _on_server_request(
         self,
@@ -743,7 +922,7 @@ class WorkbenchRuntime:
                 response = self._object(result, "thread/read reconciliation")
                 raw = self._object(response.get("thread"), "thread/read thread")
                 if not self._thread_cwd_matches(raw, path):
-                    continue
+                    raise ValueError("thread cwd no longer matches its repository")
                 thread = await self.projection.register_thread(
                     raw,
                     repository_id=summary.id,
@@ -760,11 +939,37 @@ class WorkbenchRuntime:
                     self.projection.thread_browser_dict(thread),
                     thread_id=thread.id,
                 )
-            except (RuntimeError, ValueError):
-                logger.warning(
-                    "thread_reconciliation_failed",
-                    extra={"thread_id": reference.thread_id},
+                self._reconciliation_failures.discard(reference.thread_id)
+                self._unavailable_threads.pop(reference.thread_id, None)
+            except (AppServerDisconnectedError, RuntimeUnavailableError):
+                logger.warning("thread_reconciliation_interrupted")
+                break
+            except (AppServerRequestError, RuntimeError, ValueError) as exc:
+                unavailable: JsonObject = {
+                    "id": reference.thread_id,
+                    "repositoryId": reference.repository_id,
+                    "status": "unavailable",
+                    "reason": "reconciliation_failed",
+                }
+                self._unavailable_threads[reference.thread_id] = (
+                    reference.last_session_id,
+                    unavailable,
                 )
+                await self.broker.publish(
+                    reference.last_session_id,
+                    "thread.unavailable",
+                    unavailable,
+                    thread_id=reference.thread_id,
+                )
+                if reference.thread_id not in self._reconciliation_failures:
+                    logger.warning(
+                        "thread_reconciliation_failed",
+                        extra={
+                            "thread_id": reference.thread_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    self._reconciliation_failures.add(reference.thread_id)
 
     async def _call(self, method: str, params: JsonObject | None, *, owner: str) -> JsonValue:
         if not self.settings.app_server_start_enabled:

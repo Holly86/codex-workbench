@@ -136,11 +136,23 @@ class AppServerClient:
                 elif classified.kind is EnvelopeKind.NOTIFICATION:
                     if classified.method is None:
                         continue
-                    await self._notification_handler(
-                        self.generation,
-                        classified.method,
-                        classified.params,
-                    )
+                    try:
+                        await self._notification_handler(
+                            self.generation,
+                            classified.method,
+                            classified.params,
+                        )
+                    except Exception as exc:
+                        # Projection/application failures are not transport failures.  A broken
+                        # notification must not fail unrelated requests or consume restart budget.
+                        logger.error(
+                            "app_server_notification_handler_failed",
+                            extra={
+                                "generation": self.generation,
+                                "method": classified.method,
+                                "error_type": type(exc).__name__,
+                            },
+                        )
                 else:
                     raw_id = envelope.get("id")
                     if not isinstance(raw_id, str | int) or isinstance(raw_id, bool):
@@ -151,12 +163,25 @@ class AppServerClient:
                         continue
                     if classified.method is None:
                         continue
-                    await self._server_request_handler(
-                        self.generation,
-                        raw_id,
-                        classified.method,
-                        classified.params,
-                    )
+                    try:
+                        await self._server_request_handler(
+                            self.generation,
+                            raw_id,
+                            classified.method,
+                            classified.params,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "app_server_request_handler_failed",
+                            extra={
+                                "generation": self.generation,
+                                "method": classified.method,
+                                "error_type": type(exc).__name__,
+                            },
+                        )
+                        # Settle the server request locally.  If this send itself fails, the
+                        # transport exception is allowed to reach the disconnect path below.
+                        await self.respond_error(raw_id, code=-32603, message="Internal error")
         except asyncio.CancelledError:
             raise
         except BaseException as exc:

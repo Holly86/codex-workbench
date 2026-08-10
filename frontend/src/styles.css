@@ -38,7 +38,7 @@ button:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opaci
 .eyebrow { margin: 0; color: var(--accent); font: 700 .67rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .13em; text-transform: uppercase; }
 .health-status, .connection-state { display: inline-flex; align-items: center; gap: .5rem; color: var(--muted); font-size: .79rem; white-space: nowrap; }
 .status-dot { display: inline-block; width: .58rem; height: .58rem; border-radius: 999px; background: #64748b; }
-.status-dot[data-state="ready"], .connection-state.is-connected .status-dot { background: var(--accent-strong); box-shadow: 0 0 0 .18rem rgb(52 211 153 / 12%); }
+.status-dot[data-state="ready"], .status-dot[data-state="connected"], .connection-state.is-connected .status-dot { background: var(--accent-strong); box-shadow: 0 0 0 .18rem rgb(52 211 153 / 12%); }
 .status-dot[data-state="unavailable"], .connection-state.is-disconnected .status-dot { background: var(--danger); }
 .connection-state.is-reconnecting .status-dot, .connection-state.is-connecting .status-dot { background: var(--warning); }
 
