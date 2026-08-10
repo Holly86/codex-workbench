@@ -21,8 +21,8 @@ Docker-/Compose-Befehle.
 - Kein `docker system prune`, globales Image-/Netzwerk-/Volume-Prune, Stop/Recreate fremder
   Container, Entfernen von `backend-net` oder Ändern fremder Reverse-Proxies/Ports. Alle
   Compose-Befehle ausschließlich aus diesem Repository und mit Projektname `codex-workbench`.
-- Daten von Alivo, Nextcloud, Paperless, n8n, ioBroker, Ollama, Pool, Signage und Homebridge werden
-  weder gelesen noch verändert; `/volume1/docker/alivo` bleibt unangetastet.
+- Daten anderer Anwendungen, Container, Volumes und Netzwerke auf dem NAS werden weder gelesen noch
+  verändert.
 
 Eine Ergebnistabelle verwenden:
 
@@ -107,7 +107,8 @@ kurzlebige Testcontainer, startet aber nicht die regulären Services.
     docker inspect --format 'backend ports={{json .NetworkSettings.Ports}} tmpfs={{json .HostConfig.Tmpfs}}' "$backend_id"
     docker inspect --format 'frontend ports={{json .NetworkSettings.Ports}} tmpfs={{json .HostConfig.Tmpfs}}' "$frontend_id"
 
-Erwartung: beide Prozesse laufen verbindlich als `1026:100`; `readonly=true`, `privileged=false`,
+Erwartung: beide Prozesse laufen verbindlich als die in `.env` gesetzten `PUID:PGID`;
+`readonly=true`, `privileged=false`,
 `CapDrop` enthält `ALL`, PID-/Speicher-/nofile-Limits sind gesetzt. CPU-CFS-Quotas fehlen bewusst,
 weil der DS918+-Kernel sie nicht unterstützt. Backend-Ports haben keine Hostbindung und der Codex App Server bleibt ein reiner
 stdio-Kindprozess. Frontend veröffentlicht ausschließlich `127.0.0.1:8085->8080/tcp`; weder
@@ -228,7 +229,7 @@ archivieren oder nach manueller Inhaltsprüfung gezielt entfernen.
 
        find /volume1/docker/codex/workbench/uploads -maxdepth 1 -type f -exec stat -c '%u:%g %a %s %n' {} \;
 
-   Erwartung: zufällige Namen, `1026:100`, Modus 600. Keine Datei ist statisch per Browser-URL
+   Erwartung: zufällige Namen, konfigurierte `PUID:PGID`, Modus 600. Keine Datei ist statisch per Browser-URL
    abrufbar. Für TTL-Cleanup einen ungenutzten Upload auslaufen lassen, danach einen neuen Upload
    anstoßen oder Backend regulär neu starten und Entfernung prüfen. SQLite-Metadaten dürfen als
    Lifecycle-Historie verbleiben.
@@ -261,7 +262,7 @@ Nur im disposable Repository:
    Bestätigung darf nicht wirken.
 
 Dieser Test beweist Codex-Modus und UI-Bindung, nicht Host-Isolation. Full Access kann alle für UID
-1026 lesbaren Backend-Mounts sehen; keine echten Secrets in Prompts aufnehmen.
+für die konfigurierte Backend-UID lesbaren Mounts sehen; keine echten Secrets in Prompts aufnehmen.
 
 ## S11 – Approval-Modus `on-request`
 

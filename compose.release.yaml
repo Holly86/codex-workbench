@@ -1,0 +1,155 @@
+services:
+  backend:
+    platform: linux/amd64
+    image: "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/codex-workbench-backend:${WORKBENCH_VERSION:-0.1.0}"
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      HOME: /home/workbench
+      CODEX_HOME: /home/workbench/.codex
+      TMPDIR: /tmp
+      WORKBENCH_ENVIRONMENT: production
+      WORKBENCH_LOG_LEVEL: ${WORKBENCH_LOG_LEVEL:-INFO}
+      WORKBENCH_PUBLIC_ORIGIN: "${WORKBENCH_PUBLIC_ORIGIN:?Set WORKBENCH_PUBLIC_ORIGIN in .env}"
+      WORKBENCH_SESSION_COOKIE_SECURE: "${WORKBENCH_SESSION_COOKIE_SECURE:?Set WORKBENCH_SESSION_COOKIE_SECURE in .env}"
+      WORKBENCH_ALLOW_INSECURE_HTTP: "${WORKBENCH_ALLOW_INSECURE_HTTP:?Set WORKBENCH_ALLOW_INSECURE_HTTP in .env}"
+      WORKBENCH_SESSION_COOKIE_SAMESITE: ${WORKBENCH_SESSION_COOKIE_SAMESITE:-strict}
+      WORKBENCH_SESSION_IDLE_TIMEOUT_SECONDS: ${WORKBENCH_SESSION_IDLE_TIMEOUT_SECONDS:-43200}
+      WORKBENCH_SESSION_ABSOLUTE_TIMEOUT_SECONDS: ${WORKBENCH_SESSION_ABSOLUTE_TIMEOUT_SECONDS:-604800}
+      WORKBENCH_LOGIN_RATE_LIMIT_ATTEMPTS: ${WORKBENCH_LOGIN_RATE_LIMIT_ATTEMPTS:-5}
+      WORKBENCH_LOGIN_RATE_LIMIT_GLOBAL_ATTEMPTS: ${WORKBENCH_LOGIN_RATE_LIMIT_GLOBAL_ATTEMPTS:-30}
+      WORKBENCH_LOGIN_RATE_LIMIT_WINDOW_SECONDS: ${WORKBENCH_LOGIN_RATE_LIMIT_WINDOW_SECONDS:-300}
+      WORKBENCH_WORKSPACE_ROOT: /workspace
+      WORKBENCH_REPOSITORIES_ROOT: /workspace/repositories
+      WORKBENCH_DATA_DIR: /var/lib/codex-workbench
+      WORKBENCH_UPLOADS_DIR: /var/lib/codex-workbench/uploads
+      WORKBENCH_DATABASE_PATH: /var/lib/codex-workbench/state/workbench.sqlite3
+      WORKBENCH_PASSWORD_VERIFIER_FILE: /var/lib/codex-workbench/security/password.argon2id
+      WORKBENCH_SESSION_SECRET_FILE: /run/secrets/workbench/session.key
+      WORKBENCH_MAX_JSON_REQUEST_BYTES: ${WORKBENCH_MAX_JSON_REQUEST_BYTES:-1048576}
+      WORKBENCH_MAX_UPLOAD_BYTES: ${WORKBENCH_MAX_UPLOAD_BYTES:-20971520}
+      WORKBENCH_MAX_UPLOADS_PER_TURN: ${WORKBENCH_MAX_UPLOADS_PER_TURN:-8}
+      WORKBENCH_MAX_UPLOADS_PER_SESSION: ${WORKBENCH_MAX_UPLOADS_PER_SESSION:-64}
+      WORKBENCH_MAX_UPLOAD_SESSION_BYTES: ${WORKBENCH_MAX_UPLOAD_SESSION_BYTES:-104857600}
+      WORKBENCH_UPLOAD_TTL_SECONDS: ${WORKBENCH_UPLOAD_TTL_SECONDS:-86400}
+      WORKBENCH_UPLOAD_MAX_DIMENSION: ${WORKBENCH_UPLOAD_MAX_DIMENSION:-12000}
+      WORKBENCH_UPLOAD_MAX_PIXELS: ${WORKBENCH_UPLOAD_MAX_PIXELS:-40000000}
+      WORKBENCH_UPLOAD_MAX_FRAMES: "1"
+      WORKBENCH_CODEX_EXECUTABLE: /usr/local/bin/codex
+      WORKBENCH_EXPECTED_CODEX_VERSION: "0.146.0"
+      WORKBENCH_APP_SERVER_START_ENABLED: "true"
+      WORKBENCH_APP_SERVER_VERSION_CHECK_TIMEOUT_SECONDS: "15"
+      WORKBENCH_APP_SERVER_REQUEST_TIMEOUT_SECONDS: ${WORKBENCH_APP_SERVER_REQUEST_TIMEOUT_SECONDS:-30}
+      WORKBENCH_APP_SERVER_SHUTDOWN_TIMEOUT_SECONDS: ${WORKBENCH_APP_SERVER_SHUTDOWN_TIMEOUT_SECONDS:-5}
+      WORKBENCH_APP_SERVER_MAX_LINE_BYTES: ${WORKBENCH_APP_SERVER_MAX_LINE_BYTES:-4194304}
+      WORKBENCH_APP_SERVER_RESTART_LIMIT: ${WORKBENCH_APP_SERVER_RESTART_LIMIT:-5}
+      WORKBENCH_APP_SERVER_RESTART_WINDOW_SECONDS: ${WORKBENCH_APP_SERVER_RESTART_WINDOW_SECONDS:-300}
+      WORKBENCH_APP_SERVER_BACKOFF_INITIAL_SECONDS: ${WORKBENCH_APP_SERVER_BACKOFF_INITIAL_SECONDS:-0.5}
+      WORKBENCH_APP_SERVER_BACKOFF_MAX_SECONDS: ${WORKBENCH_APP_SERVER_BACKOFF_MAX_SECONDS:-30}
+      WORKBENCH_REALTIME_HISTORY_SIZE: ${WORKBENCH_REALTIME_HISTORY_SIZE:-512}
+      WORKBENCH_REALTIME_CLIENT_QUEUE_SIZE: ${WORKBENCH_REALTIME_CLIENT_QUEUE_SIZE:-128}
+      WORKBENCH_REALTIME_HEARTBEAT_SECONDS: ${WORKBENCH_REALTIME_HEARTBEAT_SECONDS:-20}
+      WORKBENCH_APPROVAL_TTL_SECONDS: ${WORKBENCH_APPROVAL_TTL_SECONDS:-300}
+      WORKBENCH_FULL_ACCESS_CONFIRMATION_TTL_SECONDS: ${WORKBENCH_FULL_ACCESS_CONFIRMATION_TTL_SECONDS:-120}
+      WORKBENCH_MUTATION_RATE_LIMIT_REQUESTS: ${WORKBENCH_MUTATION_RATE_LIMIT_REQUESTS:-120}
+      WORKBENCH_MUTATION_RATE_LIMIT_GLOBAL_REQUESTS: ${WORKBENCH_MUTATION_RATE_LIMIT_GLOBAL_REQUESTS:-1000}
+      WORKBENCH_MUTATION_RATE_LIMIT_WINDOW_SECONDS: ${WORKBENCH_MUTATION_RATE_LIMIT_WINDOW_SECONDS:-60}
+      WORKBENCH_MAX_COMMAND_OUTPUT_BYTES: ${WORKBENCH_MAX_COMMAND_OUTPUT_BYTES:-262144}
+    volumes:
+      - "${WORKSPACE_PATH:?Set WORKSPACE_PATH in .env}:/workspace:rw"
+      - "${WORKBENCH_DATA_PATH:?Set WORKBENCH_DATA_PATH in .env}:/var/lib/codex-workbench:rw"
+      - "${WORKBENCH_UPLOADS_PATH:?Set WORKBENCH_UPLOADS_PATH in .env}:/var/lib/codex-workbench/uploads:rw"
+      - "${WORKBENCH_PASSWORD_PATH:?Set WORKBENCH_PASSWORD_PATH in .env}:/var/lib/codex-workbench/security:rw"
+      - "${CODEX_HOME_PATH:?Set CODEX_HOME_PATH in .env}:/home/workbench/.codex:rw"
+      - "${WORKBENCH_SESSION_SECRET_PATH:?Set WORKBENCH_SESSION_SECRET_PATH in .env}:/run/secrets/workbench:ro"
+    read_only: true
+    tmpfs:
+      - "/tmp:size=128m,mode=1777,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.cache:size=128m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.config:size=16m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.local:size=64m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.npm:size=128m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+    init: true
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    restart: unless-stopped
+    mem_limit: 2g
+    pids_limit: 256
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+    networks:
+      - workbench-private
+
+  frontend:
+    platform: linux/amd64
+    image: "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/codex-workbench-frontend:${WORKBENCH_VERSION:-0.1.0}"
+    user: "${PUID:-1000}:${PGID:-1000}"
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8085:8080"
+    read_only: true
+    tmpfs:
+      - "/tmp:size=16m,mode=1777,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/var/cache/nginx:size=32m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/var/run:size=4m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+    restart: unless-stopped
+    mem_limit: 128m
+    pids_limit: 64
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 2048
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - "-"
+        - http://127.0.0.1:8080/healthz
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      workbench-private:
+      backend-net:
+
+networks:
+  workbench-private:
+    driver: bridge
+  backend-net:
+    external: true

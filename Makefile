@@ -1,4 +1,4 @@
-.PHONY: bootstrap backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build audit verify schemas
+.PHONY: bootstrap backend-test backend-lint backend-typecheck frontend-test frontend-lint frontend-typecheck frontend-build audit public-release-check verify schemas
 
 bootstrap:
 	./scripts/bootstrap-backend.sh
@@ -27,6 +27,10 @@ frontend-build:
 
 audit:
 	./scripts/audit-dependencies.sh
+
+public-release-check:
+	./scripts/check-secrets.sh
+	backend/.venv/bin/python ./scripts/check-public-release.py
 
 verify:
 	./scripts/verify.sh

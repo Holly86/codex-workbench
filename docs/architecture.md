@@ -44,7 +44,7 @@ The backend container will run exactly one supervised app-server child. Horizont
 is disallowed until process ownership and event fan-out are redesigned; SQLite and one child
 process make a single active backend replica the explicit topology.
 
-Both services target `linux/amd64`, use numeric identity `1026:100`, read-only roots, dropped
+Both services target `linux/amd64`, use an operator-configured non-root numeric identity, read-only roots, dropped
 capabilities and bounded RAM/PIDs/fds/tmpfs. Only the Python backend enables Docker Init because it
 owns child processes and its image has no init system; neither image uses s6-overlay. The Synology
 kernel cannot enforce CPU-CFS quotas, so the architecture makes no false CPU-isolation claim and

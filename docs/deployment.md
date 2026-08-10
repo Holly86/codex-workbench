@@ -1,15 +1,16 @@
 # Synology-Deployment
 
-Dieses Runbook gilt ausschließlich für die reale Synology DS918+ unter
-`/volume1/docker/codex`. Alle Befehle werden aus
-`/volume1/docker/codex/workspace/repositories/codex-workbench` ausgeführt. Die Beispiele verwenden
-das auf DSM vorhandene Kommando `docker-compose`, nicht das neuere `docker compose`.
-Falls der DSM-Benutzer keinen direkten Zugriff auf den Docker-Daemon hat, werden die gezeigten
-Docker-/Compose-Befehle mit `sudo` ausgeführt.
+Dieses Runbook beschreibt das mitgelieferte Synology-Profil unter `/volume1/docker/codex`. Alle
+Befehle werden beispielhaft aus
+`/volume1/docker/codex/workspace/repositories/codex-workbench` ausgeführt. Moderne Installationen
+verwenden `docker compose`; auf älteren DSM-Versionen kann das funktional gleichwertige
+`docker-compose` erforderlich sein. Falls der DSM-Benutzer keinen direkten Zugriff auf den
+Docker-Daemon hat, werden die Docker-/Compose-Befehle mit `sudo` ausgeführt.
 
 ## Zielarchitektur
 
-Compose baut zwei linux/amd64-Images und startet genau je einen Container:
+Compose startet genau je einen linux/amd64-Container. `compose.release.yaml` zieht veröffentlichte
+Images; `compose.yaml` kann dieselben Images aus dem Quellcode bauen:
 
 - `frontend` ist ein unprivilegierter Nginx und der einzige Service mit einem veröffentlichten
   Host-Port. Er liefert die Weboberfläche aus und leitet `/api` und `/ws` in das private Netz weiter.
@@ -25,11 +26,8 @@ Compose baut zwei linux/amd64-Images und startet genau je einen Container:
   über den HTTPS Reverse Proxy der Synology; direkte LAN-Freigabe, DSM-Portweiterleitung und
   Router-NAT für 8085 sind unzulässig.
 
-Der bestehende SSH-Codex-Container wird weder ersetzt noch von diesem Compose-Projekt verwaltet.
-
-Die bereits belegten Hostports `1880`, `3000`, `3002`, `5005`, `5678`, `8010`, `8080`, `8081`,
-`8890`, `11434`, `1883` und `1884` werden nicht verwendet oder verändert. Der Installer akzeptiert
-nur 8085 auf Loopback und bricht ab, wenn dieser Port bereits lauscht.
+Andere Container werden weder ersetzt noch von diesem Compose-Projekt verwaltet. Der Installer
+akzeptiert nur 8085 auf Loopback und bricht ab, wenn dieser Port bereits lauscht.
 
 ## Persistente Hostpfade
 
@@ -58,10 +56,10 @@ Nginx-Laufzeitpfade und überhaupt keine Hostdaten.
 
 ## Identitäts- und Rechtemodell
 
-Build und Compose verwenden verbindlich UID `1026` und GID `100`. Der Installer lehnt andere Werte
-und abweichende Eigentümer von Codex-Home oder Workspace ab, ändert diese gemeinsamen Pfade aber
-nicht. Beide Images werden mit derselben numerischen Identität gebaut und laufen vollständig
-non-root.
+Compose verwendet die in `.env` konfigurierten numerischen Werte `PUID` und `PGID`. Der Installer
+akzeptiert ausschließlich positive non-root Werte, prüft abweichende Eigentümer von Codex-Home oder
+Workspace, ändert diese gemeinsamen Pfade aber nicht. Beide Container laufen mit derselben
+konfigurierten numerischen Identität vollständig non-root.
 
 Workbench-Verzeichnisse sind Modus 0700, Sitzungsschlüssel, Passwort-Verifier, SQLite-Dateien und
 Uploads Modus 0600. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
@@ -97,7 +95,23 @@ Für echten Parallelbetrieb ist ein separat authentifiziertes Codex-Home die sic
 ein bloß kopiertes Home kann auslaufende Refresh-Tokens und divergierende Threads erzeugen und ist
 kein belastbares Synchronisationsverfahren.
 
-## Initialinstallation
+## Installation mit veröffentlichten Images
+
+Nach Veröffentlichung der Images wird kein lokaler Build benötigt:
+
+    cp .env.example .env
+    # DOCKERHUB_NAMESPACE, WORKBENCH_PUBLIC_ORIGIN, PUID/PGID und Hostpfade prüfen.
+    sudo ./scripts/init-deployment.sh
+    docker compose -f compose.release.yaml pull
+    docker compose -f compose.release.yaml up -d
+
+`compose.release.yaml` enthält für Backend und Frontend kein `build:`. Es verwendet
+`${DOCKERHUB_NAMESPACE}` und `${WORKBENCH_VERSION:-0.1.0}`. Für ein Update wird
+`WORKBENCH_VERSION=x.y.z` in `.env` gesetzt und anschließend werden dieselben `pull`- und `up -d`-
+Befehle wiederholt. Persistente Bind-Mounts bleiben erhalten; Datenlöschung und globale
+Docker-Prune-Befehle sind kein Bestandteil des Updates.
+
+## Initialinstallation aus Source
 
 1. Als DSM-Administrator per SSH anmelden und den Zielzustand prüfen:
 
@@ -132,8 +146,8 @@ kein belastbares Synchronisationsverfahren.
        WORKBENCH_PUBLIC_ORIGIN=https://<exakter-reverse-proxy-hostname>
        WORKBENCH_SESSION_COOKIE_SECURE=true
        WORKBENCH_ALLOW_INSECURE_HTTP=false
-       PUID=1026
-       PGID=100
+       PUID=1000
+       PGID=1000
 
    `WORKBENCH_PUBLIC_ORIGIN` muss exakt dem später im Browser sichtbaren HTTPS-Origin entsprechen,
    einschließlich eines nicht standardmäßigen öffentlichen Ports, aber ohne Pfad oder abschließenden
@@ -157,7 +171,7 @@ kein belastbares Synchronisationsverfahren.
        sudo ./scripts/init-deployment.sh
 
    Er normalisiert eine CRLF-`.env` atomar auf LF, ohne sie als Shellcode auszuführen, prüft alle
-   Shellskripte und `.env.example` auf LF, validiert numerisch exakt `1026:100`, alle sicherheits-
+   Shellskripte und `.env.example` auf LF, validiert die konfigurierte numerische Identität, alle sicherheits-
    und ressourcenrelevanten Werte, die exakten Hostpfade und Eigentümer sowie den Schema-/CLI-Pin.
    `backend-net` muss vorhanden und ein Bridge-Netz sein; TCP 8085 muss frei sein. Das vollständig
    gerenderte Compose-Modell darf nur die Images des gewählten Tags, `linux/amd64`, die zwei
@@ -296,8 +310,8 @@ Alle Compose-Befehle werden ausschließlich in diesem Repository mit
 Compose erzeugt kollisionsarme projektspezifische Namen. Verboten sind `docker system prune`,
 globales `docker image prune`, `docker network prune`, `docker volume prune`, das Entfernen von
 `backend-net`, Stop/Recreate fremder Container und das Ändern bestehender Reverse-Proxy-Ziele oder
-belegter Ports. Insbesondere werden Daten von Alivo, Nextcloud, Paperless, n8n, ioBroker, Ollama,
-Pool Community, Signage und Homebridge sowie `/volume1/docker/alivo` niemals berührt.
+belegter Ports. Daten anderer Anwendungen, Container, Volumes und Netzwerke auf dem Host werden
+weder gelesen noch verändert.
 
 `docker-compose down` darf nur aus diesem Projektverzeichnis und nur für den Workbench-Stack
 verwendet werden; `down -v` ist unzulässig. Eine risikoarme Bereinigung entfernt ausschließlich

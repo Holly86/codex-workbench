@@ -23,6 +23,7 @@ cd "$repository_root"
 ./scripts/audit-dependencies.sh
 ./scripts/check-generated-schemas.sh
 backend/.venv/bin/python ./scripts/check-deployment-policy.py
+backend/.venv/bin/python ./scripts/check-public-release.py
 sh -n deploy/*.sh scripts/*.sh
 ./scripts/test-init-deployment.sh
 ./scripts/test-deployment-invariants.sh

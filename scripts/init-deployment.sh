@@ -459,8 +459,6 @@ puid=$(read_env PUID)
 pgid=$(read_env PGID)
 validate_integer PUID "$puid" 1 60000
 validate_integer PGID "$pgid" 1 60000
-[ "$puid" = 1026 ] || fail "PUID muss auf dieser Synology exakt 1026 sein."
-[ "$pgid" = 100 ] || fail "PGID muss auf dieser Synology exakt 100 sein."
 status "PUID/PGID validiert: $puid:$pgid."
 if [ "$created_env" = true ]; then
     chown "$puid:$pgid" .env

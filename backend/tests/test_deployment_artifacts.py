@@ -73,6 +73,6 @@ def test_synology_compose_boundaries_remain_unchanged() -> None:
 
     assert compose.count("\n    ports:\n") == 1
     assert '      - "127.0.0.1:8085:8080"' in compose
-    assert compose.count('    user: "${PUID:-1026}:${PGID:-100}"') == 2
+    assert compose.count('    user: "${PUID:-1000}:${PGID:-1000}"') == 2
     assert "  backend-net:\n    external: true" in compose
     assert "  workbench-private:\n    driver: bridge" in compose

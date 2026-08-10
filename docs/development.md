@@ -2,9 +2,9 @@
 
 ## Toolchain
 
-The production target is Python 3.12. The inspected build host supplied Python 3.14.5, Node
-24.18.1, npm 11.12.1, and Codex CLI 0.146.0. Python dependencies live in backend/.venv and frontend
-dependencies in frontend/node_modules. Neither bootstrap script installs global packages.
+The production target is Python 3.12 with Node 24 and npm 11. Container builds pin Node 24.18.1 and
+Codex CLI 0.146.0. Python dependencies live in backend/.venv and frontend dependencies in
+frontend/node_modules. Neither bootstrap script installs global packages.
 
 ## Bootstrap
 

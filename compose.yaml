@@ -11,9 +11,9 @@ services:
         CODEX_VERSION: ${CODEX_VERSION:-0.146.0}
         NODE_VERSION: ${NODE_VERSION:-24.18.1}
         PYTHON_VERSION: ${PYTHON_VERSION:-3.12.11}
-        WORKBENCH_UID: ${PUID:-1026}
-        WORKBENCH_GID: ${PGID:-100}
-    user: "${PUID:-1026}:${PGID:-100}"
+        WORKBENCH_UID: ${PUID:-1000}
+        WORKBENCH_GID: ${PGID:-1000}
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       HOME: /home/workbench
       CODEX_HOME: /home/workbench/.codex
@@ -74,11 +74,11 @@ services:
       - "${WORKBENCH_SESSION_SECRET_PATH:?Set WORKBENCH_SESSION_SECRET_PATH in .env}:/run/secrets/workbench:ro"
     read_only: true
     tmpfs:
-      - "/tmp:size=128m,mode=1777,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.cache:size=128m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.config:size=16m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.local:size=64m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/home/workbench/.npm:size=128m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/tmp:size=128m,mode=1777,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.cache:size=128m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.config:size=16m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.local:size=64m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/home/workbench/.npm:size=128m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
     init: true
     stop_signal: SIGTERM
     stop_grace_period: 30s
@@ -119,7 +119,7 @@ services:
       dockerfile: deploy/frontend.Dockerfile
       args:
         NODE_VERSION: ${NODE_VERSION:-24.18.1}
-    user: "${PUID:-1026}:${PGID:-100}"
+    user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
       backend:
         condition: service_healthy
@@ -127,9 +127,9 @@ services:
       - "127.0.0.1:8085:8080"
     read_only: true
     tmpfs:
-      - "/tmp:size=16m,mode=1777,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/var/cache/nginx:size=32m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
-      - "/var/run:size=4m,mode=0700,uid=${PUID:-1026},gid=${PGID:-100}"
+      - "/tmp:size=16m,mode=1777,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/var/cache/nginx:size=32m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
+      - "/var/run:size=4m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}"
     stop_signal: SIGTERM
     stop_grace_period: 15s
     restart: unless-stopped

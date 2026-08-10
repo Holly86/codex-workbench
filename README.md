@@ -1,120 +1,193 @@
 # Codex Workbench
 
-The Workbench includes conversation-focused Codex controls, native Git status and operations,
-repository create/clone flows, capability-gated GitHub publication, reconnect-safe native jobs,
-and host-aware sandbox selection. Native repository operations do not start Codex turns or consume
-model tokens.
+Codex Workbench is a self-hosted, browser-based, single-user interface for the OpenAI Codex CLI
+and its App Server. It provides conversation, repository, and Git workflows while keeping Codex
+authentication and filesystem authority in a backend process that the browser cannot access
+directly.
 
-Codex Workbench is a self-hosted, browser-based, single-user client for the official OpenAI Codex
-app-server. It runs Codex CLI 0.146.0 as one supervised backend child and provides a same-origin,
-authenticated conversation UI without exposing Codex authentication, raw protocol messages, or
-local filesystem paths to the browser.
+This is an independent community open-source project. It is not an official OpenAI product and is
+not affiliated with or endorsed by OpenAI. “OpenAI”, “Codex”, and related names belong to their
+respective owners. The project does not bundle ChatGPT artwork or other proprietary product assets.
 
-## Implemented capabilities
+> **Early release:** `v0.1.0` is the intended first public version. The repository and container
+> release are still blocked until the project owner selects a license and a private security-report
+> channel. Treat interfaces, persistence formats, and operating procedures as subject to change.
 
-- Direct `codex app-server --stdio` supervision with an exact, single-line
-  `codex-cli 0.146.0` compatibility check,
-  initialize/initialized handshake, request correlation, deadlines, cancellation, EOF detection,
-  bounded exponential restart, readiness integration, and graceful shutdown.
-- Opaque repository selection for direct non-symlink Git repositories, Codex-authoritative thread
-  list/start/resume/read, turn start/interrupt, and post-restart reconciliation.
-- Separate `read-only`, `workspace-write`, and confirmed `danger-full-access` sandbox choices with
-  schema-backed `untrusted`, `on-request`, and `never` approval policies.
-- One-use, short-lived, session/repository/thread-or-new-scope/policy-bound Full Access
-  confirmations and permanently visible effective-mode labelling.
-- Generation-, session-, thread-, turn-, and item-bound command, file-change, legacy, and permission
-  approval registry with expiry, replay protection, invalidation, safe denial, and audit events.
-- Authenticated same-origin WebSocket snapshots, monotonic per-session sequence ids, bounded replay,
-  gap recovery, heartbeat, slow-client disconnection, and normalized incremental events.
-- Live assistant text, reasoning summaries, plans, command/file activity, deterministic Working
-  states, interruption, errors, usage, context derivation, rate limits, credits, and exhaustion.
-- Decoded single-frame PNG, JPEG, WebP, and GIF image uploads through paste, drag/drop, or picker with
-  real transfer progress, cancellation, private mode-0600 storage, decode/dimension/pixel limits,
-  ownership/expiry checks, and schema-conformant `localImage` inputs.
-- Conversation-first navigation and sticky composer with native `model/list` reasoning options,
-  schema-backed skills/plugins, compact access selection, persistent background activity, and
-  path-free capability responses.
-- A typed native Git boundary for status, diff, fetch, fast-forward-only pull, staging, commit,
-  push, branches, remotes and log, plus validated repository init/clone; these operations never
-  start a Codex turn.
-- Argon2id first-start setup, digest-only server sessions, exact Origin/CSRF boundaries, mutation
-  rate limiting, no-store APIs, structured redacted logging, and a responsive accessible React UI.
+## What it is for
 
-The main design documents are [architecture](docs/architecture.md),
-[security model](docs/security-model.md), [app-server integration](docs/app-server-integration.md),
-and the [capability matrix](docs/app-server-capability-matrix.md).
+Workbench is for an operator who wants to run Codex against repositories on a trusted workstation
+or NAS, retain threads across browser reconnects, and use a narrow same-origin web application
+instead of exposing Codex credentials or raw App Server transport to a browser.
 
-## Prerequisites
+It is not a multi-user SaaS platform, an IDE, a generic remote shell, a Codex authentication proxy,
+or a replacement for repository hosting. It does not expose Docker Engine, Codex App Server stdio,
+arbitrary filesystem APIs, force-push/reset/clean operations, or deployment automation.
 
-- Python 3.12 (the local verification environment uses compatible Python 3.14.5)
-- Node.js 24 and npm 11
-- Codex CLI 0.146.0
-- Docker with Compose only for container build/runtime validation
+## Architecture and trust boundary
 
-Project dependencies stay local to this repository.
+```text
+Browser
+  │ same-origin HTTPS / WebSocket
+  ▼
+Frontend (unprivileged nginx)
+  │ private HTTP / WebSocket proxy
+  ▼
+Backend (FastAPI, one worker)
+  ├── supervised stdio JSONL ──► Codex App Server / Codex CLI 0.146.0
+  ├── constrained native Git ──► selected repositories
+  ├── metadata only ───────────► SQLite
+  └── private mounts ──────────► CODEX_HOME, workspace, uploads, state
+```
 
-## Local development
+Only the backend can read the Codex home, launch the pinned App Server child, or operate on the
+workspace. Browser requests use opaque repository identities and authenticated, CSRF-protected,
+same-origin routes. The backend is never assigned a host port; the frontend is the only ingress.
+See [architecture](docs/architecture.md) and the [security model](docs/security-model.md).
 
-    make bootstrap
+## Main capabilities
 
-Create restrictive local state as described in `docs/development.md`, enable the app server with
-`WORKBENCH_APP_SERVER_START_ENABLED=true`, then run:
+- Codex-authoritative thread listing, start, resume, streaming turns, interruption, and restart
+  reconciliation.
+- Live assistant text, reasoning summaries, plans, commands, file activity, usage, rate limits,
+  errors, and reconnect-safe event replay.
+- Model and reasoning-effort selection from `model/list`.
+- Schema-backed skills and plugins exposed by Codex.
+- PNG, JPEG, WebP, and single-frame GIF handoff by paste, drag/drop, or file picker, with private
+  uploads, progress, limits, ownership checks, and expiry.
+- Background turns and native jobs that survive browser disconnection.
+- Native Git status, diff, log, stage, commit, fetch, fast-forward-only pull, push, branch,
+  repository initialization, and clone operations without starting a model turn.
+- Capability-gated GitHub publication with explicit public-repository confirmation. Workbench never
+  publishes automatically.
+- Explicit `read-only`, `workspace-write`, and confirmed `danger-full-access` modes with separate
+  approval policy controls and visible approval state.
 
-    cd backend
-    .venv/bin/uvicorn codex_workbench.main:app --reload --host 127.0.0.1 --port 8000
+Full Access intentionally removes the Codex sandbox. Code running in that mode can exercise the
+backend user's workspace authority and may read backend mounts available to that user, including
+Codex authentication material. Use it only for trusted work and review
+[permissions and approvals](docs/permissions-and-approvals.md).
 
-    cd frontend
-    npm run dev
+## Container distribution
 
-Vite listens on 127.0.0.1:5173 and proxies same-origin API traffic to the backend.
+The planned `v0.1.0` release publishes two public, `linux/amd64` images:
 
-## Verification
+- `<your-dockerhub-namespace>/codex-workbench-backend:0.1.0`
+- `<your-dockerhub-namespace>/codex-workbench-frontend:0.1.0`
 
-    make verify
+No ARM64 support is claimed until it is built and tested. `compose.release.yaml` references these
+images and contains no `build:` directives. The source-oriented `compose.yaml` remains available
+for local image builds.
 
-This runs Ruff, strict MyPy, 83 backend tests including the deterministic fake app server, ESLint,
-strict TypeScript, 9 frontend tests, the production build, secret scanning, Python/npm audits, the
-generated-schema unchanged check, deployment policy and installer parser tests, shell syntax, and
+### Install from Docker Hub
+
+After the images have been published, clone or download the release files and prepare configuration:
+
+```sh
+cp .env.example .env
+# Set DOCKERHUB_NAMESPACE, the public origin, persistent host paths, PUID, and PGID.
+# Create backend-net if it does not already exist.
+sudo ./scripts/init-deployment.sh
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
+```
+
+The Synology initializer creates only the documented state/upload/secret directories and generates
+a session key when absent. It does not build, start, stop, or modify containers. The first browser
+visit on a trusted network establishes the Argon2id login verifier.
+
+For a later version, edit `WORKBENCH_VERSION` in `.env` (or export it for both commands), then run:
+
+```sh
+docker compose -f compose.release.yaml pull
+docker compose -f compose.release.yaml up -d
+```
+
+Updates do not delete data, uploads, repositories, Codex state, or previous images. No prune step is
+required or recommended.
+
+## Install from source
+
+Requirements are Python 3.12, Node.js 24, npm 11, and Codex CLI 0.146.0. Project dependencies stay
+inside this repository.
+
+```sh
+make bootstrap
+make verify
+```
+
+For development servers and safe local state, follow [development.md](docs/development.md). To build
+the production images locally, configure `.env`, run the Synology initializer only on its supported
+host layout, then use `docker compose build`. The backend Dockerfile installs and verifies the exact
+Codex CLI/App Server version twice; generated protocol schemas are pinned to the same version.
+
+## Persistence
+
+The release Compose file bind-mounts five operator-controlled locations:
+
+- Workbench metadata/database and private uploads;
+- password-verifier and session-key directories;
+- the Codex home containing Codex authentication, configuration, and threads;
+- the workspace containing repositories.
+
+Keep these paths outside the repository, restrict their host permissions, and back them up while all
+writers are quiesced. Never put their contents in Git, build contexts, diagnostics, or support
+issues. SQLite is used only for Workbench metadata; Codex remains authoritative for Codex threads.
+
+## Reverse proxy and Synology
+
+The supplied topology targets `linux/amd64` Synology deployments. The frontend binds only
+`127.0.0.1:8085`; expose it through a narrowly configured HTTPS reverse proxy with WebSocket support.
+Set `WORKBENCH_PUBLIC_ORIGIN` to the exact external HTTPS origin. Do not publish the backend or App
+Server, do not mount the Docker socket, and do not expose the frontend directly to an untrusted LAN
+or the internet. The detailed runbook is [docs/deployment.md](docs/deployment.md).
+
+Some older Synology kernels do not provide unprivileged user namespaces. Codex sandbox modes that
+depend on the packaged Linux sandbox can then be unavailable; Workbench detects that capability and
+does not silently substitute Full Access. `read-only` remains available, while Full Access remains
+an explicit high-risk choice. The same hosts may lack Docker CPU CFS quotas, so the provided Compose
+does not claim CPU isolation.
+
+## Security
+
+The application uses one backend worker, an Argon2id first-start login, digest-only server sessions,
+exact Origin/CSRF checks, a private App Server stdio channel, bounded uploads and queues, redacted
+structured logging, read-only container roots, dropped capabilities, `no-new-privileges`, PID/memory
+limits, and health checks. These controls do not replace network isolation, HTTPS, host permissions,
+patching, backups, or careful Full Access decisions. Read [SECURITY.md](SECURITY.md) before exposing
+an instance.
+
+## Troubleshooting
+
+- **Backend remains unhealthy:** verify that workspace, data, security, and Codex-home bind mounts
+  exist, are owned by the configured numeric user/group, and that Codex CLI 0.146.0 can start.
+- **Frontend starts but API calls fail:** verify the exact public origin, HTTPS proxy headers, Host,
+  WebSocket forwarding, and that the frontend can reach the private backend service.
+- **Sandbox mode is unavailable:** the host likely lacks the required user-namespace capability.
+  Do not work around this by making the container privileged; use `read-only` or explicitly assess
+  Full Access.
+- **Release image cannot be pulled:** confirm the Docker Hub namespace, repository visibility,
+  version, and `linux/amd64` platform.
+- **Synology deployment check:** run `sudo ./scripts/diagnose-deployment.sh`; it is read-only and
+  deliberately omits secret values.
+
+## Development and release verification
+
+```sh
+make verify
+```
+
+Verification covers Ruff, strict MyPy, backend tests, ESLint with zero warnings, TypeScript,
+frontend tests, the production build, dependency audits, current/history secret scanning, generated
+schema integrity, deployment and release policies, shell checks, Compose fixtures, and
 `git diff --check`.
 
-On the Synology deployment host additionally run from the repository after preparing `.env`:
+The generated JSON/TypeScript protocol files below `schemas/codex-app-server` come from Codex CLI
+0.146.0 and must be regenerated only through `make schemas`. See [CONTRIBUTING.md](CONTRIBUTING.md)
+and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-    sudo ./scripts/init-deployment.sh
-    sudo docker-compose config
-    sudo docker-compose build --pull --no-cache
-    sudo docker-compose up -d
+## License status
 
-If Docker is unavailable on a development host, these Docker checks remain a deployment-host gate
-and must not be emulated by exposing another port.
-
-## Deployment preparation
-
-`./scripts/init-deployment.sh` is an idempotent, Synology-only installer for the fixed
-`/volume1/docker/codex` topology. It validates or creates only Workbench data/upload/secret
-directories, normalizes `.env` line endings, and creates a session key only when absent; it never
-builds or starts containers and never changes the existing Codex home or workspace. Follow the
-[deployment runbook](docs/deployment.md) and execute the real-host
-[acceptance plan](docs/synology-test-plan.md). Compose starts the managed app server but never
-publishes an app-server or backend host port. The frontend is attached to the existing external
-`backend-net` without a fixed container or LAN IP. Its sole host publication is fixed at
-`127.0.0.1:8085:8080`; production access is exclusively through the Synology HTTPS reverse proxy
-targeting `http://127.0.0.1:8085`.
-
-The DS918+ kernel cannot enforce Docker CPU CFS quotas. Compose deliberately contains no `cpus`,
-`cpu_period`, or `cpu_quota`; memory, PID, file-descriptor, queue, upload, tmpfs, capability,
-read-only-root, and health boundaries remain enforced. A Buildx warning that host Git is unavailable
-is harmless: `.git` is excluded from the build context, images contain no fabricated commit label,
-and runtime behavior does not depend on Git provenance. Run `sudo ./scripts/diagnose-deployment.sh`
-for a secrets-free, read-only check of the Workbench containers after startup.
-
-## Protocol schemas
-
-Everything below `schemas/codex-app-server/typescript` and `schemas/codex-app-server/json` is
-generated by Codex CLI 0.146.0 and is the protocol authority. Do not edit it manually. Use
-`make schemas` only for a deliberate Codex upgrade and review the complete diff.
-
-## Scope limits
-
-There is no generic browser shell, arbitrary filesystem API, force-push/reset/clean operation,
-terminal, editor, multi-user administration, or deployment automation. Codex remains authoritative for threads;
-SQLite stores only Workbench metadata. No license has been selected.
+No project license has been selected. Until the owner adds a license, no permission is granted to
+copy, modify, or redistribute the original Codex Workbench source beyond rights supplied by law.
+This is a blocking decision for the intended open-source release; see the release report for the
+license options that require an owner choice.

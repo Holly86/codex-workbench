@@ -22,7 +22,6 @@ FORBIDDEN_CPU_KEYS = {
     "cpuset_mems",
 }
 FORBIDDEN_NETWORK_KEYS = {"container_name", "ipv4_address", "ipv6_address", "network_mode"}
-KNOWN_OCCUPIED_PORTS = {1880, 3000, 3002, 5005, 5678, 8010, 8080, 8081, 8890, 11434, 1883, 1884}
 
 
 def fail(message: str) -> None:
@@ -104,15 +103,13 @@ def main() -> int:
         require_hardening(service, name)
         if service.get("platform") != "linux/amd64":
             fail(f"{name} must target linux/amd64")
-        if service.get("user") != "${PUID:-1026}:${PGID:-100}":
+        if service.get("user") != "${PUID:-1000}:${PGID:-1000}":
             fail(f"{name} must use the configured numeric identity")
 
     if "ports" in backend:
         fail("backend must not publish a host port")
     if frontend.get("ports") != ["127.0.0.1:8085:8080"]:
         fail("frontend must publish exactly 127.0.0.1:8085:8080")
-    if 8085 in KNOWN_OCCUPIED_PORTS:
-        fail("Workbench port collides with the documented production services")
     if backend.get("networks") != ["workbench-private"]:
         fail("backend must use only workbench-private")
     if set(mapping(frontend.get("networks"), "frontend.networks")) != {
@@ -161,8 +158,8 @@ def main() -> int:
     env = load_env_example()
     if env.get("COMPOSE_PROJECT_NAME") != "codex-workbench":
         fail(".env.example must retain the isolated Compose project name")
-    if env.get("PUID") != "1026" or env.get("PGID") != "100":
-        fail(".env.example must retain Synology UID/GID 1026:100")
+    if env.get("PUID") != "1000" or env.get("PGID") != "1000":
+        fail(".env.example must use generic non-root UID/GID defaults")
     if env.get("CODEX_VERSION") != "0.146.0":
         fail(".env.example must pin Codex 0.146.0")
     if any(key in env for key in FORBIDDEN_CPU_KEYS) or any("CPU_QUOTA" in key for key in env):

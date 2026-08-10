@@ -19,8 +19,8 @@ RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
 ARG CODEX_VERSION
 ARG NODE_VERSION
-ARG WORKBENCH_UID=1026
-ARG WORKBENCH_GID=100
+ARG WORKBENCH_UID=1000
+ARG WORKBENCH_GID=1000
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
