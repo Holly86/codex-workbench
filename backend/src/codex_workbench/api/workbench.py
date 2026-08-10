@@ -22,6 +22,7 @@ from codex_workbench.jobs import JobType
 from codex_workbench.runtime import (
     RuntimeConflictError,
     RuntimeUnavailableError,
+    ThreadUnavailableError,
     WorkbenchRuntime,
 )
 from codex_workbench.security.http import api_error
@@ -50,6 +51,10 @@ class ThreadStartRequest(PermissionSelection):
 
 
 class ThreadResumeRequest(PermissionSelection):
+    repositoryId: Annotated[str, Field(pattern=r"^[0-9a-f]{16}$")]
+
+
+class ThreadDeleteRequest(StrictModel):
     repositoryId: Annotated[str, Field(pattern=r"^[0-9a-f]{16}$")]
 
 
@@ -187,6 +192,12 @@ def _safe_error(exc: BaseException) -> JSONResponse:
         )
     if isinstance(exc, RuntimeConflictError):
         return api_error(HTTPStatus.CONFLICT, "operation_conflict", str(exc))
+    if isinstance(exc, ThreadUnavailableError):
+        return api_error(
+            HTTPStatus.NOT_FOUND,
+            "thread_unavailable",
+            "Der Thread wurde gelöscht oder ist nicht verfügbar.",
+        )
     if isinstance(exc, GitOperationError | DeployKeyError):
         return api_error(
             HTTPStatus.BAD_GATEWAY,
@@ -693,6 +704,26 @@ async def read_thread(thread_id: str, request: Request) -> JSONResponse:
     try:
         thread = await _runtime(request).read_thread(thread_id, _session(request).id)
         return JSONResponse({"thread": thread})
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.delete("/threads/{thread_id}")
+async def delete_thread(
+    thread_id: str, payload: ThreadDeleteRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            await runtime.delete_thread(
+                thread_id=thread_id,
+                repository_id=payload.repositoryId,
+                session_id=session.id,
+            )
+        )
     except Exception as exc:
         return _safe_error(exc)
 

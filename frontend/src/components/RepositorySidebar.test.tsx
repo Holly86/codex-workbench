@@ -7,7 +7,7 @@ const repository = { id: "r", name: "codex-workbench", directoryName: "codex-wor
 
 it("filters repositories and exposes a keyboard-accessible context menu", () => {
   const action = vi.fn();
-  render(<RepositorySidebar repositories={[repository]} selectedRepositoryId="r" threads={[]} selectedThreadId={null} loading={false} onSelectRepository={vi.fn()} onSelectThread={vi.fn<(thread: ThreadView) => void>()} onNewThread={vi.fn()} onRepositoryAction={action} />);
+  render(<RepositorySidebar repositories={[repository]} selectedRepositoryId="r" threads={[]} selectedThreadId={null} loading={false} onSelectRepository={vi.fn()} onSelectThread={vi.fn<(thread: ThreadView) => void>()} onNewThread={vi.fn()} onDeleteThread={vi.fn()} onRepositoryAction={action} />);
   fireEvent.change(screen.getByRole("searchbox"), { target: { value: "missing" } });
   expect(screen.queryByText("codex-workbench")).not.toBeInTheDocument();
   fireEvent.change(screen.getByRole("searchbox"), { target: { value: "codex" } });

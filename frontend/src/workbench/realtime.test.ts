@@ -30,4 +30,21 @@ describe("realtime streaming reducer", () => {
     const state = reducer({ ...initialRealtimeState, threads: [thread] }, { type: "event", event: delta(1, "A") });
     expect(reducer(state, { type: "event", event: delta(1, "B") })).toBe(state);
   });
+
+  it("removes only the deleted thread and its transient state", () => {
+    const keep = { ...thread, id: "thread_2", activeTurnId: null, turns: [] };
+    const state = {
+      ...initialRealtimeState,
+      threads: [thread, keep],
+      timeline: { [thread.id]: [], [keep.id]: [] },
+    };
+    const next = reducer(state, {
+      type: "event",
+      event: { sequence: 1, occurredAt: "2026-01-01T00:00:00Z", type: "thread.deleted",
+        payload: { threadId: thread.id, repositoryId: thread.repositoryId },
+        threadId: thread.id, turnId: null, itemId: null },
+    });
+    expect(next.threads).toEqual([keep]);
+    expect(next.timeline).toEqual({ [keep.id]: [] });
+  });
 });

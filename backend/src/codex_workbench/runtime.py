@@ -60,6 +60,10 @@ class RuntimeConflictError(RuntimeError):
     pass
 
 
+class ThreadUnavailableError(RuntimeError):
+    pass
+
+
 class WorkbenchRuntime:
     def __init__(self, settings: Settings, metadata: MetadataRepository) -> None:
         self.settings = settings
@@ -830,6 +834,51 @@ class WorkbenchRuntime:
             repository_available=repository_available,
         )
         return self.projection.thread_browser_dict(refreshed)
+
+    async def delete_thread(
+        self, *, thread_id: str, repository_id: str, session_id: str
+    ) -> JsonObject:
+        """Delete one known idle thread without hydrating it through thread/read."""
+        lock = self._thread_mutations.setdefault(thread_id, asyncio.Lock())
+        async with lock:
+            reference = await asyncio.to_thread(self.metadata.get_thread, thread_id)
+            if (
+                reference is None
+                or reference.repository_id != repository_id
+                or reference.last_session_id != session_id
+            ):
+                raise ThreadUnavailableError("thread is unavailable")
+            await asyncio.to_thread(
+                self.repositories.resolve_repository_id, reference.repository_id
+            )
+            if self.projection.thread_has_active_turn(thread_id):
+                raise RuntimeConflictError(
+                    "Der aktive Turn muss vor dem Löschen gestoppt werden."
+                )
+            await self._call(
+                "thread/delete", {"threadId": thread_id}, owner=session_id
+            )
+            await self.approvals.invalidate_turn(thread_id, None)
+            await asyncio.to_thread(self.metadata.delete_thread, thread_id)
+            self.projection.forget_thread(thread_id)
+            self._unavailable_threads.pop(thread_id, None)
+            self._reconciliation_failures.discard(thread_id)
+            await asyncio.to_thread(
+                self.metadata.audit,
+                "thread_deleted",
+                occurred_at=int(time.time()),
+                session_id=session_id,
+                thread_id=thread_id,
+                repository_id=repository_id,
+            )
+            await self.broker.publish(
+                session_id,
+                "thread.deleted",
+                {"threadId": thread_id, "repositoryId": repository_id},
+                thread_id=thread_id,
+            )
+        self._thread_mutations.pop(thread_id, None)
+        return {"deleted": True, "threadId": thread_id}
 
     async def start_turn(
         self,

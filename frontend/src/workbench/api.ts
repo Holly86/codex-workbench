@@ -420,6 +420,16 @@ export async function readThread(threadId: string): Promise<ThreadView> {
   );
 }
 
+export async function deleteThread(
+  csrfToken: string, threadId: string, repositoryId: string,
+): Promise<void> {
+  await requestJson(
+    `/api/threads/${encodeURIComponent(threadId)}`,
+    { method: "DELETE", body: JSON.stringify({ repositoryId }) },
+    csrfToken,
+  );
+}
+
 export async function startTurn(
   csrfToken: string,
   threadId: string,

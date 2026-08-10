@@ -12,9 +12,11 @@ import { HealthStatus } from "../components/HealthStatus";
 import { RepositorySidebar } from "../components/RepositorySidebar";
 import type { RepositoryAction } from "../components/RepositorySidebar";
 import { RepositoryTools } from "../components/RepositoryTools";
+import { ThreadDeleteDialog } from "../components/ThreadDeleteDialog";
 import { UsagePanel } from "../components/UsagePanel";
 import {
   decideApproval,
+  deleteThread,
   interruptTurn,
   listRepositories,
   listThreads,
@@ -104,6 +106,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [accessError, setAccessError] = useState<string | null>(null);
   const [repositoryAction, setRepositoryAction] = useState<RepositoryAction | null>(null);
   const [actionRepository, setActionRepository] = useState<Repository | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ThreadView | null>(null);
   const jobs = realtime.jobs;
   const observedCloneJobs = useRef(new Set<string>());
   const [github, setGithub] = useState<GitHubCapability | null>(null);
@@ -300,7 +303,10 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       dispatch({ type: "thread", thread });
     }).catch((caught: unknown) => {
       const knownThread = knownThreads.current.get(selectedThreadId);
-      if (active && knownThread?.repositoryId !== selectedRepositoryId) handleError(caught);
+      if (!active) return;
+      if (caught instanceof ApiError && caught.code === "thread_unavailable") {
+        setError("Der Thread wurde gelöscht oder ist nicht verfügbar.");
+      } else if (knownThread?.repositoryId !== selectedRepositoryId) handleError(caught);
     }).finally(() => {
       if (active) setDeepLinkLoading(false);
     });
@@ -645,6 +651,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             onSelectRepository={selectRepository}
             onSelectThread={selectThread}
             onNewThread={requestNewThread}
+            onDeleteThread={setDeleteTarget}
             onRepositoryAction={(action, repository) => {
               if (action === "open" && repository) { selectRepository(repository.id); return; }
               if (action === "new-thread" && repository) {
@@ -743,6 +750,30 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
           if (selectedApproval === null) return;
           try { await decideApproval(session.csrfToken, selectedApproval.id, decision); }
           catch (caught: unknown) { handleError(caught); }
+        }}
+      />
+      <ThreadDeleteDialog
+        thread={deleteTarget}
+        pending={operationPending}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget === null) return;
+          setOperationPending(true);
+          setError(null);
+          void deleteThread(session.csrfToken, deleteTarget.id, deleteTarget.repositoryId)
+            .then(() => {
+              dispatch({ type: "threadDeleted", threadId: deleteTarget.id });
+              knownThreads.current.delete(deleteTarget.id);
+              hydrationAttempts.current.delete(`${deleteTarget.repositoryId}:${deleteTarget.id}`);
+              if (selectedThreadId === deleteTarget.id) {
+                setSelectedThreadId(null);
+                setDeepLinkLoading(false);
+                writeWorkbenchRoute(repositoryPath(deleteTarget.repositoryId), true);
+              }
+              setDeleteTarget(null);
+            })
+            .catch(handleError)
+            .finally(() => setOperationPending(false));
         }}
       />
       <DeployKeyDialog

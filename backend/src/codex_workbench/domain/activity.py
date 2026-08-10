@@ -61,6 +61,10 @@ class ActivityAggregator:
         value.error_message = None
         return self.snapshot(thread_id)
 
+    def forget(self, thread_id: str) -> None:
+        """Discard all transient presentation state for a deleted thread."""
+        self._activities.pop(thread_id, None)
+
     def reconnecting(self, thread_id: str) -> AgentActivity:
         value = self._activities.setdefault(thread_id, _MutableActivity())
         if value.state not in {

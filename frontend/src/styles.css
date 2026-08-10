@@ -382,6 +382,14 @@ button { -webkit-tap-highlight-color: transparent; }
   font-size: .65rem;
   letter-spacing: -.08em;
 }
+.thread-row { position: relative; }
+.thread-row > button:first-child { padding-right: 2.2rem; }
+.thread-menu-trigger { position: absolute; top: .65rem; right: .2rem; width: 1.8rem !important; min-height: 1.8rem !important; padding: 0 !important; display: grid !important; place-items: center; opacity: 0; }
+.thread-row:hover .thread-menu-trigger, .thread-menu-trigger:focus-visible, .thread-menu-trigger[aria-expanded="true"] { opacity: 1; }
+.thread-delete-summary { display: grid; gap: .45rem; margin: .8rem 0; }
+.thread-delete-summary > div { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: .6rem; }
+.thread-delete-summary dt { color: var(--muted); }
+.thread-delete-summary dd { margin: 0; overflow-wrap: anywhere; }
 .repository-row:hover .repository-menu-trigger,
 .repository-row:focus-within .repository-menu-trigger,
 .repository-menu-trigger[aria-expanded="true"] { opacity: 1; }

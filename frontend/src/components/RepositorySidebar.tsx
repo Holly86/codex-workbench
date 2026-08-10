@@ -13,6 +13,7 @@ interface RepositorySidebarProps {
   onSelectRepository: (repositoryId: string) => void;
   onSelectThread: (thread: ThreadView) => void;
   onNewThread: () => void;
+  onDeleteThread: (thread: ThreadView) => void;
   onRepositoryAction: (action: RepositoryAction, repository: Repository | null) => void;
 }
 
@@ -55,10 +56,12 @@ export function RepositorySidebar({
   onSelectRepository,
   onSelectThread,
   onNewThread,
+  onDeleteThread,
   onRepositoryAction,
 }: RepositorySidebarProps) {
   const [query, setQuery] = useState("");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [openThreadMenu, setOpenThreadMenu] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(() => {
     const saved = localStorage.getItem("workbench.sidebar.collapsed");
     if (saved !== null) return saved === "true";
@@ -66,6 +69,7 @@ export function RepositorySidebar({
   });
   const searchRef = useRef<HTMLInputElement>(null);
   const menuAnchorRef = useRef<HTMLButtonElement>(null);
+  const threadMenuAnchorRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -74,7 +78,7 @@ export function RepositorySidebar({
         if (collapsed) setCollapsed(false);
         window.setTimeout(() => searchRef.current?.focus());
       }
-      if (event.key === "Escape") setOpenMenu(null);
+      if (event.key === "Escape") { setOpenMenu(null); setOpenThreadMenu(null); }
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
@@ -106,6 +110,7 @@ export function RepositorySidebar({
   const filteredThreads = threads.filter((thread) =>
     !normalized || (thread.name ?? thread.preview).toLocaleLowerCase().includes(normalized));
   const menuRepository = repositories.find((repository) => repository.id === openMenu) ?? null;
+  const menuThread = threads.find((thread) => thread.id === openThreadMenu) ?? null;
 
   return (
     <>
@@ -203,6 +208,18 @@ export function RepositorySidebar({
                       <span className="thread-title">{thread.name ?? (thread.preview || "Neuer Thread")}</span>
                       <span className="thread-meta-row"><span className="thread-state"><i aria-hidden="true" />{label}</span><time>{formatActivityTime(thread.updatedAt)}</time></span>
                     </button>
+                    <button
+                      ref={openThreadMenu === thread.id ? threadMenuAnchorRef : undefined}
+                      type="button"
+                      className="thread-menu-trigger"
+                      aria-label={`${thread.name ?? (thread.preview || "Thread")} Menü`}
+                      aria-haspopup="menu"
+                      aria-expanded={openThreadMenu === thread.id}
+                      onClick={(event) => {
+                        threadMenuAnchorRef.current = event.currentTarget;
+                        setOpenThreadMenu(openThreadMenu === thread.id ? null : thread.id);
+                      }}
+                    ><span aria-hidden="true">•••</span></button>
                   </li>
                 );
               })}
@@ -231,6 +248,12 @@ export function RepositorySidebar({
             ))}
           </Fragment>
         ))}
+      </AnchoredMenu>
+      <AnchoredMenu anchorRef={threadMenuAnchorRef} open={menuThread !== null} onClose={() => setOpenThreadMenu(null)} ariaLabel="Thread-Aktionen" width={210} align="end">
+        {menuThread === null ? null : <button type="button" role="menuitem" onClick={() => {
+          onDeleteThread(menuThread);
+          setOpenThreadMenu(null);
+        }}>Thread löschen …</button>}
       </AnchoredMenu>
     </>
   );
