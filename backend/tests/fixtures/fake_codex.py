@@ -118,6 +118,8 @@ def main() -> int:
                 }
             )
         elif method == "model/list":
+            if scenario == "model_eof":
+                return 18
             if scenario == "model_error":
                 send({"id": request_id, "error": {"code": -32001, "message": "model failed"}})
                 continue

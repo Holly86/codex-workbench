@@ -185,6 +185,7 @@ class AppServerSupervisor:
         self._transport: SubprocessJsonlTransport | None = None
         self._restart_times: deque[float] = deque()
         self._restart_task: asyncio.Task[None] | None = None
+        self._restart_requested = False
         self._stability_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._lifecycle_lock = asyncio.Lock()
@@ -216,6 +217,7 @@ class AppServerSupervisor:
                 return
             self._stopping = False
             self._restart_times.clear()
+            self._restart_requested = False
             self._version = None
             self._error_code = None
             self._state = ProcessState.CHECKING
@@ -268,6 +270,7 @@ class AppServerSupervisor:
             restart.cancel()
             await asyncio.gather(restart, return_exceptions=True)
         self._restart_task = None
+        self._restart_requested = False
         stability = self._stability_task
         if stability is not None and not stability.done():
             stability.cancel()
@@ -316,6 +319,8 @@ class AppServerSupervisor:
             extra={"generation": generation, "codex_version": self._version},
         )
         await self._ready_handler(generation)
+        if generation != self._generation or self._state is not ProcessState.READY:
+            return
         self._stability_task = asyncio.create_task(
             self._reset_restart_budget_after_stable_window(generation),
             name="app-server-stability-window",
@@ -334,16 +339,31 @@ class AppServerSupervisor:
         await self._schedule_restart()
 
     async def _schedule_restart(self) -> None:
-        if self._stopping or (self._restart_task is not None and not self._restart_task.done()):
+        if self._stopping:
+            return
+        if self._restart_task is not None and not self._restart_task.done():
+            self._restart_requested = True
+            logger.warning(
+                "app_server_restart_requested_during_recovery",
+                extra={"generation": self._generation, "error_code": self._error_code},
+            )
             return
         now = time.monotonic()
         cutoff = now - self._settings.app_server_restart_window_seconds
         while self._restart_times and self._restart_times[0] < cutoff:
             self._restart_times.popleft()
         if len(self._restart_times) >= self._settings.app_server_restart_limit:
+            failure_error_code = self._error_code
             self._state = ProcessState.FAILED
             self._error_code = "restart_limit_reached"
-            logger.error("app_server_restart_limit_reached")
+            logger.error(
+                "app_server_restart_limit_reached",
+                extra={
+                    "generation": self._generation,
+                    "error_code": failure_error_code,
+                    "restart_attempts": len(self._restart_times),
+                },
+            )
             await self._notify_terminal_failure()
             return
         self._restart_times.append(now)
@@ -395,7 +415,10 @@ class AppServerSupervisor:
                     "app_server_restart_failed",
                     extra={"error_type": type(exc).__name__},
                 )
-                self._restart_task = None
+                self._restart_requested = True
+            self._restart_task = None
+            if self._restart_requested and not self._stopping:
+                self._restart_requested = False
                 await self._schedule_restart()
 
     async def _notify_terminal_failure(self) -> None:

@@ -496,10 +496,16 @@ async def test_supervisor_stops_after_bounded_crash_restarts(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_supervisor_restarts_after_capability_eof(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("scenario", "method"),
+    [("plugin_eof", "plugin/list"), ("model_eof", "model/list")],
+)
+async def test_supervisor_restarts_after_capability_eof(
+    tmp_path: Path, scenario: str, method: str
+) -> None:
     settings = _supervisor_settings(tmp_path, restart_limit=2)
     environment = dict(os.environ)
-    environment["FAKE_CODEX_SCENARIO"] = "plugin_eof"
+    environment["FAKE_CODEX_SCENARIO"] = scenario
 
     def factory(_generation: int) -> SubprocessJsonlTransport:
         return SubprocessJsonlTransport(
@@ -537,7 +543,7 @@ async def test_supervisor_restarts_after_capability_eof(tmp_path: Path) -> None:
     try:
         await supervisor.start()
         with pytest.raises(AppServerDisconnectedError):
-            await supervisor.client.call("plugin/list", {"cwds": []}, owner="test")
+            await supervisor.client.call(method, {"cwds": []}, owner="test")
         for _ in range(100):
             if supervisor.status.state is ProcessState.READY and supervisor.status.generation == 2:
                 break
@@ -545,6 +551,116 @@ async def test_supervisor_restarts_after_capability_eof(tmp_path: Path) -> None:
         assert supervisor.status.state is ProcessState.READY
         assert supervisor.status.generation == 2
         assert supervisor.status.restart_attempts == 1
+    finally:
+        await supervisor.stop()
+
+
+@pytest.mark.asyncio
+async def test_model_rpc_error_does_not_restart_supervisor(tmp_path: Path) -> None:
+    settings = _supervisor_settings(tmp_path, restart_limit=2)
+    environment = dict(os.environ)
+    environment["FAKE_CODEX_SCENARIO"] = "model_error"
+
+    def factory(_generation: int) -> SubprocessJsonlTransport:
+        return SubprocessJsonlTransport(
+            (str(_FIXTURE), "app-server", "--stdio"),
+            environment=environment,
+            shutdown_timeout_seconds=0.5,
+        )
+
+    async def noop_notification(_generation: int, _method: str, _params: JsonObject) -> None:
+        return None
+
+    async def noop_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def noop_disconnect(_generation: int, _error: BaseException) -> None:
+        return None
+
+    async def noop_ready(_generation: int) -> None:
+        return None
+
+    async def version() -> str:
+        return "0.146.0"
+
+    supervisor = AppServerSupervisor(
+        settings,
+        notification_handler=noop_notification,
+        server_request_handler=noop_request,
+        disconnect_handler=noop_disconnect,
+        ready_handler=noop_ready,
+        transport_factory=factory,
+        version_checker=version,
+    )
+    try:
+        await supervisor.start()
+        with pytest.raises(AppServerRequestError):
+            await supervisor.client.call("model/list", {}, owner="test")
+        assert supervisor.status.state is ProcessState.READY
+        assert supervisor.status.generation == 1
+        assert supervisor.status.restart_attempts == 0
+    finally:
+        await supervisor.stop()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_during_recovery_requests_the_next_restart(tmp_path: Path) -> None:
+    settings = _supervisor_settings(tmp_path, restart_limit=3)
+    environment = dict(os.environ)
+    environment["FAKE_CODEX_SCENARIO"] = "plugin_eof"
+    ready: list[int] = []
+    supervisor: AppServerSupervisor
+
+    def factory(_generation: int) -> SubprocessJsonlTransport:
+        return SubprocessJsonlTransport(
+            (str(_FIXTURE), "app-server", "--stdio"),
+            environment=environment,
+            shutdown_timeout_seconds=0.5,
+        )
+
+    async def noop_notification(_generation: int, _method: str, _params: JsonObject) -> None:
+        return None
+
+    async def noop_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def noop_disconnect(_generation: int, _error: BaseException) -> None:
+        return None
+
+    async def on_ready(generation: int) -> None:
+        ready.append(generation)
+        if generation == 2:
+            with pytest.raises(AppServerDisconnectedError):
+                await supervisor.client.call("plugin/list", {"cwds": []}, owner="recovery")
+
+    async def version() -> str:
+        return "0.146.0"
+
+    supervisor = AppServerSupervisor(
+        settings,
+        notification_handler=noop_notification,
+        server_request_handler=noop_request,
+        disconnect_handler=noop_disconnect,
+        ready_handler=on_ready,
+        transport_factory=factory,
+        version_checker=version,
+    )
+    try:
+        await supervisor.start()
+        with pytest.raises(AppServerDisconnectedError):
+            await supervisor.client.call("plugin/list", {"cwds": []}, owner="initial")
+        for _ in range(200):
+            if supervisor.status.state is ProcessState.READY and supervisor.status.generation == 3:
+                break
+            await asyncio.sleep(0.02)
+        assert supervisor.status.state is ProcessState.READY
+        assert supervisor.status.generation == 3
+        assert supervisor.status.restart_attempts == 2
+        assert ready == [1, 2, 3]
     finally:
         await supervisor.stop()
 

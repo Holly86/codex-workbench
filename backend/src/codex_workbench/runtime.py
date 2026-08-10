@@ -45,6 +45,12 @@ class CapabilityCacheEntry:
     value: JsonObject
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilityCircuit:
+    error_class: str
+    generation: int
+
+
 class RuntimeUnavailableError(RuntimeError):
     pass
 
@@ -92,7 +98,8 @@ class WorkbenchRuntime:
         self._approval_expiry_tasks: dict[str, asyncio.Task[None]] = {}
         self._capability_cache: dict[str, CapabilityCacheEntry] = {}
         self._capability_flights: dict[str, asyncio.Task[JsonObject]] = {}
-        self._capability_cooldowns: dict[tuple[str, str], float] = {}
+        self._capability_circuits: dict[tuple[str, str], CapabilityCircuit] = {}
+        self._capability_transport_probes: dict[int, dict[str, int]] = {}
         self._capability_lock = asyncio.Lock()
         self._reconciliation_failures: set[str] = set()
         self._unavailable_threads: dict[str, tuple[str, JsonObject]] = {}
@@ -206,9 +213,6 @@ class WorkbenchRuntime:
             cached = self._capability_cache.get(key)
             if refresh:
                 self._capability_cache.pop(key, None)
-                for cooldown_key in tuple(self._capability_cooldowns):
-                    if cooldown_key[0] == key:
-                        self._capability_cooldowns.pop(cooldown_key, None)
             elif (
                 cached is not None
                 and cached.generation == generation
@@ -259,6 +263,7 @@ class WorkbenchRuntime:
             "model/list",
             {"includeHidden": False},
             session_id,
+            generation,
         )
         models_raw = models_result.get("data") if models_result is not None else None
         models: list[JsonValue] = []
@@ -311,6 +316,7 @@ class WorkbenchRuntime:
                 "skills/list",
                 {"cwds": [cwd], "forceReload": False},
                 session_id,
+                generation,
             )
             for entry in self._array(
                 skill_payload.get("data") if skill_payload is not None else None
@@ -334,6 +340,7 @@ class WorkbenchRuntime:
                 "plugin/list",
                 {"cwds": [cwd]},
                 session_id,
+                generation,
             )
             for marketplace in self._array(
                 plugin_payload.get("marketplaces") if plugin_payload is not None else None
@@ -385,16 +392,31 @@ class WorkbenchRuntime:
         method: str,
         params: JsonObject,
         owner: str,
+        generation: int,
     ) -> tuple[JsonObject | None, str | None]:
-        cooldown_key = (key, capability)
-        retry_at = self._capability_cooldowns.get(cooldown_key)
-        if retry_at is not None and retry_at > time.monotonic():
-            return None, "transport_cooldown"
+        del key
+        circuit_key = self._capability_circuit_key(capability)
+        if circuit_key in self._capability_circuits:
+            logger.info(
+                "capability_circuit_skipped",
+                extra={
+                    "capability": capability,
+                    "error_class": "transport_failure",
+                    "generation": generation,
+                    "codex_version": circuit_key[0],
+                },
+            )
+            return None, "temporarily_disabled"
+        transport_probe = capability == "plugin_list"
+        if transport_probe:
+            probes = self._capability_transport_probes.setdefault(generation, {})
+            probes[capability] = probes.get(capability, 0) + 1
         try:
-            result = await self._call(method, params, owner=owner)
+            result = await self._call_for_generation(
+                generation, method, params, owner=owner
+            )
             if not isinstance(result, dict):
                 raise ValueError("invalid capability response")
-            self._capability_cooldowns.pop(cooldown_key, None)
             return result, None
         except AppServerRequestError as exc:
             if exc.code == -32601:
@@ -407,18 +429,64 @@ class WorkbenchRuntime:
             reason = "timeout"
         except AppServerDisconnectedError:
             reason = "transport_failure"
-            self._capability_cooldowns[cooldown_key] = (
-                time.monotonic() + self.settings.capability_failure_cooldown_seconds
-            )
+            if transport_probe:
+                self._open_capability_circuit(capability, generation)
         except (RuntimeUnavailableError, ConnectionError):
             reason = "runtime_unavailable"
         except Exception:
             reason = "invalid_response"
+        finally:
+            if transport_probe:
+                active_probes = self._capability_transport_probes.get(generation)
+                if active_probes is not None:
+                    remaining = active_probes.get(capability, 0) - 1
+                    if remaining > 0:
+                        active_probes[capability] = remaining
+                    else:
+                        active_probes.pop(capability, None)
+                    if not active_probes:
+                        self._capability_transport_probes.pop(generation, None)
         logger.warning(
             "capability_request_failed",
             extra={"capability": capability, "error_class": reason},
         )
         return None, reason
+
+    def _capability_circuit_key(self, capability: str) -> tuple[str, str]:
+        version = self.supervisor.status.version or self.settings.expected_codex_version
+        # The runtime object is process-scoped. A generation change keeps the circuit; only a
+        # newly observed Codex version (or constructing a new runtime on backend restart) resets it.
+        for key in tuple(self._capability_circuits):
+            if key[1] != capability or key[0] == version:
+                continue
+            circuit = self._capability_circuits.pop(key)
+            logger.info(
+                "capability_circuit_reset",
+                extra={
+                    "capability": capability,
+                    "error_class": circuit.error_class,
+                    "generation": self.supervisor.status.generation,
+                    "codex_version": version,
+                },
+            )
+        return version, capability
+
+    def _open_capability_circuit(self, capability: str, generation: int) -> None:
+        key = self._capability_circuit_key(capability)
+        if key in self._capability_circuits:
+            return
+        self._capability_circuits[key] = CapabilityCircuit(
+            error_class="transport_failure", generation=generation
+        )
+        logger.warning(
+            "capability_circuit_opened",
+            extra={
+                "capability": capability,
+                "error_class": "transport_failure",
+                "generation": generation,
+                "codex_version": key[0],
+            },
+        )
 
     @staticmethod
     def _capability_state(reason: str | None) -> JsonObject:
@@ -862,6 +930,8 @@ class WorkbenchRuntime:
             await client.respond(request_id, safe_response)
 
     async def _on_disconnect(self, generation: int, exc: BaseException) -> None:
+        for capability in tuple(self._capability_transport_probes.get(generation, ())):
+            self._open_capability_circuit(capability, generation)
         invalidated = await self.approvals.invalidate_generation(generation)
         for record in invalidated:
             await self.projection.publish_approval_resolved(record.thread_id, record.id)
@@ -977,6 +1047,23 @@ class WorkbenchRuntime:
         if not self.app_server_ready:
             raise RuntimeUnavailableError("app-server is not ready")
         return await self.supervisor.client.call(method, params, owner=owner)
+
+    async def _call_for_generation(
+        self,
+        generation: int,
+        method: str,
+        params: JsonObject | None,
+        *,
+        owner: str,
+    ) -> JsonValue:
+        status = self.supervisor.status
+        if status.generation != generation or status.state is not ProcessState.READY:
+            raise RuntimeUnavailableError("app-server generation is not ready")
+        try:
+            client = self.supervisor.client_for_generation(generation)
+        except RuntimeError as exc:
+            raise RuntimeUnavailableError("app-server generation is not ready") from exc
+        return await client.call(method, params, owner=owner)
 
     @staticmethod
     def _object(value: JsonValue | None, label: str) -> JsonObject:

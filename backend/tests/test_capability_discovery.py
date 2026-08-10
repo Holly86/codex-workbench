@@ -8,7 +8,10 @@ from typing import cast
 
 import pytest
 
-from codex_workbench.app_server.correlation import AppServerRequestError
+from codex_workbench.app_server.correlation import (
+    AppServerDisconnectedError,
+    AppServerRequestError,
+)
 from codex_workbench.app_server.supervisor import ProcessState
 from codex_workbench.app_server.transport import JsonObject, JsonValue
 from codex_workbench.persistence.metadata import MetadataRepository
@@ -88,9 +91,10 @@ async def test_capabilities_are_single_flight_cached_and_generation_bound(
     release = asyncio.Event()
 
     async def call(
-        method: str, params: JsonObject | None, *, owner: str
+        generation: int, method: str, params: JsonObject | None, *, owner: str
     ) -> JsonValue:
         del owner
+        assert generation == runtime.supervisor.status.generation
         calls[method] += 1
         assert params is not None
         if method == "model/list":
@@ -106,7 +110,7 @@ async def test_capabilities_are_single_flight_cached_and_generation_bound(
         cwd_value = str(runtime.settings.repositories_root / "sample")
         return _response(method, cwd_value)
 
-    monkeypatch.setattr(runtime, "_call", call)
+    monkeypatch.setattr(runtime, "_call_for_generation", call)
     requests = [
         asyncio.create_task(runtime.capabilities(repository_id, f"session-{index}"))
         for index in range(5)
@@ -154,15 +158,16 @@ async def test_capability_request_errors_are_partial_and_do_not_restart_runtime(
     runtime, repository_id = _runtime(tmp_path)
 
     async def call(
-        method: str, params: JsonObject | None, *, owner: str
+        generation: int, method: str, params: JsonObject | None, *, owner: str
     ) -> JsonValue:
         del owner
+        assert generation == 1
         if method == failed_method:
             raise error
         assert params is not None
         return _response(method, str(runtime.settings.repositories_root / "sample"))
 
-    monkeypatch.setattr(runtime, "_call", call)
+    monkeypatch.setattr(runtime, "_call_for_generation", call)
     result = await runtime.capabilities(repository_id, "session")
     capability = {"model/list": "models", "skills/list": "skills", "plugin/list": "plugins"}[
         failed_method
@@ -175,3 +180,91 @@ async def test_capability_request_errors_are_partial_and_do_not_restart_runtime(
     assert runtime.supervisor.status.state is ProcessState.READY
     assert runtime.supervisor.status.generation == 1
     assert runtime.supervisor.status.restart_attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_transport_circuit_survives_generation_refresh_and_request_storm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, repository_id = _runtime(tmp_path)
+    calls: Counter[tuple[int, str]] = Counter()
+    plugin_entered = asyncio.Event()
+    release_plugin = asyncio.Event()
+    generation_two_entered = asyncio.Event()
+    release_generation_two = asyncio.Event()
+
+    async def call(
+        generation: int, method: str, params: JsonObject | None, *, owner: str
+    ) -> JsonValue:
+        del owner
+        calls[(generation, method)] += 1
+        assert params is not None
+        if generation == 2 and method == "model/list":
+            generation_two_entered.set()
+            await release_generation_two.wait()
+        if method == "plugin/list":
+            plugin_entered.set()
+            await release_plugin.wait()
+            runtime.supervisor._state = ProcessState.RESTARTING  # noqa: SLF001
+            raise AppServerDisconnectedError("generation 1 EOF")
+        return _response(method, str(runtime.settings.repositories_root / "sample"))
+
+    monkeypatch.setattr(runtime, "_call_for_generation", call)
+    first = asyncio.create_task(runtime.capabilities(repository_id, "browser-a"))
+    await plugin_entered.wait()
+    overlapping = [
+        asyncio.create_task(runtime.capabilities(repository_id, owner))
+        for owner in ("browser-b", "browser-reload", "websocket-reconnect")
+    ]
+    release_plugin.set()
+    initial = await asyncio.gather(first, *overlapping)
+    assert all(_status(result)["overall"] == "partial" for result in initial)
+    assert calls[(1, "plugin/list")] == 1
+
+    runtime.supervisor._generation = 2  # noqa: SLF001
+    runtime.supervisor._state = ProcessState.READY  # noqa: SLF001
+    generation_two_first = asyncio.create_task(
+        runtime.capabilities(repository_id, "browser-b", refresh=True)
+    )
+    await generation_two_entered.wait()
+    generation_two_others = [
+        asyncio.create_task(runtime.capabilities(repository_id, owner, refresh=True))
+        for owner in ("browser-c", "websocket-reconnect")
+    ]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    release_generation_two.set()
+    after_restart = await asyncio.gather(generation_two_first, *generation_two_others)
+    assert calls[(2, "plugin/list")] == 0
+    assert calls[(2, "model/list")] >= 1
+    assert calls[(2, "skills/list")] >= 1
+    assert all(_status(result)["overall"] == "partial" for result in after_restart)
+    plugin_state = _status(after_restart[0])["plugins"]
+    assert isinstance(plugin_state, dict)
+    assert plugin_state == {"available": False, "reason": "temporarily_disabled"}
+    assert runtime.app_server_ready is True
+
+
+@pytest.mark.asyncio
+async def test_generation_fence_prevents_old_discovery_from_using_new_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, repository_id = _runtime(tmp_path)
+    calls: list[tuple[int, str]] = []
+
+    async def call(
+        generation: int, method: str, params: JsonObject | None, *, owner: str
+    ) -> JsonValue:
+        del owner
+        calls.append((generation, method))
+        assert params is not None
+        if method == "model/list":
+            runtime.supervisor._generation = 2  # noqa: SLF001
+            raise AppServerDisconnectedError("generation changed")
+        raise AssertionError("old discovery continued after generation change")
+
+    monkeypatch.setattr(runtime, "_call_for_generation", call)
+    result = await runtime.capabilities(repository_id, "browser")
+    assert calls == [(1, "model/list"), (1, "skills/list"), (1, "plugin/list")]
+    assert _status(result)["generation"] == 1
+    assert _status(result)["overall"] == "unavailable"
