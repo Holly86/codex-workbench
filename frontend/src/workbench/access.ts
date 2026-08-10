@@ -24,3 +24,17 @@ export function resolveSafeSandboxMode(
   if (sandboxAvailable(capabilities, "read-only")) return "read-only";
   return null;
 }
+
+export function isFullAccessOnlyHost(capabilities: WorkbenchCapabilities): boolean {
+  return !sandboxAvailable(capabilities, "workspace-write")
+    && !sandboxAvailable(capabilities, "read-only")
+    && sandboxAvailable(capabilities, "danger-full-access");
+}
+
+export function resolveDefaultSandboxMode(
+  capabilities: WorkbenchCapabilities,
+  preferred: SandboxMode | null,
+): SandboxMode | null {
+  return resolveSafeSandboxMode(capabilities, preferred)
+    ?? (isFullAccessOnlyHost(capabilities) ? "danger-full-access" : null);
+}

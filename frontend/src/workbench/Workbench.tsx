@@ -35,7 +35,12 @@ import {
   repositoryRemovalPreview,
   updateRepository,
 } from "./api";
-import { resolveSafeSandboxMode, sandboxAvailable } from "./access";
+import {
+  isFullAccessOnlyHost,
+  resolveDefaultSandboxMode,
+  resolveSafeSandboxMode,
+  sandboxAvailable,
+} from "./access";
 import { useRealtime } from "./realtime";
 import { parseWorkbenchRoute, repositoryPath, threadPath, writeWorkbenchRoute } from "./routing";
 import type {
@@ -92,6 +97,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [deepLinkLoading, setDeepLinkLoading] = useState(
     () => parseWorkbenchRoute(window.location.pathname).threadId !== null,
   );
+  const [threadListHydratedRepositoryId, setThreadListHydratedRepositoryId] = useState<string | null>(null);
   const [operationPending, setOperationPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accessError, setAccessError] = useState<string | null>(null);
@@ -102,6 +108,15 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [github, setGithub] = useState<GitHubCapability | null>(null);
   const [removalPreview, setRemovalPreview] = useState<RepositoryRemovalPreview | null>(null);
   const mainRef = useRef<HTMLElement>(null);
+  const hydrationAttempts = useRef(new Set<string>());
+  const knownThreads = useRef(new Map<string, ThreadView>());
+  const selectedThreadIdRef = useRef(selectedThreadId);
+  const accessDefaultsRepositoryId = useRef<string | null>(null);
+  const hydrationTargetRef = useRef({
+    loading: deepLinkLoading,
+    repositoryId: selectedRepositoryId,
+    threadId: selectedThreadId,
+  });
 
   const capabilities =
     realtime.processConnection === "connected" &&
@@ -110,7 +125,12 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       : null;
   const selectedRepository = repositories.find((item) => item.id === selectedRepositoryId) ?? null;
   const repositoryThreads = realtime.threads.filter((thread) => thread.repositoryId === selectedRepositoryId);
-  const selectedThread = realtime.threads.find((thread) => thread.id === selectedThreadId) ?? null;
+  const selectedThread = realtime.threads.find((thread) =>
+    thread.id === selectedThreadId
+    && (selectedRepositoryId === null || thread.repositoryId === selectedRepositoryId)) ?? null;
+  const selectedThreadAccessId = selectedThread?.id ?? null;
+  const selectedThreadSandboxMode = selectedThread?.sandboxMode ?? null;
+  const selectedThreadApprovalPolicy = selectedThread?.approvalPolicy ?? null;
   const selectedApproval = realtime.approvals.find((approval) => approval.threadId === selectedThreadId) ?? realtime.approvals[0] ?? null;
   const working = selectedThread?.activeTurnId !== null && selectedThread?.activeTurnId !== undefined;
   const activeFullAccessIntent =
@@ -119,7 +139,6 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     sandboxAvailable(capabilities, "danger-full-access")
       ? fullAccessIntent
       : null;
-
   const handleError = useCallback((caught: unknown) => {
     if (caught instanceof ApiError && caught.status === 401) {
       onSessionExpired();
@@ -127,6 +146,16 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     }
     setError(caught instanceof Error ? caught.message : "Die Aktion ist fehlgeschlagen.");
   }, [onSessionExpired]);
+
+  useEffect(() => {
+    selectedThreadIdRef.current = selectedThreadId;
+    hydrationTargetRef.current = {
+      loading: deepLinkLoading,
+      repositoryId: selectedRepositoryId,
+      threadId: selectedThreadId,
+    };
+    for (const thread of realtime.threads) knownThreads.current.set(thread.id, thread);
+  }, [deepLinkLoading, selectedRepositoryId, selectedThreadId, realtime.threads]);
 
   const refreshRepositories = useCallback(async () => {
     const values = await listRepositories();
@@ -165,9 +194,12 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   useEffect(() => {
     const navigate = () => {
       const route = parseWorkbenchRoute(window.location.pathname);
+      accessDefaultsRepositoryId.current = null;
       setSelectedRepositoryId(route.repositoryId);
       setSelectedThreadId(route.threadId);
       setDeepLinkLoading(route.threadId !== null);
+      setThreadListHydratedRepositoryId((current) =>
+        current === route.repositoryId ? current : null);
       setError(null);
     };
     window.addEventListener("popstate", navigate);
@@ -194,26 +226,63 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
 
   useEffect(() => {
     if (selectedRepositoryId === null || repositoriesLoading) return;
-    if (!repositories.some((item) => item.id === selectedRepositoryId) && selectedThreadId !== null) {
-      window.setTimeout(() => setThreadsLoading(false), 0);
-      return;
+    if (threadListHydratedRepositoryId === selectedRepositoryId) return;
+    if (!repositories.some((item) => item.id === selectedRepositoryId)) {
+      const timer = window.setTimeout(() => {
+        setThreadsLoading(false);
+        setThreadListHydratedRepositoryId(selectedRepositoryId);
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
     const controller = new AbortController();
     void listThreads(selectedRepositoryId, controller.signal)
-      .then((threads) => dispatch({ type: "repositoryThreads", repositoryId: selectedRepositoryId, threads }))
+      .then((threads) => {
+        for (const thread of threads) knownThreads.current.set(thread.id, thread);
+        dispatch({ type: "repositoryThreads", repositoryId: selectedRepositoryId, threads });
+        const target = hydrationTargetRef.current;
+        if (target.loading && target.repositoryId === selectedRepositoryId && target.threadId !== null
+            && threads.some((thread) =>
+              thread.id === target.threadId && thread.repositoryId === selectedRepositoryId)) {
+          setDeepLinkLoading(false);
+        }
+      })
       .catch((caught: unknown) => {
         if (!controller.signal.aborted) handleError(caught);
       })
       .finally(() => {
-        if (!controller.signal.aborted) setThreadsLoading(false);
+        if (!controller.signal.aborted) {
+          setThreadListHydratedRepositoryId(selectedRepositoryId);
+          setThreadsLoading(false);
+        }
       });
     return () => controller.abort();
-  }, [selectedRepositoryId, selectedThreadId, repositories, repositoriesLoading, handleError, dispatch]);
+  }, [
+    selectedRepositoryId,
+    repositories,
+    repositoriesLoading,
+    threadListHydratedRepositoryId,
+    handleError,
+    dispatch,
+  ]);
 
   useEffect(() => {
-    if (selectedThreadId === null || selectedThread !== null) {
-      return;
+    if (!deepLinkLoading) return;
+    if (selectedThreadId === null) {
+      const timer = window.setTimeout(() => setDeepLinkLoading(false), 0);
+      return () => window.clearTimeout(timer);
     }
+    if (selectedThread !== null) {
+      knownThreads.current.set(selectedThread.id, selectedThread);
+      const timer = window.setTimeout(() => setDeepLinkLoading(false), 0);
+      return () => window.clearTimeout(timer);
+    }
+    if (repositoriesLoading || threadListHydratedRepositoryId !== selectedRepositoryId) return;
+    const hydrationKey = `${selectedRepositoryId ?? "history"}:${selectedThreadId}`;
+    if (hydrationAttempts.current.has(hydrationKey)) {
+      const timer = window.setTimeout(() => setDeepLinkLoading(false), 0);
+      return () => window.clearTimeout(timer);
+    }
+    hydrationAttempts.current.add(hydrationKey);
     let active = true;
     void readThread(selectedThreadId).then((thread) => {
       if (!active) return;
@@ -223,25 +292,41 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         writeWorkbenchRoute(repositoryPath(selectedRepositoryId), true);
         return;
       }
+      knownThreads.current.set(thread.id, thread);
       dispatch({ type: "thread", thread });
     }).catch((caught: unknown) => {
-      if (active) handleError(caught);
+      const knownThread = knownThreads.current.get(selectedThreadId);
+      if (active && knownThread?.repositoryId !== selectedRepositoryId) handleError(caught);
     }).finally(() => {
       if (active) setDeepLinkLoading(false);
     });
     return () => { active = false; };
-  }, [selectedThreadId, selectedThread, selectedRepositoryId, dispatch, handleError]);
+  }, [
+    deepLinkLoading,
+    selectedThreadId,
+    selectedThread,
+    selectedRepositoryId,
+    repositoriesLoading,
+    threadListHydratedRepositoryId,
+    dispatch,
+    handleError,
+  ]);
 
   useEffect(() => {
     if (selectedRepositoryId === null || selectedRepository === null || realtime.processConnection !== "connected") return;
     let active = true;
     void readCapabilities(selectedRepositoryId).then((value) => {
       if (!active) return;
+      const initializeAccessDefaults = accessDefaultsRepositoryId.current !== selectedRepositoryId;
+      accessDefaultsRepositoryId.current = selectedRepositoryId;
       setCapabilityProjection({ repositoryId: selectedRepositoryId, value });
       const defaultModel = value.models.find((item) => item.isDefault) ?? value.models[0];
       setModel((current) => value.models.some((item) => item.id === current) ? current : defaultModel?.id ?? null);
       setEffort((current) => current ?? defaultModel?.defaultReasoningEffort ?? null);
-      setSandboxMode((current) => resolveSafeSandboxMode(value, current));
+      setSandboxMode((current) => resolveDefaultSandboxMode(value, current));
+      if (initializeAccessDefaults && selectedThreadIdRef.current === null) {
+        setApprovalPolicy(isFullAccessOnlyHost(value) ? "never" : "on-request");
+      }
       setCapability(null);
       setFullAccessIntent(null);
       setAccessError(null);
@@ -249,7 +334,34 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       if (active) handleError(caught);
     });
     return () => { active = false; };
-  }, [selectedRepositoryId, selectedRepository, realtime.processConnection, handleError]);
+  }, [
+    selectedRepositoryId,
+    selectedRepository,
+    realtime.processConnection,
+    handleError,
+  ]);
+
+  useEffect(() => {
+    if (selectedThreadAccessId === null || selectedThreadSandboxMode === null
+        || selectedThreadApprovalPolicy === null || capabilities === null) return;
+    const timer = window.setTimeout(() => {
+      setApprovalPolicy(selectedThreadApprovalPolicy);
+      setCapability(null);
+      if (sandboxAvailable(capabilities, selectedThreadSandboxMode)) {
+        setSandboxMode(selectedThreadSandboxMode);
+        setAccessError(null);
+      } else {
+        setSandboxMode(resolveSafeSandboxMode(capabilities, selectedThreadSandboxMode));
+        setAccessError("Der Access-Modus dieses Threads ist auf diesem Host nicht verfügbar.");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    selectedThreadAccessId,
+    selectedThreadSandboxMode,
+    selectedThreadApprovalPolicy,
+    capabilities,
+  ]);
 
   useEffect(() => {
     if (realtime.connection !== "connected") return;
@@ -286,6 +398,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     setThreadsLoading(true);
     setSelectedRepositoryId(repositoryId);
     setSelectedThreadId(null);
+    setDeepLinkLoading(false);
+    setThreadListHydratedRepositoryId(null);
+    accessDefaultsRepositoryId.current = null;
     setCapabilityProjection(null);
     setSandboxMode(null);
     setApprovalPolicy("on-request");
@@ -310,8 +425,10 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         thread.approvalPolicy,
         suppliedCapability,
       );
+      knownThreads.current.set(resumed.id, resumed);
       dispatch({ type: "thread", thread: resumed });
       setSelectedThreadId(resumed.id);
+      setDeepLinkLoading(false);
       setSandboxMode(resumed.sandboxMode);
       setApprovalPolicy(resumed.approvalPolicy);
       setCapability(null);
@@ -323,6 +440,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   };
 
   const selectThread = (thread: ThreadView) => {
+    knownThreads.current.set(thread.id, thread);
     writeWorkbenchRoute(threadPath(thread.repositoryId, thread.id));
     setSelectedThreadId(thread.id);
     setDeepLinkLoading(false);
@@ -367,9 +485,10 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         policy,
         suppliedCapability,
       );
+      knownThreads.current.set(thread.id, thread);
+      setDeepLinkLoading(false);
       dispatch({ type: "thread", thread });
       setSelectedThreadId(thread.id);
-      setDeepLinkLoading(false);
       writeWorkbenchRoute(threadPath(thread.repositoryId, thread.id));
       setCapability(null);
     } catch (caught: unknown) {
@@ -498,13 +617,17 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       <a className="skip-link" href="#conversation">Zum Gespräch springen</a>
       <div className="app-shell">
         <header className="topbar compact-topbar">
-          <div className="brand"><span className="brand-mark" aria-hidden="true">⌘</span><h1>Codex Workbench</h1></div>
+          <div className="brand">
+            <img className="brand-wordmark" src="/brand/codex-workbench-wordmark.png" alt="" />
+            <h1 className="sr-only">Codex Workbench</h1>
+          </div>
           <div className="topbar-actions">
             <HealthStatus
               processConnection={realtime.processConnection}
               realtimeConnection={realtime.connection}
               capabilities={capabilities?.status ?? null}
             />
+            <UsagePanel thread={selectedThread} rateLimits={realtime.rateLimits} />
             <button type="button" className="secondary-action" disabled={logoutPending} onClick={() => void performLogout()}>{logoutPending ? "Abmelden …" : "Abmelden"}</button>
           </div>
         </header>
@@ -560,7 +683,6 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             {error !== null ? <div className="error-banner" role="alert"><span>{error}</span><button type="button" aria-label="Fehler schließen" onClick={() => setError(null)}>×</button></div> : null}
             <ActivityPanel thread={selectedThread} timeline={selectedThreadId === null ? [] : realtime.timeline[selectedThreadId] ?? []} runtimeState={realtime.processConnection} />
             <Conversation thread={selectedThread} loading={deepLinkLoading} />
-            <div className="compact-usage"><UsagePanel thread={selectedThread} rateLimits={realtime.rateLimits} /></div>
             <Composer
               csrfToken={session.csrfToken}
               disabled={selectedThread === null || selectedThread.repositoryAvailable === false || realtime.connection !== "connected" || operationPending}
