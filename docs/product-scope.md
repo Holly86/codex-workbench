@@ -21,6 +21,8 @@ The completed “Managed App Server, Streaming and Permissions” vertical slice
 - replay-safe command, file-change, legacy, and permission approvals;
 - deterministic Working/activity state, interruption, usage, context, rate-limit and credit views;
 - private, validated multi-image uploads and official `localImage` turn inputs;
+- native model/reasoning discovery and turn overrides, path-free skills/plugin discovery;
+- bounded native Git operations and validated local repository creation/clone without Codex turns;
 - a responsive conversation-first React UI with all authentication, empty, loading, failure,
   reconnect, approval, streaming, upload, and session-expired states;
 - non-root Compose artifacts, read-only image roots, persistent targeted mounts, limits, and probes;
@@ -32,7 +34,7 @@ repository references, upload metadata, and secret-free audit metadata only.
 ## Explicit exclusions
 
 - generic `command/exec`, `thread/shellCommand`, or arbitrary filesystem browser routes;
-- terminal, Monaco editor, file browser, direct Git writes, commit, or push;
+- terminal, Monaco editor, file browser, force push, reset, clean, or arbitrary Git commands;
 - remote-image URL ingestion and general document uploads;
 - granular approval-policy objects not enabled by the reviewed UI;
 - multi-user roles, password recovery/change, public SaaS operation, or deployment automation;

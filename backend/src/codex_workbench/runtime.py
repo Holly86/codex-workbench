@@ -19,6 +19,7 @@ from codex_workbench.domain.approvals import (
 )
 from codex_workbench.domain.capabilities import FullAccessRegistry
 from codex_workbench.domain.projection import DomainProjection, ProjectedThread
+from codex_workbench.git_service import GitService
 from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference
 from codex_workbench.realtime.broker import RealtimeBroker
 from codex_workbench.repositories import RepositoryDiscovery, RepositorySummary
@@ -41,6 +42,11 @@ class WorkbenchRuntime:
         self.settings = settings
         self.metadata = metadata
         self.repositories = RepositoryDiscovery(settings.repositories_root)
+        self.git = GitService(
+            self.repositories,
+            settings.repositories_root,
+            output_limit=settings.max_command_output_bytes,
+        )
         self.broker = RealtimeBroker(
             history_size=settings.realtime_history_size,
             subscriber_queue_size=settings.realtime_client_queue_size,
@@ -97,6 +103,103 @@ class WorkbenchRuntime:
 
     def consume_mutation(self, session_id: str) -> RateLimitDecision:
         return self._mutation_limiter.consume(session_id)
+
+    async def capabilities(self, repository_id: str | None, session_id: str) -> JsonObject:
+        """Return only schema-backed, browser-safe capability metadata."""
+        cwd: str | None = None
+        if repository_id is not None:
+            _summary, path = await asyncio.to_thread(
+                self.repositories.resolve_repository_id, repository_id
+            )
+            cwd = str(path)
+        models_raw = self._object(
+            await self._call("model/list", {"includeHidden": False}, owner=session_id),
+            "model/list result",
+        ).get("data")
+        models: list[JsonValue] = []
+        if isinstance(models_raw, list):
+            for value in models_raw:
+                if not isinstance(value, dict) or value.get("hidden") is True:
+                    continue
+                model = value.get("model")
+                if not isinstance(model, str):
+                    continue
+                efforts: list[JsonValue] = []
+                for option in self._array(value.get("supportedReasoningEfforts")):
+                    if isinstance(option, dict) and isinstance(option.get("reasoningEffort"), str):
+                        efforts.append(
+                            {
+                                "value": option["reasoningEffort"],
+                                "description": option.get("description")
+                                if isinstance(option.get("description"), str)
+                                else "",
+                            }
+                        )
+                models.append(
+                    {
+                        "id": model,
+                        "displayName": value.get("displayName")
+                        if isinstance(value.get("displayName"), str)
+                        else model,
+                        "description": value.get("description")
+                        if isinstance(value.get("description"), str)
+                        else "",
+                        "isDefault": value.get("isDefault") is True,
+                        "defaultReasoningEffort": value.get("defaultReasoningEffort"),
+                        "reasoningEfforts": efforts,
+                        "inputModalities": [
+                            item
+                            for item in self._array(value.get("inputModalities"))
+                            if isinstance(item, str)
+                        ],
+                    }
+                )
+        skills: list[JsonValue] = []
+        plugins: list[JsonValue] = []
+        if cwd is not None:
+            skill_payload = self._object(
+                await self._call(
+                    "skills/list", {"cwds": [cwd], "forceReload": False}, owner=session_id
+                ),
+                "skills/list result",
+            )
+            for entry in self._array(skill_payload.get("data")):
+                if not isinstance(entry, dict):
+                    continue
+                for skill in self._array(entry.get("skills")):
+                    if isinstance(skill, dict) and isinstance(skill.get("name"), str):
+                        skills.append(
+                            {
+                                "name": skill["name"],
+                                "description": self._safe_string(
+                                    skill.get("shortDescription") or skill.get("description")
+                                ),
+                                "enabled": skill.get("enabled") is True,
+                            }
+                        )
+            plugin_payload = self._object(
+                await self._call("plugin/list", {"cwds": [cwd]}, owner=session_id),
+                "plugin/list result",
+            )
+            for marketplace in self._array(plugin_payload.get("marketplaces")):
+                if not isinstance(marketplace, dict):
+                    continue
+                for plugin in self._array(marketplace.get("plugins")):
+                    if isinstance(plugin, dict) and isinstance(plugin.get("id"), str):
+                        plugins.append(
+                            {
+                                "id": plugin["id"],
+                                "name": self._safe_string(plugin.get("name")) or plugin["id"],
+                                "installed": plugin.get("installed") is True,
+                                "enabled": plugin.get("enabled") is True,
+                            }
+                        )
+        return {
+            "models": models,
+            "skills": skills,
+            "plugins": plugins,
+            "native": {"models": True, "skills": True, "plugins": True, "apps": False},
+        }
 
     async def list_threads(self, repository_id: str, session_id: str) -> tuple[JsonObject, ...]:
         summary, path = await asyncio.to_thread(
@@ -295,6 +398,8 @@ class WorkbenchRuntime:
         approval_policy: str,
         confirmation_id: str | None,
         idempotency_key: str,
+        model: str | None,
+        effort: str | None,
     ) -> JsonObject:
         lock = self._thread_mutations.setdefault(thread_id, asyncio.Lock())
         async with lock:
@@ -339,6 +444,8 @@ class WorkbenchRuntime:
                         sandbox_mode=sandbox_mode,
                         approval_policy=approval_policy,
                         client_message_id=idempotency_key,
+                        model=model,
+                        effort=effort,
                     ),
                     owner=session_id,
                 )
@@ -603,6 +710,14 @@ class WorkbenchRuntime:
         if not isinstance(value, dict):
             raise RuntimeUnavailableError(f"{label} is invalid")
         return value
+
+    @staticmethod
+    def _array(value: JsonValue | None) -> list[JsonValue]:
+        return value if isinstance(value, list) else []
+
+    @staticmethod
+    def _safe_string(value: JsonValue | None) -> str:
+        return value if isinstance(value, str) else ""
 
     @staticmethod
     def _thread_cwd_matches(thread: JsonObject, repository_path: Path) -> bool:

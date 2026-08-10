@@ -114,6 +114,78 @@ def main() -> int:
                     },
                 }
             )
+        elif method == "model/list":
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "data": [
+                            {
+                                "id": "fixture",
+                                "model": "fixture-codex",
+                                "displayName": "Fixture Codex",
+                                "description": "Deterministic test model",
+                                "hidden": False,
+                                "isDefault": True,
+                                "defaultReasoningEffort": "medium",
+                                "inputModalities": ["text", "image"],
+                                "supportedReasoningEfforts": [
+                                    {"reasoningEffort": "low", "description": "Fast"},
+                                    {"reasoningEffort": "medium", "description": "Balanced"},
+                                ],
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            )
+        elif method == "skills/list":
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "data": [
+                            {
+                                "cwd": params.get("cwds", [active_cwd])[0],
+                                "skills": [
+                                    {
+                                        "name": "fixture-skill",
+                                        "description": "Fixture skill",
+                                        "shortDescription": "Test skill",
+                                        "enabled": True,
+                                    }
+                                ],
+                                "errors": [],
+                            }
+                        ]
+                    },
+                }
+            )
+        elif method == "plugin/list":
+            send(
+                {
+                    "id": request_id,
+                    "result": {
+                        "marketplaces": [
+                            {
+                                "name": "fixture",
+                                "path": None,
+                                "interface": None,
+                                "plugins": [
+                                    {
+                                        "id": "fixture-plugin",
+                                        "name": "Fixture Plugin",
+                                        "installed": True,
+                                        "enabled": True,
+                                    }
+                                ],
+                            }
+                        ],
+                        "marketplaceLoadErrors": [],
+                        "featuredPluginIds": [],
+                    },
+                }
+            )
         elif method == "thread/read":
             send({"id": request_id, "result": {"thread": active_thread}})
         elif method in {"thread/start", "thread/resume"}:

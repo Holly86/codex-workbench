@@ -8,6 +8,7 @@ import type {
   SandboxMode,
   ThreadView,
   UploadedImage,
+  WorkbenchCapabilities,
 } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -115,6 +116,17 @@ export async function listRepositories(signal?: AbortSignal): Promise<Repository
   return parseRepositories(await requestJson("/api/repositories", { method: "GET", signal }));
 }
 
+export async function readCapabilities(repositoryId: string): Promise<WorkbenchCapabilities> {
+  const value = requireRecord(await requestJson(
+    `/api/capabilities?repositoryId=${encodeURIComponent(repositoryId)}`,
+    { method: "GET" },
+  ));
+  if (!Array.isArray(value.models) || !Array.isArray(value.skills) || !Array.isArray(value.plugins)) {
+    throw new ApiError(502, "invalid_response", "Ungültige Capability-Antwort.", null);
+  }
+  return value as unknown as WorkbenchCapabilities;
+}
+
 export async function listThreads(repositoryId: string, signal?: AbortSignal): Promise<ThreadView[]> {
   const body = requireRecord(
     await requestJson(`/api/threads?repositoryId=${encodeURIComponent(repositoryId)}`, {
@@ -192,6 +204,8 @@ export async function startTurn(
   sandboxMode: SandboxMode,
   approvalPolicy: ApprovalPolicy,
   confirmationId: string | null,
+  model: string | null,
+  effort: string | null,
 ): Promise<void> {
   await requestJson(
     `/api/threads/${encodeURIComponent(threadId)}/turns`,
@@ -203,6 +217,8 @@ export async function startTurn(
         sandboxMode,
         approvalPolicy,
         confirmationId,
+        model,
+        effort,
         idempotencyKey: crypto.randomUUID(),
       }),
     },

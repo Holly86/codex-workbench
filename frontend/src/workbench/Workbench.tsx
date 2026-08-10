@@ -7,7 +7,6 @@ import { Composer } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
 import { FullAccessDialog } from "../components/FullAccessDialog";
 import { HealthStatus } from "../components/HealthStatus";
-import { PermissionControls } from "../components/PermissionControls";
 import { RepositorySidebar } from "../components/RepositorySidebar";
 import { UsagePanel } from "../components/UsagePanel";
 import {
@@ -17,6 +16,7 @@ import {
   listThreads,
   prepareFullAccess,
   readRateLimits,
+  readCapabilities,
   resumeThread,
   startThread,
   startTurn,
@@ -29,6 +29,7 @@ import type {
   SandboxMode,
   ThreadView,
   UploadedImage,
+  WorkbenchCapabilities,
 } from "./types";
 
 interface WorkbenchProps {
@@ -60,6 +61,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("workspace-write");
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>("on-request");
+  const [capabilities, setCapabilities] = useState<WorkbenchCapabilities | null>(null);
+  const [model, setModel] = useState<string | null>(null);
+  const [effort, setEffort] = useState<string | null>(null);
   const [capability, setCapability] = useState<FullAccessCapability | null>(null);
   const [fullAccessIntent, setFullAccessIntent] = useState<FullAccessIntent | null>(null);
   const [fullAccessPending, setFullAccessPending] = useState(false);
@@ -113,6 +117,16 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       });
     return () => controller.abort();
   }, [selectedRepositoryId, handleError, dispatch]);
+
+  useEffect(() => {
+    if (selectedRepositoryId === null || realtime.processConnection !== "connected") return;
+    void readCapabilities(selectedRepositoryId).then((value) => {
+      setCapabilities(value);
+      const defaultModel = value.models.find((item) => item.isDefault) ?? value.models[0];
+      setModel((current) => current ?? defaultModel?.id ?? null);
+      setEffort((current) => current ?? defaultModel?.defaultReasoningEffort ?? null);
+    }).catch(handleError);
+  }, [selectedRepositoryId, realtime.processConnection, handleError]);
 
   useEffect(() => {
     if (realtime.connection !== "connected") return;
@@ -266,6 +280,8 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         sandboxMode,
         approvalPolicy,
         capability?.confirmationId ?? null,
+        model,
+        effort,
       );
       setCapability(null);
       return true;
@@ -281,12 +297,12 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     <>
       <a className="skip-link" href="#conversation">Zum Gespräch springen</a>
       <div className="app-shell">
-        <header className="topbar">
-          <div><p className="eyebrow">Local agent workspace</p><h1>Codex Workbench</h1></div>
+        <header className="topbar compact-topbar">
+          <div className="brand"><span className="brand-mark" aria-hidden="true">⌘</span><h1>Codex Workbench</h1></div>
           <div className="topbar-actions">
-            <span className={`connection-state is-${realtime.connection}`} role="status">
+            <span className={`connection-state is-${realtime.connection}`} role="status" title={connectionLabel(realtime.connection, realtime.processConnection)}>
               <span className="status-dot" aria-hidden="true" />
-              {connectionLabel(realtime.connection, realtime.processConnection)}
+              <span className="sr-only">{connectionLabel(realtime.connection, realtime.processConnection)}</span>
             </span>
             <HealthStatus />
             <button type="button" className="secondary-action" disabled={logoutPending} onClick={() => void performLogout()}>{logoutPending ? "Abmelden …" : "Abmelden"}</button>
@@ -306,37 +322,35 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
           <main className="conversation-column" id="conversation" tabIndex={-1} ref={mainRef}>
             <header className="thread-header">
               <div>
-                <p className="eyebrow">{selectedRepository?.name ?? "Kein Repository gewählt"}</p>
+                <p className="repository-crumb">{selectedRepository?.name ?? "Kein Repository gewählt"} / main</p>
                 <h2>{selectedThread?.name ?? (selectedThread?.preview || "Codex Conversation")}</h2>
               </div>
+              <div className="thread-meta"><span>{capabilities?.models.find((item) => item.id === model)?.displayName ?? "Model"}</span><span>{working ? "Working" : "Ready"}</span><button type="button" aria-label="Thread-Menü" aria-haspopup="menu">…</button></div>
               {selectedThread?.fullAccess === true ? (
                 <strong className="full-access-badge">Full Access aktiv</strong>
               ) : sandboxMode === "danger-full-access" ? (
                 <strong className="full-access-badge">Full Access ausgewählt</strong>
               ) : null}
             </header>
-            <PermissionControls
-              sandboxMode={sandboxMode}
-              approvalPolicy={approvalPolicy}
-              disabled={working || operationPending || selectedRepository === null}
-              onSandboxChange={(value) => {
-                if (value === "danger-full-access") requestFullAccessSelection(approvalPolicy);
-                else { setSandboxMode(value); setCapability(null); }
-              }}
-              onApprovalChange={(value) => {
-                if (sandboxMode === "danger-full-access" && value !== approvalPolicy) requestFullAccessSelection(value);
-                else setApprovalPolicy(value);
-              }}
-            />
             {realtime.missedEvents ? <p className="reconnect-notice" role="status">Verpasste Events wurden durch einen vollständigen Snapshot ersetzt.</p> : null}
             {error !== null ? <div className="error-banner" role="alert"><span>{error}</span><button type="button" aria-label="Fehler schließen" onClick={() => setError(null)}>×</button></div> : null}
             <ActivityPanel thread={selectedThread} timeline={selectedThreadId === null ? [] : realtime.timeline[selectedThreadId] ?? []} />
             <Conversation thread={selectedThread} />
-            <UsagePanel thread={selectedThread} rateLimits={realtime.rateLimits} />
+            <div className="compact-usage"><UsagePanel thread={selectedThread} rateLimits={realtime.rateLimits} /></div>
             <Composer
               csrfToken={session.csrfToken}
               disabled={selectedThread === null || realtime.connection !== "connected" || operationPending}
               working={working}
+              capabilities={capabilities}
+              model={model}
+              effort={effort}
+              sandboxMode={sandboxMode}
+              approvalPolicy={approvalPolicy}
+              onModelChange={(nextModel, nextEffort) => { setModel(nextModel); setEffort(nextEffort); }}
+              onAccessChange={(nextSandbox, nextPolicy) => {
+                if (nextSandbox === "danger-full-access") requestFullAccessSelection(nextPolicy);
+                else { setSandboxMode(nextSandbox); setApprovalPolicy(nextPolicy); setCapability(null); }
+              }}
               onSend={sendMessage}
               onStop={async () => {
                 if (selectedThread === null) return;

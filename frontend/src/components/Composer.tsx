@@ -11,7 +11,7 @@ import {
 } from "react";
 
 import { removeUpload, uploadImage, type UploadOperation } from "../workbench/api";
-import type { UploadedImage } from "../workbench/types";
+import type { ApprovalPolicy, SandboxMode, UploadedImage, WorkbenchCapabilities } from "../workbench/types";
 
 interface PendingAttachment {
   key: string;
@@ -30,6 +30,13 @@ interface ComposerProps {
   working: boolean;
   onSend: (message: string, uploads: UploadedImage[]) => Promise<boolean>;
   onStop: () => Promise<void>;
+  capabilities?: WorkbenchCapabilities | null;
+  model?: string | null;
+  effort?: string | null;
+  sandboxMode?: SandboxMode;
+  approvalPolicy?: ApprovalPolicy;
+  onModelChange?: (model: string, effort: string | null) => void;
+  onAccessChange?: (sandbox: SandboxMode, approval: ApprovalPolicy) => void;
 }
 
 function attachmentKey(): string {
@@ -42,12 +49,15 @@ function errorMessage(error: unknown): string {
     : "Upload abgebrochen.";
 }
 
-export function Composer({ csrfToken, disabled, working, onSend, onStop }: ComposerProps) {
+export function Composer({ csrfToken, disabled, working, onSend, onStop, capabilities, model,
+  effort, sandboxMode = "workspace-write", approvalPolicy = "on-request",
+  onModelChange = () => undefined, onAccessChange = () => undefined }: ComposerProps) {
   const inputId = useId();
   const pickerId = useId();
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [openMenu, setOpenMenu] = useState<"add" | "model" | "access" | "skills" | null>(null);
   const attachmentsRef = useRef(attachments);
 
   useEffect(() => {
@@ -175,6 +185,8 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop }: Compo
 
   const uploading = attachments.some((item) => item.state === "uploading");
   const canSend = message.trim().length > 0 && !disabled && !working && !uploading;
+  const selectedModel = capabilities?.models.find((item) => item.id === model)
+    ?? capabilities?.models.find((item) => item.isDefault) ?? null;
 
   return (
     <form
@@ -233,8 +245,51 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop }: Compo
             event.target.value = "";
           }}
         />
-        <label className="secondary-action file-action" htmlFor={pickerId}>Bilder hinzufügen</label>
-        <span className="composer-hint">Einfügen, ablegen oder auswählen · Strg/⌘ + Enter sendet</span>
+        <div className="composer-menu-anchor">
+          <button type="button" className="composer-pill icon-pill" aria-label="Hinzufügen"
+            aria-haspopup="menu" aria-expanded={openMenu === "add"}
+            onClick={() => setOpenMenu(openMenu === "add" ? null : "add")}>+</button>
+          {openMenu === "add" ? <div className="composer-popover" role="menu">
+            <p>Hinzufügen</p><label className="menu-item" htmlFor={pickerId}>Dateien / Bilder</label>
+            <button type="button" role="menuitem" disabled>Repository-Kontext · automatisch</button>
+          </div> : null}
+        </div>
+        <div className="composer-menu-anchor">
+          <button type="button" className="composer-pill" aria-haspopup="menu"
+            aria-expanded={openMenu === "model"} onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}>{selectedModel?.displayName ?? "Model"} ▾</button>
+          {openMenu === "model" ? <div className="composer-popover wide" role="menu">
+            <p>Modell</p>{capabilities?.models.map((item) => <button type="button" role="menuitemradio"
+              aria-checked={item.id === selectedModel?.id} key={item.id} onClick={() => {
+                onModelChange(item.id, item.defaultReasoningEffort); setOpenMenu(null);
+              }}><strong>{item.displayName}</strong><span>{item.description}</span></button>)}
+            {selectedModel !== null ? <><p>Reasoning</p>{selectedModel.reasoningEfforts.map((item) =>
+              <button type="button" role="menuitemradio" aria-checked={item.value === effort}
+                key={item.value} onClick={() => { onModelChange(selectedModel.id, item.value); setOpenMenu(null); }}>
+                <strong>{item.value}</strong><span>{item.description}</span></button>)}</> : null}
+          </div> : null}
+        </div>
+        <div className="composer-menu-anchor">
+          <button type="button" className={`composer-pill ${sandboxMode === "danger-full-access" ? "danger-selection" : ""}`}
+            aria-haspopup="menu" aria-expanded={openMenu === "access"}
+            onClick={() => setOpenMenu(openMenu === "access" ? null : "access")}>Access: {sandboxMode === "read-only" ? "Read only" : sandboxMode === "workspace-write" ? "Workspace" : "Full"} ▾</button>
+          {openMenu === "access" ? <div className="composer-popover" role="menu"><p>Arbeitszugriff</p>
+            {([['read-only','Read only','Lesen, nichts verändern'],['workspace-write','Workspace','Änderungen im Repository'],['danger-full-access','Full access','Uneingeschränkter Agentenzugriff']] as const).map(([value,label,help]) =>
+              <button type="button" role="menuitemradio" aria-checked={sandboxMode === value} key={value}
+                onClick={() => { onAccessChange(value, approvalPolicy); setOpenMenu(null); }}><strong>{label}</strong><span>{help}</span></button>)}
+            <p>Approval</p>{(['untrusted','on-request','never'] as const).map((value) => <button type="button"
+              role="menuitemradio" aria-checked={approvalPolicy === value} key={value}
+              onClick={() => { onAccessChange(sandboxMode, value); setOpenMenu(null); }}>{value}</button>)}
+          </div> : null}
+        </div>
+        <div className="composer-menu-anchor"><button type="button" className="composer-pill"
+          aria-haspopup="menu" aria-expanded={openMenu === "skills"}
+          onClick={() => setOpenMenu(openMenu === "skills" ? null : "skills")}>Skills ▾</button>
+          {openMenu === "skills" ? <div className="composer-popover wide" role="menu"><p>Skills & Plugins</p>
+            {capabilities?.skills.map((item) => <div className="menu-static" key={item.name}><strong>{item.name}</strong><span>{item.description}</span></div>)}
+            {capabilities?.plugins.map((item) => <div className="menu-static" key={item.id}><strong>{item.name}</strong><span>{item.installed ? "Installiert" : "Nicht installiert"}</span></div>)}
+            {!capabilities?.native.apps ? <div className="menu-static"><strong>Apps</strong><span>Nicht aktiviert</span></div> : null}
+          </div> : null}</div>
+        <span className="composer-hint">Strg/⌘ + Enter</span>
         {working ? (
           <button type="button" className="stop-action" onClick={() => void onStop()}>Turn abbrechen</button>
         ) : (

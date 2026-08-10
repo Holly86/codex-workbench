@@ -59,6 +59,8 @@ class TurnStartRequest(PermissionSelection):
     message: Annotated[str, Field(min_length=1, max_length=200_000)]
     images: Annotated[list[ImageReference], Field(max_length=32)] = Field(default_factory=list)
     idempotencyKey: Annotated[str, Field(min_length=16, max_length=100)]
+    model: Annotated[str | None, Field(min_length=1, max_length=200)] = None
+    effort: Annotated[str | None, Field(pattern=r"^(none|minimal|low|medium|high|xhigh)$")] = None
 
 
 class FullAccessPrepareRequest(StrictModel):
@@ -76,6 +78,35 @@ class ApprovalDecisionRequest(StrictModel):
         "decline",
         "cancel",
     ]
+
+
+class GitOperationRequest(StrictModel):
+    action: Literal[
+        "status",
+        "diff",
+        "fetch",
+        "pull",
+        "push",
+        "branches",
+        "remotes",
+        "log",
+        "add",
+        "commit",
+        "branch-create",
+        "branch-switch",
+    ]
+    files: Annotated[list[str], Field(max_length=500)] = Field(default_factory=list)
+    message: Annotated[str | None, Field(max_length=10_000)] = None
+    branch: Annotated[str | None, Field(max_length=200)] = None
+
+
+class RepositoryCreateRequest(StrictModel):
+    name: Annotated[str, Field(min_length=1, max_length=64)]
+    readme: bool = True
+
+
+class RepositoryCloneRequest(RepositoryCreateRequest):
+    url: Annotated[str, Field(min_length=1, max_length=2048)]
 
 
 def _runtime(request: Request) -> WorkbenchRuntime:
@@ -139,6 +170,72 @@ async def repositories(request: Request) -> JSONResponse:
         return JSONResponse(
             {"repositories": [{"id": item.id, "name": item.name} for item in values]}
         )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.get("/capabilities")
+async def capabilities(request: Request, repositoryId: str | None = None) -> JSONResponse:
+    try:
+        return JSONResponse(
+            await _runtime(request).capabilities(repositoryId, _session(request).id)
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.get("/github/capability")
+async def github_capability(request: Request) -> JSONResponse:
+    try:
+        _session(request)
+        return JSONResponse(_runtime(request).git.github_capability())
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/create")
+async def create_repository(payload: RepositoryCreateRequest, request: Request) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        result = await runtime.git.create(payload.name, readme=payload.readme)
+        return JSONResponse(result.browser_dict(), status_code=HTTPStatus.CREATED)
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/clone")
+async def clone_repository(payload: RepositoryCloneRequest, request: Request) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        result = await runtime.git.clone(payload.name, payload.url)
+        return JSONResponse(result.browser_dict(), status_code=HTTPStatus.CREATED)
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/{repository_id}/git")
+async def git_operation(
+    repository_id: str, payload: GitOperationRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        result = await runtime.git.run(
+            repository_id,
+            payload.action,
+            files=tuple(payload.files),
+            message=payload.message,
+            branch=payload.branch,
+        )
+        return JSONResponse(result.browser_dict())
     except Exception as exc:
         return _safe_error(exc)
 
@@ -223,6 +320,8 @@ async def start_turn(thread_id: str, payload: TurnStartRequest, request: Request
             approval_policy=payload.approvalPolicy,
             confirmation_id=payload.confirmationId,
             idempotency_key=payload.idempotencyKey,
+            model=payload.model,
+            effort=payload.effort,
         )
         return JSONResponse(result, status_code=HTTPStatus.ACCEPTED)
     except Exception as exc:

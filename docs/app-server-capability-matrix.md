@@ -71,3 +71,12 @@ Classifications used below are:
 - The absence of a field is represented as unavailable, not inferred from token counts or UI time.
 - The deterministic fake child is the default integration authority. A real 0.146.0 smoke test is
   explicit and must use only a repository-contained temporary repository and Codex home.
+# Workbench capability additions (Codex 0.146.0)
+
+| Capability | Protocol authority | Workbench behavior |
+| --- | --- | --- |
+| Models | `model/list` | Display fields and supported efforts only; no static catalog. |
+| Reasoning | `Model.supportedReasoningEfforts`, `turn/start.effort` | Only returned values are selectable and the selection reaches the turn. |
+| Skills | `skills/list` | Name, description and enabled state; local paths are discarded. |
+| Plugins | `plugin/list` | Id, display name and installed/enabled state; marketplace paths are discarded. |
+| Apps | experimental `app/list` | Not enabled by this product revision. |

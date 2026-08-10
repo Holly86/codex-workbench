@@ -137,13 +137,15 @@ class ProtocolAdapter:
         sandbox_mode: str,
         approval_policy: str,
         client_message_id: str,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> JsonObject:
         ProtocolAdapter.validate_permission_selection(sandbox_mode, approval_policy)
         inputs: list[JsonValue] = [{"type": "text", "text": text, "text_elements": []}]
         inputs.extend(
             {"type": "localImage", "path": path, "detail": detail} for path, detail in image_paths
         )
-        return {
+        params: JsonObject = {
             "threadId": thread_id,
             "clientUserMessageId": client_message_id,
             "input": inputs,
@@ -152,6 +154,11 @@ class ProtocolAdapter:
             "approvalsReviewer": "user",
             "sandboxPolicy": ProtocolAdapter.sandbox_policy(cwd, sandbox_mode),
         }
+        if model is not None:
+            params["model"] = model
+        if effort is not None:
+            params["effort"] = effort
+        return params
 
     @staticmethod
     def validate_permission_selection(sandbox_mode: str, approval_policy: str) -> None:

@@ -4,6 +4,24 @@ export type ApprovalPolicy = "untrusted" | "on-request" | "never";
 export interface Repository {
   id: string;
   name: string;
+  branch?: string | null;
+}
+
+export interface ModelCapability {
+  id: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+  defaultReasoningEffort: string;
+  reasoningEfforts: Array<{ value: string; description: string }>;
+  inputModalities: string[];
+}
+
+export interface WorkbenchCapabilities {
+  models: ModelCapability[];
+  skills: Array<{ name: string; description: string; enabled: boolean }>;
+  plugins: Array<{ id: string; name: string; installed: boolean; enabled: boolean }>;
+  native: { models: boolean; skills: boolean; plugins: boolean; apps: boolean };
 }
 
 export type ActivityState =

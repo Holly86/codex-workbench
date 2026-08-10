@@ -158,6 +158,13 @@ therefore excluded until a dedicated higher-risk design is approved.
 Default sandbox configuration is workspace write limited to the selected repository with network
 disabled, subject to product testing. Elevated permissions are never a hidden default.
 
+Native Git routes are a separate privileged boundary, not a shell escape hatch. They accept a
+typed action and opaque repository id, re-resolve the direct-child repository after symlinks,
+construct fixed argument vectors without `shell=True`, disable interactive credential prompts,
+bound runtime/output, validate relative file/ref/remote inputs, redact URL credentials and serialize
+mutations. They use the existing session, exact Origin, CSRF, JSON-content and mutation-rate-limit
+boundary and never call app-server or create a model turn.
+
 ## Secret handling and logging
 
 The Codex-home mount is visible only to the backend container and app-server child. It is never
