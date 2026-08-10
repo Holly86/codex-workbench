@@ -28,6 +28,17 @@ export interface GitHubCapability {
   published?: boolean; remoteUrl?: string | null; webUrl?: string | null;
 }
 
+export interface RepositoryRemovalPreview {
+  repositoryId: string;
+  repositoryName: string;
+  relativePath: string;
+  threadCount: number;
+  hasUncommittedChanges: boolean;
+  blockedReasons: Array<"active_turn" | "active_job" | "turn_state_unknown">;
+  canRemove: boolean;
+  canDelete: boolean;
+}
+
 export interface ModelCapability {
   id: string;
   displayName: string;
@@ -149,6 +160,7 @@ export interface ThreadView {
   usage: Usage | null;
   activity: Activity;
   latestDiff: string | null;
+  repositoryAvailable?: boolean;
 }
 
 export type ApprovalDecision =

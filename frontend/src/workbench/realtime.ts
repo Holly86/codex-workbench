@@ -49,16 +49,17 @@ export const initialRealtimeState: RealtimeState = {
   jobs: [],
 };
 
-type Action =
+export type Action =
   | { type: "socket"; state: ConnectionState }
   | { type: "snapshot"; snapshot: Snapshot; latest: number; missed: boolean }
   | { type: "threads"; threads: ThreadView[] }
   | { type: "repositoryThreads"; repositoryId: string; threads: ThreadView[] }
   | { type: "thread"; thread: ThreadView }
   | { type: "jobs"; jobs: NativeJob[] }
-  | { type: "event"; event: EventEnvelope };
+  | { type: "event"; event: EventEnvelope }
+  | { type: "events"; events: EventEnvelope[] };
 
-interface EventEnvelope {
+export interface EventEnvelope {
   sequence: number;
   occurredAt: string;
   type: string;
@@ -342,6 +343,11 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
     if (typeof status === "string") {
       threads = updateThread(threads, event.threadId, (thread) => ({ ...thread, status }));
     }
+  } else if (event.type === "thread.name") {
+    const name = event.payload.name;
+    if (typeof name === "string" || name === null) {
+      threads = updateThread(threads, event.threadId, (thread) => ({ ...thread, name }));
+    }
   }
 
   let timeline = state.timeline;
@@ -370,7 +376,7 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   };
 }
 
-function reducer(state: RealtimeState, action: Action): RealtimeState {
+export function reducer(state: RealtimeState, action: Action): RealtimeState {
   if (action.type === "socket") return { ...state, connection: action.state };
   if (action.type === "threads") return { ...state, threads: action.threads };
   if (action.type === "repositoryThreads") return {
@@ -396,8 +402,17 @@ function reducer(state: RealtimeState, action: Action): RealtimeState {
       jobs: action.snapshot.jobs ?? [],
     };
   }
+  if (action.type === "events") {
+    return action.events.reduce(applyEvent, state);
+  }
   return applyEvent(state, action.event);
 }
+
+const STREAM_EVENT_TYPES = new Set([
+  "assistant.delta",
+  "command.output_delta",
+  "reasoning.summary_delta",
+]);
 
 function parseEvent(value: unknown): EventEnvelope | null {
   if (
@@ -444,7 +459,27 @@ export function useRealtime(
     let stopped = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let frame: number | null = null;
+    let pending: EventEnvelope[] = [];
     let attempt = 0;
+
+    const flush = () => {
+      frame = null;
+      if (pending.length === 0) return;
+      const events = pending;
+      pending = [];
+      dispatch({ type: "events", events });
+    };
+
+    const enqueue = (event: EventEnvelope) => {
+      if (!STREAM_EVENT_TYPES.has(event.type)) {
+        flush();
+        dispatch({ type: "event", event });
+        return;
+      }
+      pending.push(event);
+      frame ??= window.requestAnimationFrame(flush);
+    };
 
     const connect = () => {
       if (stopped) return;
@@ -469,6 +504,9 @@ export function useRealtime(
         }
         const snapshot = parseSnapshot(value);
         if (snapshot !== null) {
+          if (frame !== null) window.cancelAnimationFrame(frame);
+          frame = null;
+          pending = [];
           lastSequence.current = snapshot.latest;
           dispatch({ type: "snapshot", ...snapshot });
           return;
@@ -479,7 +517,7 @@ export function useRealtime(
           return;
         }
         lastSequence.current = event.sequence;
-        dispatch({ type: "event", event });
+        enqueue(event);
       });
       socket.addEventListener("close", (event) => {
         socket = null;
@@ -498,6 +536,7 @@ export function useRealtime(
     return () => {
       stopped = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      if (frame !== null) window.cancelAnimationFrame(frame);
       socket?.close(1000, "component unmounted");
     };
   }, [csrfToken, onSessionExpired]);

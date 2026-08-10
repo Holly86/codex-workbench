@@ -758,3 +758,66 @@ button { -webkit-tap-highlight-color: transparent; }
   .control-chevron { grid-row: 1; }
   .anchored-menu { border-radius: .75rem; }
 }
+
+/* Deterministic workbench density and lifecycle polish. */
+@media (min-width: 761px) {
+  .repository-panel {
+    display: grid;
+    grid-template-rows: auto auto auto auto minmax(6rem, .9fr) minmax(8rem, 1.1fr);
+  }
+  .repository-navigation, .thread-navigation { overflow: hidden; }
+  .repository-navigation { display: flex; flex-direction: column; }
+  .repository-list { min-height: 0; max-height: none; flex: 1 1 auto; }
+  .repository-panel.is-collapsed { display: flex; }
+}
+.repository-menu-trigger {
+  position: absolute;
+  width: 1.8rem !important;
+  padding: 0 !important;
+  display: grid !important;
+  place-items: center;
+}
+.repository-row > .repository-select { transition: background-color .12s ease, box-shadow .12s ease; }
+.thread-row > button { min-height: 3.1rem; padding-block: .42rem; }
+.turn { content-visibility: auto; contain-intrinsic-size: auto 18rem; }
+.thread-row.is-running .thread-state i { background: var(--accent-strong); animation: working-pulse 1.4s ease-in-out infinite; }
+.thread-row.is-reconnecting .thread-state i { animation: none; background: #6e7580; }
+
+.activity-banner { padding: .45rem .65rem; }
+.activity-summary { min-width: 0; display: flex; align-items: center; gap: .5rem; }
+.activity-summary strong { flex: 0 1 auto; }
+.activity-summary time, .runtime-note { color: var(--muted); font-size: .68rem; }
+.runtime-note { margin-left: auto; }
+.activity-details { margin-top: .25rem; color: var(--muted); }
+.activity-details > summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-details h3 { margin: .55rem 0 .25rem; font-size: .68rem; }
+.activity-details ol { max-height: 12rem; overflow: auto; margin: .3rem 0 0; padding-left: 1.2rem; }
+
+.git-activity-drawer article { padding: .55rem .65rem; }
+.git-activity-drawer article > header { gap: .5rem; }
+.git-activity-drawer article > header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-output { margin-top: .4rem; }
+.job-output > summary { color: #aeb4bc; cursor: pointer; font-size: .68rem; }
+.job-actions { display: flex; justify-content: flex-end; gap: .35rem; margin-top: .4rem; }
+.job-actions button { min-height: 1.8rem; padding: .25rem .45rem; color: #aeb4bc; border: 1px solid #34383d; border-radius: .4rem; background: transparent; font-size: .64rem; }
+.repository-removal dl { display: grid; gap: .35rem; margin: .75rem 0; }
+.repository-removal dl > div { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: .5rem; }
+.repository-removal dt { color: var(--muted); }
+.repository-removal dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.repository-removal.is-destructive { padding: .75rem; border: 1px solid rgb(248 113 113 / 35%); border-radius: .7rem; background: rgb(127 29 29 / 10%); }
+.danger-action { color: #fff; border-color: #9f3a45; background: #7d2832; }
+.danger-action:hover:not(:disabled) { background: #96323e; }
+
+@media (max-width: 760px) {
+  .repository-panel, .repository-panel.is-collapsed { display: flex; }
+  .repository-navigation { min-height: 6rem; flex: 0 1 42%; overflow: hidden; }
+  .repository-list { min-height: 0; max-height: none; }
+  .thread-navigation { min-height: 8rem; flex: 1 1 58%; }
+  .runtime-note { display: none; }
+}
+
+@media (min-width: 1600px) {
+  .workspace-layout { grid-template-columns: 19rem minmax(0, 1fr); }
+  .conversation { padding-inline: max(1rem, calc((100% - 62rem) / 2)); }
+  .activity-banner, .compact-usage { width: min(calc(100% - 2rem), 62rem); }
+}

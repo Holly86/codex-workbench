@@ -111,6 +111,15 @@ class RepositoryCloneRequest(RepositoryCreateRequest):
     url: Annotated[str, Field(min_length=1, max_length=2048)]
 
 
+class RepositoryClonePreflightRequest(StrictModel):
+    url: Annotated[str, Field(min_length=1, max_length=2048)]
+
+
+class RepositoryRemovalRequest(StrictModel):
+    confirmation: Annotated[str, Field(min_length=1, max_length=64)]
+    deleteThreads: bool = False
+
+
 class RepositoryPreferencesRequest(StrictModel):
     displayName: Annotated[str | None, Field(max_length=80)] = None
     model: Annotated[str | None, Field(max_length=200)] = None
@@ -258,6 +267,17 @@ async def clone_repository(payload: RepositoryCloneRequest, request: Request) ->
         return _safe_error(exc)
 
 
+@router.post("/repositories/clone/preflight")
+async def clone_repository_preflight(
+    payload: RepositoryClonePreflightRequest, request: Request
+) -> JSONResponse:
+    try:
+        _session(request)
+        return JSONResponse(await _runtime(request).git.clone_preflight(payload.url))
+    except Exception as exc:
+        return _safe_error(exc)
+
+
 @router.post("/repositories/{repository_id}/git")
 async def git_operation(
     repository_id: str, payload: GitOperationRequest, request: Request
@@ -315,6 +335,61 @@ async def update_repository(
                 display_name=payload.displayName,
                 model=payload.model,
                 effort=payload.effort,
+            )
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.get("/repositories/{repository_id}/removal-preview")
+async def repository_removal_preview(repository_id: str, request: Request) -> JSONResponse:
+    try:
+        session = _session(request)
+        return JSONResponse(
+            await _runtime(request).repository_removal_preview(repository_id, session.id)
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/{repository_id}/remove")
+async def remove_repository(
+    repository_id: str, payload: RepositoryRemovalRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            await runtime.remove_repository(
+                repository_id,
+                session.id,
+                confirmation=payload.confirmation,
+                delete_threads=payload.deleteThreads,
+                delete_local=False,
+            )
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/{repository_id}/delete")
+async def delete_repository(
+    repository_id: str, payload: RepositoryRemovalRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            await runtime.remove_repository(
+                repository_id,
+                session.id,
+                confirmation=payload.confirmation,
+                delete_threads=payload.deleteThreads,
+                delete_local=True,
             )
         )
     except Exception as exc:

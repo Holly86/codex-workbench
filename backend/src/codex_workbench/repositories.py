@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -43,6 +44,15 @@ class RepositoryDiscovery:
             raise ValueError("selection is not a discovered Git repository")
         return candidate
 
+    def reference_path(self, repository_relative_path: str) -> Path:
+        """Resolve a stored direct-child path even after its directory was deleted."""
+        candidate = resolve_path_within(
+            self._root, repository_relative_path, must_exist=False
+        )
+        if candidate.parent != self._root.resolve(strict=True):
+            raise ValueError("only direct-child repository references are valid")
+        return candidate
+
     def resolve_repository_id(self, repository_id: str) -> tuple[RepositorySummary, Path]:
         """Resolve an opaque browser id against a fresh direct-child discovery."""
 
@@ -55,6 +65,18 @@ class RepositoryDiscovery:
                 # Re-resolve immediately before returning to close discovery/use races.
                 return summary, self.resolve_repository(summary.relative_path)
         raise ValueError("repository is unavailable")
+
+    def delete_repository(self, repository_id: str) -> RepositorySummary:
+        """Delete one freshly resolved direct-child repository without invoking a shell."""
+        summary, candidate = self.resolve_repository_id(repository_id)
+        root = self._root.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+        if resolved == root or resolved.parent != root or candidate.is_symlink():
+            raise ValueError("repository deletion target is unsafe")
+        if not _is_repository_directory(resolved):
+            raise ValueError("repository deletion target changed")
+        shutil.rmtree(resolved)
+        return summary
 
     def _list_repositories_sync(self) -> tuple[RepositorySummary, ...]:
         root = self._root.resolve(strict=True)

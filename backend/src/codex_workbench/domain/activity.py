@@ -73,6 +73,34 @@ class ActivityAggregator:
             value.last_activity = "App Server wird neu verbunden"
         return self.snapshot(thread_id)
 
+    def reconcile(self, thread_id: str, *, active: bool, status: str) -> AgentActivity:
+        """Align local presentation state with the authoritative native thread state."""
+        value = self._activities.setdefault(thread_id, _MutableActivity())
+        if active:
+            if value.started_at is None:
+                value.started_at = datetime.now(UTC)
+                value.started_monotonic = time.monotonic()
+            if value.state in {
+                AgentActivityState.IDLE,
+                AgentActivityState.COMPLETED,
+                AgentActivityState.CANCELLED,
+                AgentActivityState.FAILED,
+                AgentActivityState.RECONNECTING,
+            }:
+                value.state = AgentActivityState.THINKING
+                value.last_activity = "Aktiver Turn wiederhergestellt"
+        else:
+            if status in {"failed", "error"}:
+                value.state = AgentActivityState.FAILED
+            elif status in {"interrupted", "cancelled"}:
+                value.state = AgentActivityState.CANCELLED
+            elif value.state not in {AgentActivityState.FAILED, AgentActivityState.CANCELLED}:
+                value.state = AgentActivityState.IDLE
+            value.current_tool = None
+            value.current_command = None
+            value.pending_approval_id = None
+        return self.snapshot(thread_id)
+
     def fail_start(self, thread_id: str) -> AgentActivity:
         value = self._activities.setdefault(thread_id, _MutableActivity())
         value.state = AgentActivityState.FAILED

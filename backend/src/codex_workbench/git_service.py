@@ -101,11 +101,71 @@ class GitService:
         target = root / name
         if target.exists() or target.is_symlink():
             raise GitOperationError("repository already exists")
+        preflight = await self.clone_preflight(safe_url)
+        if preflight["allowed"] is not True:
+            raise GitOperationError("clone authentication preflight failed")
+        if preflight["mode"] == "github_cli":
+            executable = shutil.which("gh")
+            slug = self._github_slug(safe_url)
+            if executable is None or slug is None:
+                raise GitOperationError("GitHub CLI clone is unavailable")
+            return await self._execute_external(
+                (executable, "repo", "clone", slug, name),
+                cwd=root,
+                timeout_seconds=self._timeout,
+            )
         return await self._execute(
             root,
             ("clone", "--", safe_url, name),
             display=("clone", "--", self.redact_url(safe_url), name),
         )
+
+    async def clone_preflight(self, url: str) -> dict[str, object]:
+        safe_url = self.validate_clone_url(url)
+        root = self._root.resolve(strict=True)
+        parsed = urlsplit(safe_url)
+        is_ssh = parsed.scheme == "ssh" or (not parsed.scheme and ":" in safe_url)
+        probe = await self._execute(
+            root,
+            ("ls-remote", "--exit-code", safe_url, "HEAD"),
+            display=("ls-remote", "--exit-code", self.redact_url(safe_url), "HEAD"),
+        )
+        if probe.exit_code == 0:
+            return {
+                "allowed": True,
+                "mode": "ssh" if is_ssh else "public_https",
+                "message": "Zugriff geprüft.",
+            }
+        slug = self._github_slug(safe_url)
+        executable = shutil.which("gh")
+        if not is_ssh and slug is not None and executable is not None:
+            capability = await self.github_capability()
+            if capability.get("authenticated") is True:
+                private_probe = await self._execute_external(
+                    (executable, "repo", "view", slug, "--json", "name"),
+                    timeout_seconds=10,
+                )
+                if private_probe.exit_code == 0:
+                    return {
+                        "allowed": True,
+                        "mode": "github_cli",
+                        "message": (
+                            "Privater GitHub-Zugriff über die bestehende "
+                            "gh-Anmeldung geprüft."
+                        ),
+                    }
+        return {
+            "allowed": False,
+            "mode": "ssh" if is_ssh else "unavailable",
+            "message": (
+                "Die konfigurierten SSH-Zugangsdaten erlauben keinen Zugriff."
+                if is_ssh
+                else (
+                    "Repository nicht öffentlich erreichbar und keine passende "
+                    "sichere Anmeldung gefunden."
+                )
+            ),
+        }
 
     async def status(self, repository_id: str) -> dict[str, object]:
         result = await self.run(repository_id, "status")
@@ -252,6 +312,10 @@ class GitService:
         if any(character in value for character in ("\x00", "\r", "\n")) or value.startswith("-"):
             raise ValueError("invalid clone URL")
         parsed = urlsplit(value)
+        if parsed.scheme == "https" and (
+            parsed.username is not None or parsed.password is not None
+        ):
+            raise ValueError("credentials must not be embedded in clone URLs")
         if parsed.scheme in {"https", "ssh"} and parsed.hostname and parsed.path not in {"", "/"}:
             return value
         if parsed.scheme:
@@ -281,6 +345,11 @@ class GitService:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", path):
             return None
         return f"https://github.com/{path}"
+
+    @classmethod
+    def _github_slug(cls, value: str) -> str | None:
+        web = cls.github_web_url(value)
+        return None if web is None else web.removeprefix("https://github.com/")
 
     def _arguments(
         self, action: str, *, files: tuple[str, ...], message: str | None, branch: str | None
@@ -351,13 +420,7 @@ class GitService:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_OPTIONAL_LOCKS": "0",
-            },
+            env=self._native_env(optional_locks=True),
         )
         try:
             output, _ = await asyncio.wait_for(process.communicate(), timeout=self._timeout)
@@ -386,12 +449,7 @@ class GitService:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-                "GIT_TERMINAL_PROMPT": "0",
-            },
+            env=self._native_env(optional_locks=False),
         )
         try:
             output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
@@ -409,3 +467,19 @@ class GitService:
             round((time.monotonic() - started) * 1000),
             truncated,
         )
+
+    @staticmethod
+    def _native_env(*, optional_locks: bool) -> dict[str, str]:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+        if optional_locks:
+            env["GIT_OPTIONAL_LOCKS"] = "0"
+        for key in ("HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "SSH_AUTH_SOCK"):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        return env

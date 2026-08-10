@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import type { Repository, ThreadView } from "../workbench/types";
 import { AnchoredMenu } from "./AnchoredMenu";
 
-export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "publish" | "github" | "rename" | "settings" | "create" | "clone";
+export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "publish" | "github" | "rename" | "settings" | "remove" | "delete" | "create" | "clone";
 
 interface RepositorySidebarProps {
   repositories: Repository[];
@@ -38,6 +38,10 @@ const REPOSITORY_ACTION_GROUPS: Array<Array<{ action: RepositoryAction; label: s
     { action: "github", label: "Auf GitHub öffnen" },
     { action: "rename", label: "Anzeigenamen ändern" },
     { action: "settings", label: "Repository-Einstellungen" },
+  ],
+  [
+    { action: "remove", label: "Aus Workbench entfernen…" },
+    { action: "delete", label: "Lokales Repository löschen…" },
   ],
 ];
 
@@ -186,9 +190,9 @@ export function RepositorySidebar({
             {!loading && threads.length > 0 && filteredThreads.length === 0 ? <p className="sidebar-empty">Keine passenden Threads.</p> : null}
             <ul className="thread-list">
               {filteredThreads.map((thread) => {
-                const label = activityLabel(thread.activity.state);
+                const label = activityLabel(thread.activity.state, thread.activeTurnId);
                 return (
-                  <li key={thread.id} className={`thread-row is-${thread.activity.state}`}>
+                  <li key={thread.id} className={`thread-row is-${thread.activeTurnId != null ? "running" : thread.activity.state}`}>
                     <button
                       type="button"
                       aria-current={thread.id === selectedThreadId ? "page" : undefined}
@@ -230,8 +234,8 @@ export function RepositorySidebar({
   );
 }
 
-function activityLabel(state: ThreadView["activity"]["state"]): string {
-  if (["starting", "thinking", "planning", "reading", "searching", "executing", "editing", "testing", "responding", "reconnecting"].includes(state)) return "Läuft";
+function activityLabel(state: ThreadView["activity"]["state"], activeTurnId?: string | null): string {
+  if (activeTurnId != null) return "Läuft";
   if (state === "awaiting_approval") return "Freigabe nötig";
   if (state === "failed") return "Fehlgeschlagen";
   if (state === "cancelled") return "Abgebrochen";

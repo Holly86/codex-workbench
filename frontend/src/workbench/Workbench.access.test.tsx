@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   readRateLimits: vi.fn(),
   startThread: vi.fn(),
   prepareFullAccess: vi.fn(),
+  readThread: vi.fn(),
   dispatch: vi.fn(),
 }));
 
@@ -27,15 +28,19 @@ vi.mock("./api", () => ({
   prepareFullAccess: mocks.prepareFullAccess,
   readRateLimits: mocks.readRateLimits,
   readCapabilities: mocks.readCapabilities,
+  readThread: mocks.readThread,
   resumeThread: vi.fn(),
   startThread: mocks.startThread,
   startTurn: vi.fn(),
   cloneRepository: vi.fn(),
+  cloneRepositoryPreflight: vi.fn(),
   createRepository: vi.fn(),
   gitAction: vi.fn(),
   githubCapability: vi.fn(),
   listJobs: vi.fn(),
   publishGithub: vi.fn(),
+  removeRepository: vi.fn(),
+  repositoryRemovalPreview: vi.fn(),
   updateRepository: vi.fn(),
 }));
 
@@ -128,6 +133,7 @@ function renderWorkbench(): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/");
   mocks.listRepositories.mockResolvedValue([repository]);
   mocks.listThreads.mockResolvedValue([]);
   mocks.readRateLimits.mockResolvedValue({ available: false, observedAt: 0 });
@@ -137,6 +143,7 @@ beforeEach(() => {
     mode: SandboxMode,
   ) => Promise.resolve(thread(mode)));
   mocks.prepareFullAccess.mockResolvedValue(fullAccessCapability);
+  mocks.readThread.mockResolvedValue(thread("workspace-write"));
 });
 
 test("does not POST New Thread while host capabilities are loading", async () => {

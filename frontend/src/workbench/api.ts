@@ -9,6 +9,7 @@ import type {
   ThreadView,
   UploadedImage,
   WorkbenchCapabilities,
+  RepositoryRemovalPreview,
   GitHubCapability,
   GitStatus,
   NativeJob,
@@ -163,6 +164,14 @@ export async function cloneRepository(csrfToken: string, name: string, url: stri
   }, csrfToken)) as unknown as NativeJob;
 }
 
+export async function cloneRepositoryPreflight(
+  csrfToken: string, url: string,
+): Promise<{ allowed: boolean; mode: "public_https" | "github_cli" | "ssh" | "unavailable"; message: string }> {
+  return requireRecord(await requestJson("/api/repositories/clone/preflight", {
+    method: "POST", body: JSON.stringify({ url }),
+  }, csrfToken)) as { allowed: boolean; mode: "public_https" | "github_cli" | "ssh" | "unavailable"; message: string };
+}
+
 export async function updateRepository(
   csrfToken: string, repositoryId: string,
   values: { displayName?: string | null; model?: string | null; effort?: string | null },
@@ -170,6 +179,26 @@ export async function updateRepository(
   return requireRecord(await requestJson(`/api/repositories/${encodeURIComponent(repositoryId)}`, {
     method: "PATCH", body: JSON.stringify(values),
   }, csrfToken)) as unknown as Repository;
+}
+
+export async function repositoryRemovalPreview(repositoryId: string): Promise<RepositoryRemovalPreview> {
+  return requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/removal-preview`,
+    { method: "GET" },
+  )) as unknown as RepositoryRemovalPreview;
+}
+
+export async function removeRepository(
+  csrfToken: string,
+  repositoryId: string,
+  mode: "remove" | "delete",
+  confirmation: string,
+  deleteThreads: boolean,
+): Promise<void> {
+  await requestJson(`/api/repositories/${encodeURIComponent(repositoryId)}/${mode}`, {
+    method: "POST",
+    body: JSON.stringify({ confirmation, deleteThreads }),
+  }, csrfToken);
 }
 
 export async function listJobs(): Promise<NativeJob[]> {

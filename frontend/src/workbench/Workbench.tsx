@@ -5,6 +5,7 @@ import { ActivityPanel } from "../components/ActivityPanel";
 import { ApprovalDialog } from "../components/ApprovalDialog";
 import { Composer } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
+import { CopyButton } from "../components/CopyButton";
 import { FullAccessDialog } from "../components/FullAccessDialog";
 import { HealthStatus } from "../components/HealthStatus";
 import { RepositorySidebar } from "../components/RepositorySidebar";
@@ -19,19 +20,24 @@ import {
   prepareFullAccess,
   readRateLimits,
   readCapabilities,
+  readThread,
   resumeThread,
   startThread,
   startTurn,
   cloneRepository,
+  cloneRepositoryPreflight,
   createRepository,
   gitAction,
   githubCapability,
   listJobs,
   publishGithub,
+  removeRepository,
+  repositoryRemovalPreview,
   updateRepository,
 } from "./api";
 import { resolveSafeSandboxMode, sandboxAvailable } from "./access";
 import { useRealtime } from "./realtime";
+import { parseWorkbenchRoute, repositoryPath, threadPath, writeWorkbenchRoute } from "./routing";
 import type {
   ApprovalPolicy,
   FullAccessCapability,
@@ -41,6 +47,7 @@ import type {
   UploadedImage,
   WorkbenchCapabilities,
   GitHubCapability,
+  RepositoryRemovalPreview,
 } from "./types";
 
 interface WorkbenchProps {
@@ -59,17 +66,16 @@ interface FullAccessIntent {
   resumeThread: ThreadView | null;
 }
 
-const RUNNING_STATES = new Set([
-  "starting", "thinking", "planning", "reading", "searching", "executing", "editing",
-  "testing", "awaiting_approval", "responding", "reconnecting",
-]);
-
 export function Workbench({ session, performLogout, logoutPending, onSessionExpired }: WorkbenchProps) {
   const stableSessionExpired = useCallback(() => onSessionExpired(), [onSessionExpired]);
   const [realtime, dispatch] = useRealtime(session.csrfToken, stableSessionExpired);
   const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(null);
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [selectedRepositoryId, setSelectedRepositoryId] = useState<string | null>(
+    () => parseWorkbenchRoute(window.location.pathname).repositoryId,
+  );
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(
+    () => parseWorkbenchRoute(window.location.pathname).threadId,
+  );
   const [sandboxMode, setSandboxMode] = useState<SandboxMode | null>(null);
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>("on-request");
   const [capabilityProjection, setCapabilityProjection] = useState<{
@@ -83,6 +89,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [fullAccessPending, setFullAccessPending] = useState(false);
   const [repositoriesLoading, setRepositoriesLoading] = useState(true);
   const [threadsLoading, setThreadsLoading] = useState(false);
+  const [deepLinkLoading, setDeepLinkLoading] = useState(
+    () => parseWorkbenchRoute(window.location.pathname).threadId !== null,
+  );
   const [operationPending, setOperationPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accessError, setAccessError] = useState<string | null>(null);
@@ -91,6 +100,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const jobs = realtime.jobs;
   const observedCloneJobs = useRef(new Set<string>());
   const [github, setGithub] = useState<GitHubCapability | null>(null);
+  const [removalPreview, setRemovalPreview] = useState<RepositoryRemovalPreview | null>(null);
   const mainRef = useRef<HTMLElement>(null);
 
   const capabilities =
@@ -102,7 +112,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const repositoryThreads = realtime.threads.filter((thread) => thread.repositoryId === selectedRepositoryId);
   const selectedThread = realtime.threads.find((thread) => thread.id === selectedThreadId) ?? null;
   const selectedApproval = realtime.approvals.find((approval) => approval.threadId === selectedThreadId) ?? realtime.approvals[0] ?? null;
-  const working = selectedThread !== null && RUNNING_STATES.has(selectedThread.activity.state);
+  const working = selectedThread?.activeTurnId !== null && selectedThread?.activeTurnId !== undefined;
   const activeFullAccessIntent =
     capabilities !== null &&
     fullAccessIntent?.repositoryId === selectedRepositoryId &&
@@ -121,7 +131,12 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const refreshRepositories = useCallback(async () => {
     const values = await listRepositories();
     setRepositories(values);
-    setSelectedRepositoryId((current) => current ?? values[0]?.id ?? null);
+    setSelectedRepositoryId((current) => {
+      const next = current !== null && values.some((item) => item.id === current)
+        ? current : values[0]?.id ?? null;
+      if (next !== null && current !== next) writeWorkbenchRoute(repositoryPath(next), true);
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -130,7 +145,13 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       .then((values) => {
         setRepositories(values);
         if (values.length > 0) setThreadsLoading(true);
-        setSelectedRepositoryId((current) => current ?? values[0]?.id ?? null);
+        setSelectedRepositoryId((current) => {
+          if (current !== null && (values.some((item) => item.id === current)
+            || parseWorkbenchRoute(window.location.pathname).threadId !== null)) return current;
+          const next = values[0]?.id ?? null;
+          if (next !== null) writeWorkbenchRoute(repositoryPath(next), true);
+          return next;
+        });
       })
       .catch((caught: unknown) => {
         if (!controller.signal.aborted) handleError(caught);
@@ -140,6 +161,18 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       });
     return () => controller.abort();
   }, [handleError]);
+
+  useEffect(() => {
+    const navigate = () => {
+      const route = parseWorkbenchRoute(window.location.pathname);
+      setSelectedRepositoryId(route.repositoryId);
+      setSelectedThreadId(route.threadId);
+      setDeepLinkLoading(route.threadId !== null);
+      setError(null);
+    };
+    window.addEventListener("popstate", navigate);
+    return () => window.removeEventListener("popstate", navigate);
+  }, []);
 
   useEffect(() => {
     if (realtime.connection === "connected") return;
@@ -160,7 +193,11 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   }, [jobs, refreshRepositories, handleError]);
 
   useEffect(() => {
-    if (selectedRepositoryId === null) return;
+    if (selectedRepositoryId === null || repositoriesLoading) return;
+    if (!repositories.some((item) => item.id === selectedRepositoryId) && selectedThreadId !== null) {
+      window.setTimeout(() => setThreadsLoading(false), 0);
+      return;
+    }
     const controller = new AbortController();
     void listThreads(selectedRepositoryId, controller.signal)
       .then((threads) => dispatch({ type: "repositoryThreads", repositoryId: selectedRepositoryId, threads }))
@@ -171,10 +208,32 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         if (!controller.signal.aborted) setThreadsLoading(false);
       });
     return () => controller.abort();
-  }, [selectedRepositoryId, handleError, dispatch]);
+  }, [selectedRepositoryId, selectedThreadId, repositories, repositoriesLoading, handleError, dispatch]);
 
   useEffect(() => {
-    if (selectedRepositoryId === null || realtime.processConnection !== "connected") return;
+    if (selectedThreadId === null || selectedThread !== null) {
+      return;
+    }
+    let active = true;
+    void readThread(selectedThreadId).then((thread) => {
+      if (!active) return;
+      if (selectedRepositoryId !== null && thread.repositoryId !== selectedRepositoryId) {
+        setError("Dieser Thread gehört zu einem anderen Repository.");
+        setSelectedThreadId(null);
+        writeWorkbenchRoute(repositoryPath(selectedRepositoryId), true);
+        return;
+      }
+      dispatch({ type: "thread", thread });
+    }).catch((caught: unknown) => {
+      if (active) handleError(caught);
+    }).finally(() => {
+      if (active) setDeepLinkLoading(false);
+    });
+    return () => { active = false; };
+  }, [selectedThreadId, selectedThread, selectedRepositoryId, dispatch, handleError]);
+
+  useEffect(() => {
+    if (selectedRepositoryId === null || selectedRepository === null || realtime.processConnection !== "connected") return;
     let active = true;
     void readCapabilities(selectedRepositoryId).then((value) => {
       if (!active) return;
@@ -190,12 +249,33 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       if (active) handleError(caught);
     });
     return () => { active = false; };
-  }, [selectedRepositoryId, realtime.processConnection, handleError]);
+  }, [selectedRepositoryId, selectedRepository, realtime.processConnection, handleError]);
 
   useEffect(() => {
     if (realtime.connection !== "connected") return;
     void readRateLimits().catch(handleError);
   }, [realtime.connection, handleError]);
+
+  useEffect(() => {
+    if (selectedThread?.activeTurnId == null || realtime.processConnection !== "connected") return;
+    let stopped = false;
+    let timer: number | null = null;
+    const reconcile = async () => {
+      try {
+        const thread = await readThread(selectedThread.id);
+        if (!stopped) dispatch({ type: "thread", thread });
+      } catch {
+        // Realtime remains primary; the watchdog retries after a bounded quiet period.
+      } finally {
+        if (!stopped) timer = window.setTimeout(() => void reconcile(), 30_000);
+      }
+    };
+    timer = window.setTimeout(() => void reconcile(), 30_000);
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [selectedThread?.id, selectedThread?.activeTurnId, realtime.processConnection, dispatch]);
 
   useEffect(() => {
     mainRef.current?.focus();
@@ -215,6 +295,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     setFullAccessIntent(null);
     setAccessError(null);
     setError(null);
+    writeWorkbenchRoute(repositoryPath(repositoryId));
   };
 
   const performResume = async (thread: ThreadView, suppliedCapability: FullAccessCapability | null) => {
@@ -242,7 +323,9 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   };
 
   const selectThread = (thread: ThreadView) => {
+    writeWorkbenchRoute(threadPath(thread.repositoryId, thread.id));
     setSelectedThreadId(thread.id);
+    setDeepLinkLoading(false);
     setApprovalPolicy(thread.approvalPolicy);
     setCapability(null);
     if (capabilities === null || !sandboxAvailable(capabilities, thread.sandboxMode)) {
@@ -286,6 +369,8 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       );
       dispatch({ type: "thread", thread });
       setSelectedThreadId(thread.id);
+      setDeepLinkLoading(false);
+      writeWorkbenchRoute(threadPath(thread.repositoryId, thread.id));
       setCapability(null);
     } catch (caught: unknown) {
       handleError(caught);
@@ -452,16 +537,19 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
                 void githubCapability(repository.id).then((value) => { if (value.webUrl) window.open(value.webUrl, "_blank", "noopener,noreferrer"); }).catch(handleError); return;
               }
               setActionRepository(repository); setRepositoryAction(action);
-              if (repository) void githubCapability(repository.id).then(setGithub).catch(handleError);
+              setRemovalPreview(null);
+              if (repository && (action === "remove" || action === "delete")) {
+                void repositoryRemovalPreview(repository.id).then(setRemovalPreview).catch(handleError);
+              } else if (repository) void githubCapability(repository.id).then(setGithub).catch(handleError);
             }}
           />
           <main className="conversation-column" id="conversation" tabIndex={-1} ref={mainRef}>
             <header className="thread-header">
               <div className="thread-heading">
-                <p className="repository-crumb">{selectedRepository?.name ?? "Kein Repository gewählt"}{selectedRepository ? ` · ${selectedRepository.status.detached ? "detached" : selectedRepository.status.branch ?? "no branch"}` : ""}{selectedRepository && !selectedRepository.status.clean ? ` · ${String(selectedRepository.status.staged + selectedRepository.status.modified + selectedRepository.status.untracked)} Änderungen${selectedRepository.status.ahead ? ` · ↑${String(selectedRepository.status.ahead)}` : ""}` : ""}</p>
+                <p className="repository-crumb">{selectedRepository?.name ?? selectedThread?.repositoryName ?? "Kein Repository gewählt"}{selectedThread?.repositoryAvailable === false ? " · nicht verfügbar" : ""}{selectedRepository ? ` · ${selectedRepository.status.detached ? "detached" : selectedRepository.status.branch ?? "no branch"}` : ""}{selectedRepository && !selectedRepository.status.clean ? ` · ${String(selectedRepository.status.staged + selectedRepository.status.modified + selectedRepository.status.untracked)} Änderungen${selectedRepository.status.ahead ? ` · ↑${String(selectedRepository.status.ahead)}` : ""}` : ""}</p>
                 <h2>{selectedThread?.name ?? (selectedThread?.preview || "Codex Conversation")}</h2>
               </div>
-              <div className="thread-meta"><span>{capabilities?.models.find((item) => item.id === model)?.displayName ?? "Model"}</span><span className={`thread-runtime is-${working ? "working" : "ready"}`}><i aria-hidden="true" />{working ? "Läuft" : "Bereit"}</span></div>
+              <div className="thread-meta"><span>{capabilities?.models.find((item) => item.id === model)?.displayName ?? "Model"}</span><span className={`thread-runtime is-${working ? "working" : "ready"}`}><i aria-hidden="true" />{working ? "Läuft" : "Bereit"}</span>{selectedThread ? <CopyButton text={`${window.location.origin}${threadPath(selectedThread.repositoryId, selectedThread.id)}`} label="Thread-Link kopieren" /> : null}</div>
               {selectedThread?.fullAccess === true ? (
                 <strong className="full-access-badge">Full Access aktiv</strong>
               ) : sandboxMode === "danger-full-access" ? (
@@ -470,19 +558,19 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             </header>
             {realtime.missedEvents ? <p className="reconnect-notice" role="status">Verpasste Events wurden durch einen vollständigen Snapshot ersetzt.</p> : null}
             {error !== null ? <div className="error-banner" role="alert"><span>{error}</span><button type="button" aria-label="Fehler schließen" onClick={() => setError(null)}>×</button></div> : null}
-            <ActivityPanel thread={selectedThread} timeline={selectedThreadId === null ? [] : realtime.timeline[selectedThreadId] ?? []} />
-            <Conversation thread={selectedThread} />
+            <ActivityPanel thread={selectedThread} timeline={selectedThreadId === null ? [] : realtime.timeline[selectedThreadId] ?? []} runtimeState={realtime.processConnection} />
+            <Conversation thread={selectedThread} loading={deepLinkLoading} />
             <div className="compact-usage"><UsagePanel thread={selectedThread} rateLimits={realtime.rateLimits} /></div>
             <Composer
               csrfToken={session.csrfToken}
-              disabled={selectedThread === null || realtime.connection !== "connected" || operationPending}
+              disabled={selectedThread === null || selectedThread.repositoryAvailable === false || realtime.connection !== "connected" || operationPending}
               working={working}
               capabilities={capabilities}
               model={model}
               effort={effort}
               sandboxMode={sandboxMode}
               approvalPolicy={approvalPolicy}
-              accessMessage={accessError ?? (capabilities === null
+              accessMessage={selectedThread?.repositoryAvailable === false ? "Dieses Repository ist in der Workbench nicht mehr verfügbar. Der Verlauf bleibt lesbar." : accessError ?? (capabilities === null
                 ? "Access-Optionen werden geladen …"
                 : sandboxMode === null
                   ? "Access-Auswahl erforderlich. Full Access muss ausdrücklich bestätigt werden."
@@ -503,9 +591,13 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
               }}
               onSend={sendMessage}
               onStop={async () => {
-                if (selectedThread === null) return;
+                if (selectedThread?.activeTurnId == null) return;
                 try { await interruptTurn(session.csrfToken, selectedThread.id); }
-                catch (caught: unknown) { handleError(caught); }
+                catch (caught: unknown) {
+                  if (caught instanceof ApiError && caught.status === 409) {
+                    void readThread(selectedThread.id).then((thread) => dispatch({ type: "thread", thread })).catch(handleError);
+                  } else handleError(caught);
+                }
               }}
             />
           </main>
@@ -527,11 +619,22 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
           catch (caught: unknown) { handleError(caught); }
         }}
       />
-      <RepositoryTools action={repositoryAction} repository={actionRepository} jobs={jobs} github={github} pending={operationPending} onClose={() => setRepositoryAction(null)} onSubmit={async (values) => {
+      <RepositoryTools action={repositoryAction} repository={actionRepository} jobs={jobs} github={github} pending={operationPending} removalPreview={removalPreview} onClose={() => setRepositoryAction(null)} onRetryJob={async (job) => {
+        if (job.repositoryId === null) return;
+        try {
+          const action = job.type.replace("git_", "");
+          await gitAction(session.csrfToken, job.repositoryId, action);
+          dispatch({ type: "jobs", jobs: await listJobs() });
+        } catch (caught: unknown) { handleError(caught); }
+      }} onSubmit={async (values) => {
         setOperationPending(true); setError(null);
         try {
           if (repositoryAction === "create") await createRepository(session.csrfToken, String(values.name), Boolean(values.readme));
-          else if (repositoryAction === "clone") await cloneRepository(session.csrfToken, String(values.name), String(values.url));
+          else if (repositoryAction === "clone") {
+            const preflight = await cloneRepositoryPreflight(session.csrfToken, String(values.url));
+            if (!preflight.allowed) throw new Error(preflight.message);
+            await cloneRepository(session.csrfToken, String(values.name), String(values.url));
+          }
           else if (repositoryAction === "rename" && actionRepository) {
             const updated = await updateRepository(session.csrfToken, actionRepository.id, { displayName: String(values.name) });
             setRepositories((current) => current.map((item) => item.id === updated.id ? updated : item));
@@ -540,6 +643,11 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             await gitAction(session.csrfToken, actionRepository.id, "commit", { message: String(values.message) });
           } else if (repositoryAction === "branches" && actionRepository) await gitAction(session.csrfToken, actionRepository.id, values.branchOperation === "switch" ? "branch-switch" : "branch-create", { branch: String(values.branch) });
           else if (repositoryAction === "publish" && actionRepository && github?.account) await publishGithub(session.csrfToken, actionRepository.id, { owner: github.account, name: String(values.name), visibility: values.visibility as "private" | "public", initialPush: true, publicConfirmation: values.visibility === "public" ? String(values.confirmation) : null });
+          else if ((repositoryAction === "remove" || repositoryAction === "delete") && actionRepository) {
+            await removeRepository(session.csrfToken, actionRepository.id, repositoryAction, String(values.confirmation), Boolean(values.deleteThreads));
+            setSelectedThreadId(null);
+            setSelectedRepositoryId(null);
+          }
           await refreshRepositories();
           dispatch({ type: "jobs", jobs: await listJobs() });
           setRepositoryAction(null);
