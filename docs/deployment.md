@@ -218,6 +218,21 @@ oben beschrieben erhält, scheitert daher sichtbar und fail-closed.
 
 ## Konfiguration, Build und Start
 
+### Git-Zeitlimits
+
+Die drei Git-Zeitlimits sind nach Operationsart getrennt. Kurze lokale Befehle wie `status`,
+`diff`, Branch-/Remote-/Log-Abfragen, `add`, `commit` und Branchwechsel verwenden
+`WORKBENCH_GIT_COMMAND_TIMEOUT_SECONDS` (Standard 30 Sekunden, zulässig 5–300). Kurze
+Authentifizierungs- und Erreichbarkeitsproben wie `git ls-remote` bleiben ebenfalls an dieses eng
+begrenzte Zeitlimit gebunden.
+
+`fetch`, `pull` und `push` verwenden `WORKBENCH_GIT_NETWORK_TIMEOUT_SECONDS` (Standard 300
+Sekunden, zulässig 30–1800). Öffentliche HTTPS-/SSH-Clones, GitHub-CLI-Clones und private
+Deploy-Key-Clones verwenden `WORKBENCH_GIT_CLONE_TIMEOUT_SECONDS` (Standard 900 Sekunden, zulässig
+60–3600). Damit gilt das 30-Sekunden-Limit nur für kurze Operationen und bricht einen regulären
+Clone auf langsamer NAS-Hardware nicht künstlich ab. Die Werte enthalten keine Secrets und können
+bei Bedarf in der nicht versionierten `.env` innerhalb dieser Grenzen angepasst werden.
+
 Vor Initialinstallation oder einem Start nach Wartungsarbeiten muss TCP 8085 frei sein:
 
     cd /volume1/docker/codex/workspace/repositories/codex-workbench

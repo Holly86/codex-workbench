@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     mutation_rate_limit_global_requests: int = Field(default=1000, ge=10, le=20000)
     mutation_rate_limit_window_seconds: int = Field(default=60, ge=10, le=3600)
     max_command_output_bytes: int = Field(default=256 * 1024, ge=1024, le=4 * 1024 * 1024)
+    git_command_timeout_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
+    git_network_timeout_seconds: float = Field(default=300.0, ge=30.0, le=1800.0)
+    git_clone_timeout_seconds: float = Field(default=900.0, ge=60.0, le=3600.0)
     readiness_require_data_dir: bool = True
 
     @model_validator(mode="after")

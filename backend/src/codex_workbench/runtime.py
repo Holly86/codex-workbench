@@ -74,6 +74,9 @@ class WorkbenchRuntime:
             self.repositories,
             settings.repositories_root,
             output_limit=settings.max_command_output_bytes,
+            command_timeout_seconds=settings.git_command_timeout_seconds,
+            network_timeout_seconds=settings.git_network_timeout_seconds,
+            clone_timeout_seconds=settings.git_clone_timeout_seconds,
             deploy_keys=self.deploy_keys,
         )
         self.host_capabilities: JsonObject = {}

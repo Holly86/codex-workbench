@@ -56,6 +56,11 @@ synchronous conflict without exposing a host path. A successful clone binds the 
 derived local repository ID; any failed clone or binding removes only the target reserved by that
 exact attempt.
 
+Private deploy-key clones use the dedicated bounded clone limit
+`WORKBENCH_GIT_CLONE_TIMEOUT_SECONDS` (900 seconds by default), not the short local-command limit.
+On timeout, Workbench terminates only the process group created for that operation, removes only
+its own still-identical reservation, and leaves the unbound credential available for a retry.
+
 If cloning fails, opening the flow again with the same normalized GitHub slug resumes the existing
 unbound credential, including its verified status and unchanged public key. The user can select a
 different free local name and retry without installing another GitHub deploy key. A credential

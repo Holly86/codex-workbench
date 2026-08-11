@@ -9,7 +9,7 @@ from fastapi import Request
 
 import codex_workbench.api.workbench as workbench_api
 from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError
-from codex_workbench.git_service import RepositoryNameConflictError
+from codex_workbench.git_service import GitOperationTimeoutError, RepositoryNameConflictError
 from codex_workbench.runtime import WorkbenchRuntime
 from codex_workbench.security.sessions import AuthenticatedSession
 
@@ -70,6 +70,21 @@ def test_bound_deploy_key_has_a_stable_browser_safe_conflict() -> None:
         "error": {
             "code": "deploy_key_already_bound",
             "message": "Der Deploy Key ist bereits an ein lokales Repository gebunden.",
+        }
+    }
+    assert "sensitive" not in bytes(response.body).decode("utf-8")
+
+
+def test_git_timeout_has_a_stable_browser_safe_error() -> None:
+    response = workbench_api._safe_error(  # noqa: SLF001
+        GitOperationTimeoutError("sensitive URL, path, and credential")
+    )
+
+    assert response.status_code == 504
+    assert json.loads(bytes(response.body)) == {
+        "error": {
+            "code": "git_operation_timeout",
+            "message": "Der Git-Vorgang hat das zulässige Zeitlimit überschritten.",
         }
     }
     assert "sensitive" not in bytes(response.body).decode("utf-8")

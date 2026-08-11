@@ -18,7 +18,11 @@ from codex_workbench.app_server.protocol import (
 )
 from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError, DeployKeyError
 from codex_workbench.domain.capabilities import FullAccessConfirmationError
-from codex_workbench.git_service import GitOperationError, RepositoryNameConflictError
+from codex_workbench.git_service import (
+    GitOperationError,
+    GitOperationTimeoutError,
+    RepositoryNameConflictError,
+)
 from codex_workbench.jobs import JobType
 from codex_workbench.runtime import (
     RuntimeConflictError,
@@ -196,6 +200,12 @@ def _safe_error(exc: BaseException) -> JSONResponse:
             HTTPStatus.CONFLICT,
             "deploy_key_already_bound",
             "Der Deploy Key ist bereits an ein lokales Repository gebunden.",
+        )
+    if isinstance(exc, GitOperationTimeoutError):
+        return api_error(
+            HTTPStatus.GATEWAY_TIMEOUT,
+            "git_operation_timeout",
+            "Der Git-Vorgang hat das zulässige Zeitlimit überschritten.",
         )
     if isinstance(exc, RuntimeUnavailableError):
         return api_error(
