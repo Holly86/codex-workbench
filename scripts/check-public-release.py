@@ -236,13 +236,24 @@ def check_versions_and_docs() -> None:
 
     licenses = [path for name in ("LICENSE", "LICENSE.md", "COPYING") if (path := ROOT / name).exists()]
     release_workflow = read(".github/workflows/docker-release.yml")
-    if not licenses:
-        if "No project license has been selected" not in read("README.md"):
-            fail("missing license must be disclosed")
-        if "org.opencontainers.image.licenses=NOASSERTION" not in release_workflow:
-            fail("OCI license metadata must not claim an unselected license")
-    elif "org.opencontainers.image.licenses=NOASSERTION" in release_workflow:
-        fail("OCI license metadata must be updated after selecting a license")
+    if [path.name for path in licenses] != ["LICENSE"]:
+        fail("the canonical Apache-2.0 LICENSE file is required")
+    license_text = read("LICENSE")
+    if "Apache License\n                           Version 2.0, January 2004" not in license_text:
+        fail("LICENSE must contain the official Apache License 2.0 text")
+    if "No project license has been selected" in read("README.md"):
+        fail("README still reports an unselected project license")
+    if 'license = "Apache-2.0"' not in read("backend/pyproject.toml"):
+        fail("backend metadata must declare Apache-2.0")
+    if '"license": "Apache-2.0"' not in read("frontend/package.json"):
+        fail("frontend metadata must declare Apache-2.0")
+    if release_workflow.count("org.opencontainers.image.licenses=Apache-2.0") != 2:
+        fail("both OCI images must declare Apache-2.0")
+    if "NOASSERTION" in release_workflow:
+        fail("OCI license metadata must not use NOASSERTION")
+    gitignore = read(".gitignore")
+    if "**/security/deploy-keys/" not in gitignore:
+        fail("repository-local deploy key storage must be ignored")
 
 
 def main() -> int:

@@ -10,6 +10,13 @@
 /uploads/
 /secrets/
 /security/
+**/security/deploy-keys/
+**/deploy-keys/*/active
+**/deploy-keys/*/active.pub
+**/deploy-keys/*/candidate
+**/deploy-keys/*/candidate.pub
+**/deploy-keys/*/retired
+**/deploy-keys/*/retired.pub
 /state/
 /logs/
 /cache/

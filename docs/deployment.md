@@ -166,6 +166,12 @@ Docker-Prune-Befehle sind kein Bestandteil des Updates.
    dadurch bleiben vorige Images rollbackfähig. Bind-Adresse und Host-Port sind nicht konfigurierbar
    und deshalb keine `.env`-Variablen.
 
+   `WORKBENCH_PLUGIN_DISCOVERY_ENABLED=false` ist der sichere Produktstandard. Damit ist
+   `plugin/list` nicht Teil von Startup, Repositorywechsel oder globalem Health. Nur Betreiber,
+   die den optionalen, expliziten Plugin-Probe benötigen, setzen den Wert auf `true`; der
+   Capability-Circuit-Breaker bleibt dabei aktiv. Skills werden unabhängig davon ausschließlich
+   beim Öffnen des Tool-Menüs geladen.
+
 5. Installer erneut ausführen:
 
        sudo ./scripts/init-deployment.sh

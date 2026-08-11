@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "codex-workbench-backend"
 version = "0.1.0"
 description = "Backend foundation for Codex Workbench"
+license = "Apache-2.0"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
