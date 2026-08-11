@@ -288,3 +288,40 @@ test("restores known thread routes on popstate without readThread", async () => 
   expect(await screen.findByRole("heading", { name: "History thread" })).toBeInTheDocument();
   expect(mocks.readThread).not.toHaveBeenCalled();
 });
+
+test("refreshes repositories once after a clone job succeeds", async () => {
+  const cloned: Repository = {
+    ...repository,
+    id: "fedcba9876543210",
+    name: "recreated",
+    directoryName: "recreated",
+  };
+  mocks.listRepositories
+    .mockResolvedValueOnce([repository])
+    .mockResolvedValue([repository, cloned]);
+  renderWorkbench();
+
+  await waitFor(() => expect(mocks.listRepositories).toHaveBeenCalledTimes(1));
+  act(() => mocks.dispatchAction?.({
+    type: "jobs",
+    jobs: [{
+      id: "job-clone", repositoryId: null, repositoryName: "recreated", type: "git_clone",
+      status: "succeeded", startedAt: 1, endedAt: 2, exitCode: 0, output: "",
+      error: null, command: "git clone", durationMs: 1,
+    }],
+  }));
+
+  await waitFor(() => expect(mocks.listRepositories).toHaveBeenCalledTimes(2));
+  expect(await screen.findByRole("button", { name: /recreated main Clean/ })).toBeInTheDocument();
+
+  act(() => mocks.dispatchAction?.({
+    type: "jobs",
+    jobs: [{
+      id: "job-clone", repositoryId: null, repositoryName: "recreated", type: "git_clone",
+      status: "succeeded", startedAt: 1, endedAt: 2, exitCode: 0, output: "",
+      error: null, command: "git clone", durationMs: 1,
+    }],
+  }));
+  await Promise.resolve();
+  expect(mocks.listRepositories).toHaveBeenCalledTimes(2);
+});

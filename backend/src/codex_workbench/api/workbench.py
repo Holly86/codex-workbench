@@ -296,7 +296,7 @@ async def create_repository(payload: RepositoryCreateRequest, request: Request) 
     if limited is not None:
         return limited
     try:
-        result = await runtime.git.create(payload.name, readme=payload.readme)
+        result = await runtime.create_repository(payload.name, readme=payload.readme)
         return JSONResponse(result.browser_dict(), status_code=HTTPStatus.CREATED)
     except Exception as exc:
         return _safe_error(exc)
@@ -314,7 +314,7 @@ async def clone_repository(payload: RepositoryCloneRequest, request: Request) ->
             repository_id=None,
             repository_name=payload.name,
             job_type="git_clone",
-            operation=lambda: runtime.git.clone(payload.name, payload.url),
+            operation=lambda: runtime.clone_repository(payload.name, payload.url),
         )
         return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
     except Exception as exc:
@@ -370,7 +370,7 @@ async def clone_private_repository(
             repository_id=None,
             repository_name=payload.name,
             job_type="git_clone",
-            operation=lambda: runtime.git.clone_with_deploy_key(
+            operation=lambda: runtime.clone_private_repository(
                 reservation, payload.credentialId
             ),
         )

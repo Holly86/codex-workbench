@@ -336,6 +336,26 @@ class MetadataRepository:
                 (repository_id, relative_path, state, updated_at),
             )
 
+    def mark_repository_available(self, repository_id: str, relative_path: str) -> bool:
+        """Remove only the exact historical tombstone for a verified repository."""
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT relative_path FROM repository_registrations WHERE repository_id = ?",
+                (repository_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if cast(str, row["relative_path"]) != relative_path:
+                raise ValueError("repository registration path does not match")
+            cursor = connection.execute(
+                "DELETE FROM repository_registrations "
+                "WHERE repository_id = ? AND relative_path = ?",
+                (repository_id, relative_path),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("repository registration could not be reactivated")
+        return True
+
     def repository_preferences(self, repository_id: str) -> dict[str, str | None] | None:
         with self._database.connect() as connection:
             row = connection.execute(

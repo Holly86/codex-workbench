@@ -27,7 +27,12 @@ from codex_workbench.domain.approvals import (
 )
 from codex_workbench.domain.capabilities import FullAccessRegistry
 from codex_workbench.domain.projection import DomainProjection, ProjectedThread
-from codex_workbench.git_service import GitService
+from codex_workbench.git_service import (
+    CloneTargetReservation,
+    GitOperationError,
+    GitResult,
+    GitService,
+)
 from codex_workbench.host_capabilities import detect_sandbox_capabilities
 from codex_workbench.jobs import BackgroundJobRegistry
 from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference
@@ -157,6 +162,56 @@ class WorkbenchRuntime:
         repositories = await self.repositories.list_repositories()
         hidden = await asyncio.to_thread(self.metadata.hidden_repository_ids)
         return tuple(repository for repository in repositories if repository.id not in hidden)
+
+    async def create_repository(self, name: str, *, readme: bool) -> GitResult:
+        result = await self.git.create(name, readme=readme)
+        if result.exit_code == 0:
+            await self._mark_created_repository_available(name)
+        return result
+
+    async def clone_repository(self, name: str, url: str) -> GitResult:
+        result = await self.git.clone(name, url)
+        if result.exit_code == 0:
+            await self._mark_created_repository_available(name)
+        return result
+
+    async def clone_private_repository(
+        self, reservation: CloneTargetReservation, credential_id: str
+    ) -> GitResult:
+        result = await self.git.clone_with_deploy_key(reservation, credential_id)
+        if result.exit_code == 0:
+            await self._mark_created_repository_available(reservation.name)
+        return result
+
+    async def _mark_created_repository_available(self, name: str) -> RepositorySummary:
+        """Reactivate one freshly discovered direct-child repository, never a client ID."""
+        expected_id = GitService.repository_id_for_name(name)
+        try:
+            summary, path = await asyncio.to_thread(
+                self.repositories.resolve_repository_id, expected_id
+            )
+            root = self.settings.repositories_root.resolve(strict=True)
+            resolved = path.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise GitOperationError("created repository validation failed") from exc
+        if (
+            summary.id != expected_id
+            or summary.name != name
+            or summary.relative_path != name
+            or path.is_symlink()
+            or resolved == root
+            or resolved.parent != root
+        ):
+            raise GitOperationError("created repository identity does not match")
+        try:
+            await asyncio.to_thread(
+                self.metadata.mark_repository_available,
+                summary.id,
+                summary.relative_path,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise GitOperationError("repository reactivation failed") from exc
+        return summary
 
     async def repository_removal_preview(
         self, repository_id: str, session_id: str
