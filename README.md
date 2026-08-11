@@ -9,9 +9,9 @@ This is an independent community open-source project. It is not an official Open
 not affiliated with or endorsed by OpenAI. “OpenAI”, “Codex”, and related names belong to their
 respective owners. The project does not bundle ChatGPT artwork or other proprietary product assets.
 
-> **Early release:** `v0.1.0` is the intended first public version. Publication remains blocked
-> until a private security-report channel is configured. Treat interfaces, persistence formats,
-> and operating procedures as subject to change.
+> **Early release:** `v0.1.0` is the intended first public version. Before the first release tag is
+> published, GitHub Private Vulnerability Reporting must be enabled for the public repository.
+> Treat interfaces, persistence formats, and operating procedures as subject to change.
 
 ## What it is for
 

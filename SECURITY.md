@@ -10,13 +10,14 @@ intended to receive security fixes; older prereleases and development snapshots 
 Do not post vulnerability details, credentials, authentication files, prompts, uploaded content,
 or exploit material in a public issue.
 
-A private public-facing security contact has not yet been configured. Before the repository is made
-public, the maintainer must enable GitHub private vulnerability reporting or publish a dedicated
-security contact and update this section. Until then, do not publish sensitive details.
+For the public repository, security vulnerabilities must be reported through GitHub Private
+Vulnerability Reporting. Do not disclose vulnerability details in a public issue. If the private
+reporting option is temporarily unavailable, wait for the maintainer to restore the private channel
+rather than publishing sensitive details.
 
-When a private channel exists, include the affected version, impact, prerequisites, and a minimal
-reproduction that contains no real secrets or personal data. Maintainers should acknowledge the
-report, coordinate remediation and disclosure, and credit the reporter if requested.
+Include the affected version, impact, prerequisites, and a minimal reproduction that contains no
+real secrets or personal data. Maintainers should acknowledge the report, coordinate remediation
+and disclosure, and credit the reporter if requested.
 
 ## Operator security responsibilities
 
