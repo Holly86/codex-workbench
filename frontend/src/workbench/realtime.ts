@@ -118,6 +118,14 @@ function updateThread(
   return threads.map((thread) => (thread.id === threadId ? update(thread) : thread));
 }
 
+function withoutTimelineEntry(
+  timeline: Record<string, TimelineEntry[]>, threadId: string,
+): Record<string, TimelineEntry[]> {
+  const next = { ...timeline };
+  delete next[threadId];
+  return next;
+}
+
 function currentTurn(thread: ThreadView, turnId: string | null): Turn | null {
   if (turnId !== null) {
     return thread.turns.find((turn) => turn.id === turnId) ?? null;
@@ -361,8 +369,7 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   if (event.type === "thread.deleted") {
     const threadId = typeof event.payload.threadId === "string" ? event.payload.threadId : event.threadId;
     if (threadId !== null) {
-      const { [threadId]: _deleted, ...remaining } = timeline;
-      timeline = remaining;
+      timeline = withoutTimelineEntry(timeline, threadId);
     }
   }
   const label = eventLabel(event);
@@ -402,7 +409,7 @@ export function reducer(state: RealtimeState, action: Action): RealtimeState {
   };
   if (action.type === "thread") return { ...state, threads: replaceThread(state.threads, action.thread) };
   if (action.type === "threadDeleted") {
-    const { [action.threadId]: _deleted, ...timeline } = state.timeline;
+    const timeline = withoutTimelineEntry(state.timeline, action.threadId);
     return {
       ...state,
       threads: state.threads.filter((thread) => thread.id !== action.threadId),

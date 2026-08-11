@@ -212,7 +212,8 @@ export function RepositorySidebar({
                       ref={openThreadMenu === thread.id ? threadMenuAnchorRef : undefined}
                       type="button"
                       className="thread-menu-trigger"
-                      aria-label={`${thread.name ?? (thread.preview || "Thread")} Menü`}
+                      aria-label="Thread-Aktionen"
+                      title={thread.name ?? (thread.preview || "Thread")}
                       aria-haspopup="menu"
                       aria-expanded={openThreadMenu === thread.id}
                       onClick={(event) => {
