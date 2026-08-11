@@ -242,12 +242,15 @@ async def repositories(request: Request) -> JSONResponse:
 
 @router.get("/capabilities")
 async def capabilities(
-    request: Request, repositoryId: str | None = None, refresh: bool = False
+    request: Request,
+    repositoryId: str | None = None,
+    refresh: bool = False,
+    tools: Literal["none", "skills", "plugins", "all"] = "none",
 ) -> JSONResponse:
     try:
         return JSONResponse(
             await _runtime(request).capabilities(
-                repositoryId, _session(request).id, refresh=refresh
+                repositoryId, _session(request).id, refresh=refresh, tools=tools
             )
         )
     except Exception as exc:

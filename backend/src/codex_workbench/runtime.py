@@ -7,7 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from codex_workbench.app_server.correlation import (
     AppServerDisconnectedError,
@@ -306,6 +306,7 @@ class WorkbenchRuntime:
         session_id: str,
         *,
         refresh: bool = False,
+        tools: Literal["none", "skills", "plugins", "all"] = "all",
     ) -> JsonObject:
         """Return cached, fail-soft, schema-backed browser capability metadata."""
         cwd: str | None = None
@@ -314,7 +315,7 @@ class WorkbenchRuntime:
                 self.repositories.resolve_repository_id, repository_id
             )
             cwd = str(path)
-        key = repository_id or "__global__"
+        key = f"{repository_id or '__global__'}:{tools}"
         generation = self.supervisor.status.generation
         now = time.monotonic()
         async with self._capability_lock:
@@ -332,7 +333,7 @@ class WorkbenchRuntime:
             flight = self._capability_flights.get(key)
             if flight is None:
                 flight = asyncio.create_task(
-                    self._discover_capabilities(key, cwd, session_id, generation),
+                    self._discover_capabilities(key, cwd, session_id, generation, tools),
                     name=f"capability-discovery-{key[-8:]}",
                 )
                 self._capability_flights[key] = flight
@@ -362,7 +363,12 @@ class WorkbenchRuntime:
         )
 
     async def _discover_capabilities(
-        self, key: str, cwd: str | None, session_id: str, generation: int
+        self,
+        key: str,
+        cwd: str | None,
+        session_id: str,
+        generation: int,
+        tools: Literal["none", "skills", "plugins", "all"],
     ) -> JsonObject:
         states: JsonObject = {}
         models_result, model_reason = await self._capability_request(
@@ -415,9 +421,11 @@ class WorkbenchRuntime:
         states["models"] = self._capability_state(model_reason)
         skills: list[JsonValue] = []
         plugins: list[JsonValue] = []
-        skill_reason: str | None = None
-        plugin_reason: str | None = None
-        if cwd is not None:
+        skill_reason: str | None = "not_loaded"
+        plugin_reason: str | None = (
+            "not_loaded" if self.settings.plugin_discovery_enabled else "disabled"
+        )
+        if cwd is not None and tools in {"skills", "all"}:
             skill_payload, skill_reason = await self._capability_request(
                 key,
                 "skills_list",
@@ -442,6 +450,11 @@ class WorkbenchRuntime:
                                 "enabled": skill.get("enabled") is True,
                             }
                         )
+        if (
+            cwd is not None
+            and tools in {"plugins", "all"}
+            and self.settings.plugin_discovery_enabled
+        ):
             plugin_payload, plugin_reason = await self._capability_request(
                 key,
                 "plugin_list",
@@ -467,12 +480,22 @@ class WorkbenchRuntime:
                         )
         states["skills"] = self._capability_state(skill_reason)
         states["plugins"] = self._capability_state(plugin_reason)
-        available = sum(
-            1
-            for value in states.values()
-            if isinstance(value, dict) and value.get("available") is True
+        sandbox = self.host_capabilities.get("sandbox")
+        sandbox_values = list(sandbox.values()) if isinstance(sandbox, dict) else []
+        sandbox_available = any(
+            isinstance(value, dict) and value.get("available") is True
+            for value in sandbox_values
         )
-        overall = "ready" if available == 3 else "unavailable" if available == 0 else "partial"
+        overall = (
+            "unavailable"
+            if model_reason is not None or not sandbox_available
+            else "ready"
+            if all(
+                isinstance(value, dict) and value.get("available") is True
+                for value in sandbox_values
+            )
+            else "degraded"
+        )
         return {
             "models": models,
             "skills": skills,
@@ -490,6 +513,7 @@ class WorkbenchRuntime:
                 "cached": False,
                 "stale": False,
                 **states,
+                "apps": {"state": "disabled", "available": False, "reason": None},
             },
         }
 
@@ -598,7 +622,13 @@ class WorkbenchRuntime:
 
     @staticmethod
     def _capability_state(reason: str | None) -> JsonObject:
-        return {"available": reason is None, "reason": reason}
+        if reason in {"disabled", "not_loaded"}:
+            return {"state": reason, "available": False, "reason": None}
+        return {
+            "state": "ready" if reason is None else "unavailable",
+            "available": reason is None,
+            "reason": reason,
+        }
 
     @staticmethod
     def _capability_cache_view(value: JsonObject, *, cached: bool, stale: bool) -> JsonObject:

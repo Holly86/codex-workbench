@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
 
-import type { WorkbenchCapabilities } from "../workbench/types";
-
 type BackendState = "checking" | "connected" | "unavailable";
-type CapabilityStatus = WorkbenchCapabilities["status"];
 
 interface HealthStatusProps {
   processConnection: string;
   realtimeConnection?: string;
-  capabilities: CapabilityStatus | null;
 }
 
-export function HealthStatus({ processConnection, realtimeConnection = "connected", capabilities }: HealthStatusProps) {
+export function HealthStatus({ processConnection, realtimeConnection = "connected" }: HealthStatusProps) {
   const [backend, setBackend] = useState<BackendState>("checking");
   const [runtimeReady, setRuntimeReady] = useState(false);
 
@@ -58,17 +54,13 @@ export function HealthStatus({ processConnection, realtimeConnection = "connecte
 
   const backendText = backendLabel(backend);
   const runtimeText = runtimeLabel(backend, runtimeReady, processConnection, realtimeConnection);
-  const capabilityText = capabilityLabel(capabilities);
   return (
-    <div className="health-status" role="status" aria-live="polite" aria-label={`${backendText}. ${runtimeText}. ${capabilityText}.`}>
+    <div className="health-status" role="status" aria-live="polite" aria-label={`${backendText}. ${runtimeText}.`}>
       <span className="status-chip" data-state={backend === "connected" ? "positive" : backend === "checking" ? "pending" : "negative"} title={backendText}>
         <span className="status-dot" aria-hidden="true" /><span className="status-key">Backend</span><span className="status-value">{backendText}</span><span className="status-compact">{backend === "connected" ? "Verbunden" : backend === "checking" ? "Prüfung" : "Offline"}</span>
       </span>
       <span className="status-chip" data-state={runtimeTone(backend, runtimeReady, processConnection, realtimeConnection)} title={runtimeText}>
         <span className="status-dot" aria-hidden="true" /><span className="status-key">Runtime</span><span className="status-value">{runtimeText}</span><span className="status-compact">{processConnection === "connected" && runtimeReady ? "Bereit" : processConnection === "reconnecting" || realtimeConnection !== "connected" ? "Verbindet" : "Offline"}</span>
-      </span>
-      <span className="status-chip" data-state={capabilityTone(capabilities)} title={capabilityText}>
-        <span className="status-dot" aria-hidden="true" /><span className="status-key">Capabilities</span><span className="status-value">{capabilityText}</span><span className="status-compact">{capabilities === null ? "Lädt" : capabilities.overall === "ready" ? "Bereit" : capabilities.plugins.available ? "Teilweise" : "Plugins fehlen"}</span>
       </span>
     </div>
   );
@@ -91,20 +83,4 @@ function runtimeTone(backend: BackendState, ready: boolean, connection: string, 
   if (backend !== "connected" || (!ready && connection !== "reconnecting")) return "negative";
   if (realtime !== "connected" || connection === "reconnecting") return "pending";
   return connection === "connected" ? "positive" : "negative";
-}
-
-function capabilityTone(status: CapabilityStatus | null): "positive" | "pending" | "negative" {
-  if (status === null) return "pending";
-  return status.overall === "ready" ? "positive" : "negative";
-}
-
-function capabilityLabel(status: CapabilityStatus | null): string {
-  if (status === null) return "Capabilities werden geladen";
-  if (status.overall === "ready") return "Capabilities bereit";
-  if (!status.plugins.available && status.models.available) {
-    return "Plugins konnten nicht geladen werden";
-  }
-  return status.overall === "partial"
-    ? "Capabilities teilweise verfügbar"
-    : "Capabilities nicht verfügbar";
 }

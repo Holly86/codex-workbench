@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     app_server_backoff_max_seconds: float = Field(default=30.0, ge=0.1, le=300)
     capability_cache_ttl_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
     capability_failure_cooldown_seconds: float = Field(default=300.0, ge=10.0, le=3600.0)
+    plugin_discovery_enabled: bool = False
     realtime_history_size: int = Field(default=512, ge=16, le=10000)
     realtime_client_queue_size: int = Field(default=128, ge=8, le=2048)
     realtime_heartbeat_seconds: int = Field(default=20, ge=5, le=120)

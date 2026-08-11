@@ -129,9 +129,11 @@ export async function listRepositories(signal?: AbortSignal): Promise<Repository
   return parseRepositories(await requestJson("/api/repositories", { method: "GET", signal }));
 }
 
-export async function readCapabilities(repositoryId: string): Promise<WorkbenchCapabilities> {
+export async function readCapabilities(
+  repositoryId: string, tools: "none" | "skills" | "plugins" | "all" = "none",
+): Promise<WorkbenchCapabilities> {
   const value = requireRecord(await requestJson(
-    `/api/capabilities?repositoryId=${encodeURIComponent(repositoryId)}`,
+    `/api/capabilities?repositoryId=${encodeURIComponent(repositoryId)}&tools=${tools}`,
     { method: "GET" },
   ));
   if (!Array.isArray(value.models) || !Array.isArray(value.skills) || !Array.isArray(value.plugins)) {

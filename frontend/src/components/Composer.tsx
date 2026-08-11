@@ -40,6 +40,8 @@ interface ComposerProps {
   accessMessage?: string | null;
   onModelChange?: (model: string, effort: string | null) => void;
   onAccessChange?: (sandbox: SandboxMode, approval: ApprovalPolicy) => void;
+  onToolsOpen?: () => void;
+  toolsLoading?: boolean;
 }
 
 function attachmentKey(): string {
@@ -54,7 +56,8 @@ function errorMessage(error: unknown): string {
 
 export function Composer({ csrfToken, disabled, working, onSend, onStop, capabilities, model,
   effort, sandboxMode = null, approvalPolicy = "on-request", accessMessage = null,
-  onModelChange = () => undefined, onAccessChange = () => undefined }: ComposerProps) {
+  onModelChange = () => undefined, onAccessChange = () => undefined,
+  onToolsOpen = () => undefined, toolsLoading = false }: ComposerProps) {
   const inputId = useId();
   const pickerId = useId();
   const accessMessageId = useId();
@@ -339,7 +342,11 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop, capabil
           aria-label={`Skills und Plugins: ${String(capabilities?.skills.length ?? 0)}`}
           aria-haspopup="dialog"
           aria-expanded={openMenu === "skills"}
-          onClick={() => setOpenMenu(openMenu === "skills" ? null : "skills")}
+          onClick={() => {
+            const opening = openMenu !== "skills";
+            setOpenMenu(opening ? "skills" : null);
+            if (opening) onToolsOpen();
+          }}
         >
           <span className="control-kicker">Tools</span>
           <span className="control-value">Skills</span>
@@ -416,13 +423,17 @@ export function Composer({ csrfToken, disabled, working, onSend, onStop, capabil
           </button>
         ))}
       </AnchoredMenu>
-      <AnchoredMenu anchorRef={skillsRef} open={openMenu === "skills"} onClose={() => setOpenMenu(null)} ariaLabel="Skills und Plugins" width={400} preferredPlacement="top" align="end" role="dialog">
-        <div className="menu-panel-header"><div><p className="menu-heading">Skills &amp; Plugins</p><p className="menu-description">Für dieses Repository erkannte Erweiterungen.</p></div><button type="button" className="menu-close" aria-label="Menü schließen" onClick={() => setOpenMenu(null)}>×</button></div>
+      <AnchoredMenu anchorRef={skillsRef} open={openMenu === "skills"} onClose={() => setOpenMenu(null)} ariaLabel="Optionale Tools" width={400} preferredPlacement="top" align="end" role="dialog">
+        <div className="menu-panel-header"><div><p className="menu-heading">Optionale Tools</p><p className="menu-description">Repositorybezogene Erweiterungen, getrennt vom Runtime-Status.</p></div><button type="button" className="menu-close" aria-label="Menü schließen" onClick={() => setOpenMenu(null)}>×</button></div>
         <div className="capability-menu-list">
           {capabilities?.skills.map((item) => <div className="menu-static" key={item.name}><strong>{item.name}</strong><span>{item.description}</span></div>)}
           {capabilities?.plugins.map((item) => <div className="menu-static" key={item.id}><strong>{item.name}</strong><span>{item.installed ? "Plugin installiert" : "Plugin nicht installiert"}</span></div>)}
+          {toolsLoading ? <p className="menu-empty">Skills werden geladen …</p> : null}
+          {!toolsLoading && capabilities?.status.skills.state === "not_loaded" ? <p className="menu-empty">Skills werden bei Bedarf geladen.</p> : null}
+          {capabilities?.status.skills.state === "unavailable" ? <p className="menu-empty">Skills derzeit nicht verfügbar.</p> : null}
+          {capabilities?.status.plugins.state === "disabled" ? <div className="menu-static is-muted"><strong>Plugins</strong><span>Nicht aktiviert</span></div> : null}
+          {capabilities?.status.plugins.state === "unavailable" ? <div className="menu-static is-muted"><strong>Plugins</strong><span>Derzeit nicht verfügbar</span></div> : null}
           {!capabilities?.native.apps ? <div className="menu-static is-muted"><strong>Apps</strong><span>Nicht aktiviert</span></div> : null}
-          {capabilitiesLoading ? <p className="menu-empty">Capabilities werden geladen …</p> : null}
         </div>
       </AnchoredMenu>
     </form>

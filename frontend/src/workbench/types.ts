@@ -79,18 +79,23 @@ export interface WorkbenchCapabilities {
   plugins: Array<{ id: string; name: string; installed: boolean; enabled: boolean }>;
   native: { models: boolean; skills: boolean; plugins: boolean; apps: boolean };
   status: {
-    overall: "ready" | "partial" | "unavailable";
+    overall: "ready" | "degraded" | "unavailable";
     generation: number;
     cached: boolean;
     stale: boolean;
     models: CapabilityAvailability;
     skills: CapabilityAvailability;
     plugins: CapabilityAvailability;
+    apps: CapabilityAvailability;
   };
   host?: { sandbox: Record<"workspaceWrite" | "readOnly" | "fullAccess", { available: boolean; reason: string | null }> };
 }
 
-export interface CapabilityAvailability { available: boolean; reason: string | null }
+export interface CapabilityAvailability {
+  state: "loading" | "ready" | "degraded" | "unavailable" | "disabled" | "not_loaded";
+  available: boolean;
+  reason: string | null;
+}
 
 export type ActivityState =
   | "idle"

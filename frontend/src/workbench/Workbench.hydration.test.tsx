@@ -95,9 +95,10 @@ function capabilities(
     native: { models: true, skills: true, plugins: true, apps: false },
     status: {
       overall: "ready", generation: 1, cached: false, stale: false,
-      models: { available: true, reason: null },
-      skills: { available: true, reason: null },
-      plugins: { available: true, reason: null },
+      models: { state: "ready", available: true, reason: null },
+      skills: { state: "ready", available: true, reason: null },
+      plugins: { state: "ready", available: true, reason: null },
+      apps: { state: "disabled", available: false, reason: null },
     },
     host: { sandbox: {
       workspaceWrite: { available: workspaceWrite, reason: workspaceWrite ? null : "unavailable" },

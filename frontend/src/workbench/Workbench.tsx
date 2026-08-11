@@ -93,6 +93,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [model, setModel] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
   const [capability, setCapability] = useState<FullAccessCapability | null>(null);
+  const [toolsLoading, setToolsLoading] = useState(false);
   const [fullAccessIntent, setFullAccessIntent] = useState<FullAccessIntent | null>(null);
   const [fullAccessPending, setFullAccessPending] = useState(false);
   const [repositoriesLoading, setRepositoriesLoading] = useState(true);
@@ -635,7 +636,6 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             <HealthStatus
               processConnection={realtime.processConnection}
               realtimeConnection={realtime.connection}
-              capabilities={capabilities?.status ?? null}
             />
             <UsagePanel thread={selectedThread} rateLimits={realtime.rateLimits} />
             <button type="button" className="secondary-action" disabled={logoutPending} onClick={() => void performLogout()}>{logoutPending ? "Abmelden …" : "Abmelden"}</button>
@@ -721,6 +721,23 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
                   setFullAccessIntent(null);
                   setAccessError(null);
                 } else setAccessError("Dieser Access-Modus ist auf dem Host nicht verfügbar.");
+              }}
+              toolsLoading={toolsLoading}
+              onToolsOpen={() => {
+                if (
+                  selectedRepositoryId === null
+                  || capabilities === null
+                  || capabilities.status.skills.state === "ready"
+                  || toolsLoading
+                ) return;
+                setToolsLoading(true);
+                void readCapabilities(selectedRepositoryId, "skills")
+                  .then((value) => setCapabilityProjection({
+                    repositoryId: selectedRepositoryId,
+                    value,
+                  }))
+                  .catch(handleError)
+                  .finally(() => setToolsLoading(false));
               }}
               onSend={sendMessage}
               onStop={async () => {
