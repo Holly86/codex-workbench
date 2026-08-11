@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Callable, cast
+from typing import cast
 
 _ROOT = Path(__file__).resolve().parents[2]
 
