@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import type { Repository, ThreadView } from "../workbench/types";
 import { AnchoredMenu } from "./AnchoredMenu";
 
-export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "publish" | "github" | "rename" | "settings" | "remove" | "delete" | "create" | "clone";
+export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "deploy-key" | "publish" | "github" | "rename" | "settings" | "remove" | "delete" | "create" | "clone" | "connect-private";
 
 interface RepositorySidebarProps {
   repositories: Repository[];
@@ -13,6 +13,7 @@ interface RepositorySidebarProps {
   onSelectRepository: (repositoryId: string) => void;
   onSelectThread: (thread: ThreadView) => void;
   onNewThread: () => void;
+  onDeleteThread: (thread: ThreadView) => void;
   onRepositoryAction: (action: RepositoryAction, repository: Repository | null) => void;
 }
 
@@ -32,6 +33,7 @@ const REPOSITORY_ACTION_GROUPS: Array<Array<{ action: RepositoryAction; label: s
     { action: "pull", label: "Pull – nur Fast-forward" },
     { action: "push", label: "Push" },
     { action: "remote", label: "Remote & Clone" },
+    { action: "deploy-key", label: "SSH / Deploy Key" },
   ],
   [
     { action: "publish", label: "Auf GitHub veröffentlichen" },
@@ -54,10 +56,12 @@ export function RepositorySidebar({
   onSelectRepository,
   onSelectThread,
   onNewThread,
+  onDeleteThread,
   onRepositoryAction,
 }: RepositorySidebarProps) {
   const [query, setQuery] = useState("");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [openThreadMenu, setOpenThreadMenu] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(() => {
     const saved = localStorage.getItem("workbench.sidebar.collapsed");
     if (saved !== null) return saved === "true";
@@ -65,6 +69,7 @@ export function RepositorySidebar({
   });
   const searchRef = useRef<HTMLInputElement>(null);
   const menuAnchorRef = useRef<HTMLButtonElement>(null);
+  const threadMenuAnchorRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -73,7 +78,7 @@ export function RepositorySidebar({
         if (collapsed) setCollapsed(false);
         window.setTimeout(() => searchRef.current?.focus());
       }
-      if (event.key === "Escape") setOpenMenu(null);
+      if (event.key === "Escape") { setOpenMenu(null); setOpenThreadMenu(null); }
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
@@ -105,6 +110,7 @@ export function RepositorySidebar({
   const filteredThreads = threads.filter((thread) =>
     !normalized || (thread.name ?? thread.preview).toLocaleLowerCase().includes(normalized));
   const menuRepository = repositories.find((repository) => repository.id === openMenu) ?? null;
+  const menuThread = threads.find((thread) => thread.id === openThreadMenu) ?? null;
 
   return (
     <>
@@ -132,6 +138,7 @@ export function RepositorySidebar({
         <div className="repository-create-actions" aria-label="Repository-Aktionen">
           <button type="button" onClick={() => onRepositoryAction("create", null)}><span aria-hidden="true">□＋</span> Neu</button>
           <button type="button" onClick={() => onRepositoryAction("clone", null)}><span aria-hidden="true">↓</span> Klonen</button>
+          <button type="button" onClick={() => onRepositoryAction("connect-private", null)}><span aria-hidden="true">⌁</span> Privat</button>
         </div>
         <label className="sidebar-search">
           <span className="search-icon" aria-hidden="true">⌕</span>
@@ -201,6 +208,19 @@ export function RepositorySidebar({
                       <span className="thread-title">{thread.name ?? (thread.preview || "Neuer Thread")}</span>
                       <span className="thread-meta-row"><span className="thread-state"><i aria-hidden="true" />{label}</span><time>{formatActivityTime(thread.updatedAt)}</time></span>
                     </button>
+                    <button
+                      ref={openThreadMenu === thread.id ? threadMenuAnchorRef : undefined}
+                      type="button"
+                      className="thread-menu-trigger"
+                      aria-label="Thread-Aktionen"
+                      title={thread.name ?? (thread.preview || "Thread")}
+                      aria-haspopup="menu"
+                      aria-expanded={openThreadMenu === thread.id}
+                      onClick={(event) => {
+                        threadMenuAnchorRef.current = event.currentTarget;
+                        setOpenThreadMenu(openThreadMenu === thread.id ? null : thread.id);
+                      }}
+                    ><span aria-hidden="true">•••</span></button>
                   </li>
                 );
               })}
@@ -229,6 +249,12 @@ export function RepositorySidebar({
             ))}
           </Fragment>
         ))}
+      </AnchoredMenu>
+      <AnchoredMenu anchorRef={threadMenuAnchorRef} open={menuThread !== null} onClose={() => setOpenThreadMenu(null)} ariaLabel="Thread-Aktionen" width={210} align="end">
+        {menuThread === null ? null : <button type="button" role="menuitem" onClick={() => {
+          onDeleteThread(menuThread);
+          setOpenThreadMenu(null);
+        }}>Thread löschen …</button>}
       </AnchoredMenu>
     </>
   );

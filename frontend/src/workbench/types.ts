@@ -28,6 +28,30 @@ export interface GitHubCapability {
   published?: boolean; remoteUrl?: string | null; webUrl?: string | null;
 }
 
+export interface DeployKeyMaterial {
+  publicKey: string;
+  fingerprint: string;
+  createdAt: number;
+}
+
+export interface DeployKeyView {
+  credentialId: string;
+  repositoryId: string | null;
+  githubRepository: string;
+  sshUrl: string;
+  status: "configured" | "verified" | "failed" | "rotation_verified";
+  active: DeployKeyMaterial;
+  candidate: DeployKeyMaterial | null;
+  retiredKeyAvailable: boolean;
+  lastTestedAt: number | null;
+  lastSuccessfulTestAt: number | null;
+}
+
+export interface DeployKeyRemotePreview {
+  currentUrl: string;
+  newUrl: string;
+}
+
 export interface RepositoryRemovalPreview {
   repositoryId: string;
   repositoryName: string;
@@ -55,18 +79,23 @@ export interface WorkbenchCapabilities {
   plugins: Array<{ id: string; name: string; installed: boolean; enabled: boolean }>;
   native: { models: boolean; skills: boolean; plugins: boolean; apps: boolean };
   status: {
-    overall: "ready" | "partial" | "unavailable";
+    overall: "ready" | "degraded" | "unavailable";
     generation: number;
     cached: boolean;
     stale: boolean;
     models: CapabilityAvailability;
     skills: CapabilityAvailability;
     plugins: CapabilityAvailability;
+    apps: CapabilityAvailability;
   };
   host?: { sandbox: Record<"workspaceWrite" | "readOnly" | "fullAccess", { available: boolean; reason: string | null }> };
 }
 
-export interface CapabilityAvailability { available: boolean; reason: string | null }
+export interface CapabilityAvailability {
+  state: "loading" | "ready" | "degraded" | "unavailable" | "disabled" | "not_loaded";
+  available: boolean;
+  reason: string | null;
+}
 
 export type ActivityState =
   | "idle"

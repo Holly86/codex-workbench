@@ -20,12 +20,20 @@ from tests.helpers import build_settings
 
 
 def _runtime(tmp_path: Path) -> tuple[WorkbenchRuntime, str]:
-    settings = build_settings(tmp_path)
+    base = build_settings(tmp_path)
+    settings = base.model_copy(update={"plugin_discovery_enabled": True})
     repository = settings.repositories_root / "sample"
     repository.mkdir()
     (repository / ".git").mkdir()
     metadata = cast(MetadataRepository, object())
     runtime = WorkbenchRuntime(settings, metadata)
+    runtime.host_capabilities = {
+        "sandbox": {
+            "workspaceWrite": {"available": True, "reason": None},
+            "readOnly": {"available": True, "reason": None},
+            "fullAccess": {"available": True, "reason": None},
+        }
+    }
     runtime.supervisor._state = ProcessState.READY  # noqa: SLF001
     runtime.supervisor._generation = 1  # noqa: SLF001
     repository_id = sha256(b"sample").hexdigest()[:16]
@@ -80,6 +88,42 @@ def _response(method: str, cwd: str) -> JsonObject:
             ]
         }
     raise AssertionError(method)
+
+
+@pytest.mark.asyncio
+async def test_core_discovery_skips_optional_tools_and_disabled_is_not_a_health_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, repository_id = _runtime(tmp_path)
+    runtime.settings.plugin_discovery_enabled = False
+    calls: list[str] = []
+
+    async def call(
+        generation: int, method: str, params: JsonObject | None, *, owner: str
+    ) -> JsonValue:
+        del generation, params, owner
+        calls.append(method)
+        return _response(method, str(runtime.settings.repositories_root / "sample"))
+
+    monkeypatch.setattr(runtime, "_call_for_generation", call)
+    core = await runtime.capabilities(repository_id, "browser", tools="none")
+    status = _status(core)
+
+    assert calls == ["model/list"]
+    assert status["overall"] == "ready"
+    assert status["skills"] == {
+        "state": "not_loaded", "available": False, "reason": None
+    }
+    assert status["plugins"] == {
+        "state": "disabled", "available": False, "reason": None
+    }
+
+    skills = await runtime.capabilities(repository_id, "browser", tools="skills")
+    assert calls == ["model/list", "model/list", "skills/list"]
+    assert _status(skills)["overall"] == "ready"
+    skill_status = _status(skills)["skills"]
+    assert isinstance(skill_status, dict)
+    assert skill_status["state"] == "ready"
 
 
 @pytest.mark.asyncio
@@ -175,7 +219,9 @@ async def test_capability_request_errors_are_partial_and_do_not_restart_runtime(
     status = _status(result)
     availability = status[capability]
     assert isinstance(availability, dict)
-    assert status["overall"] == "partial"
+    assert status["overall"] == (
+        "unavailable" if failed_method == "model/list" else "ready"
+    )
     assert availability["reason"] == reason
     assert runtime.supervisor.status.state is ProcessState.READY
     assert runtime.supervisor.status.generation == 1
@@ -218,7 +264,7 @@ async def test_plugin_transport_circuit_survives_generation_refresh_and_request_
     ]
     release_plugin.set()
     initial = await asyncio.gather(first, *overlapping)
-    assert all(_status(result)["overall"] == "partial" for result in initial)
+    assert all(_status(result)["overall"] == "ready" for result in initial)
     assert calls[(1, "plugin/list")] == 1
 
     runtime.supervisor._generation = 2  # noqa: SLF001
@@ -238,10 +284,14 @@ async def test_plugin_transport_circuit_survives_generation_refresh_and_request_
     assert calls[(2, "plugin/list")] == 0
     assert calls[(2, "model/list")] >= 1
     assert calls[(2, "skills/list")] >= 1
-    assert all(_status(result)["overall"] == "partial" for result in after_restart)
+    assert all(_status(result)["overall"] == "ready" for result in after_restart)
     plugin_state = _status(after_restart[0])["plugins"]
     assert isinstance(plugin_state, dict)
-    assert plugin_state == {"available": False, "reason": "temporarily_disabled"}
+    assert plugin_state == {
+        "state": "unavailable",
+        "available": False,
+        "reason": "temporarily_disabled",
+    }
     assert runtime.app_server_ready is True
 
 

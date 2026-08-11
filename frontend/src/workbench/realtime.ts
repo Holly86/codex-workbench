@@ -55,6 +55,7 @@ export type Action =
   | { type: "threads"; threads: ThreadView[] }
   | { type: "repositoryThreads"; repositoryId: string; threads: ThreadView[] }
   | { type: "thread"; thread: ThreadView }
+  | { type: "threadDeleted"; threadId: string }
   | { type: "jobs"; jobs: NativeJob[] }
   | { type: "event"; event: EventEnvelope }
   | { type: "events"; events: EventEnvelope[] };
@@ -115,6 +116,14 @@ function updateThread(
 ): ThreadView[] {
   if (threadId === null) return threads;
   return threads.map((thread) => (thread.id === threadId ? update(thread) : thread));
+}
+
+function withoutTimelineEntry(
+  timeline: Record<string, TimelineEntry[]>, threadId: string,
+): Record<string, TimelineEntry[]> {
+  const next = { ...timeline };
+  delete next[threadId];
+  return next;
 }
 
 function currentTurn(thread: ThreadView, turnId: string | null): Turn | null {
@@ -216,7 +225,13 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   let generation = state.generation;
   let jobs = state.jobs;
 
-  if (["thread.started", "thread.resumed", "thread.reconciled", "thread.snapshot"].includes(event.type)) {
+  if (event.type === "thread.deleted") {
+    const threadId = typeof event.payload.threadId === "string" ? event.payload.threadId : event.threadId;
+    if (threadId !== null) {
+      threads = threads.filter((thread) => thread.id !== threadId);
+      approvals = approvals.filter((approval) => approval.threadId !== threadId);
+    }
+  } else if (["thread.started", "thread.resumed", "thread.reconciled", "thread.snapshot"].includes(event.type)) {
     const thread = asThread(event.payload);
     if (thread !== null) threads = replaceThread(threads, thread);
   } else if (event.type === "activity.updated") {
@@ -351,6 +366,12 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   }
 
   let timeline = state.timeline;
+  if (event.type === "thread.deleted") {
+    const threadId = typeof event.payload.threadId === "string" ? event.payload.threadId : event.threadId;
+    if (threadId !== null) {
+      timeline = withoutTimelineEntry(timeline, threadId);
+    }
+  }
   const label = eventLabel(event);
   if (label !== null && event.threadId !== null) {
     const entries = timeline[event.threadId] ?? [];
@@ -387,6 +408,15 @@ export function reducer(state: RealtimeState, action: Action): RealtimeState {
     ],
   };
   if (action.type === "thread") return { ...state, threads: replaceThread(state.threads, action.thread) };
+  if (action.type === "threadDeleted") {
+    const timeline = withoutTimelineEntry(state.timeline, action.threadId);
+    return {
+      ...state,
+      threads: state.threads.filter((thread) => thread.id !== action.threadId),
+      approvals: state.approvals.filter((approval) => approval.threadId !== action.threadId),
+      timeline,
+    };
+  }
   if (action.type === "jobs") return { ...state, jobs: action.jobs };
   if (action.type === "snapshot") {
     return {

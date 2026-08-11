@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from contextlib import suppress
 from http import HTTPStatus
 from typing import Annotated, Literal, cast
 
@@ -15,12 +16,18 @@ from codex_workbench.app_server.protocol import (
     SUPPORTED_APPROVAL_POLICIES,
     SUPPORTED_SANDBOX_MODES,
 )
+from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError, DeployKeyError
 from codex_workbench.domain.capabilities import FullAccessConfirmationError
-from codex_workbench.git_service import GitOperationError
+from codex_workbench.git_service import (
+    GitOperationError,
+    GitOperationTimeoutError,
+    RepositoryNameConflictError,
+)
 from codex_workbench.jobs import JobType
 from codex_workbench.runtime import (
     RuntimeConflictError,
     RuntimeUnavailableError,
+    ThreadUnavailableError,
     WorkbenchRuntime,
 )
 from codex_workbench.security.http import api_error
@@ -49,6 +56,10 @@ class ThreadStartRequest(PermissionSelection):
 
 
 class ThreadResumeRequest(PermissionSelection):
+    repositoryId: Annotated[str, Field(pattern=r"^[0-9a-f]{16}$")]
+
+
+class ThreadDeleteRequest(StrictModel):
     repositoryId: Annotated[str, Field(pattern=r"^[0-9a-f]{16}$")]
 
 
@@ -115,6 +126,22 @@ class RepositoryClonePreflightRequest(StrictModel):
     url: Annotated[str, Field(min_length=1, max_length=2048)]
 
 
+class PrivateRepositoryConnectRequest(StrictModel):
+    githubRepository: Annotated[str, Field(min_length=3, max_length=2048)]
+
+
+class PrivateRepositoryCloneRequest(RepositoryCreateRequest):
+    credentialId: Annotated[str, Field(pattern=r"^deploy_[A-Za-z0-9_-]{32,100}$")]
+
+
+class DeployKeyTestRequest(StrictModel):
+    candidate: bool = False
+
+
+class DeployKeyRemoteSwitchRequest(StrictModel):
+    confirmation: Annotated[str, Field(min_length=1, max_length=2048)]
+
+
 class RepositoryRemovalRequest(StrictModel):
     confirmation: Annotated[str, Field(min_length=1, max_length=64)]
     deleteThreads: bool = False
@@ -162,6 +189,24 @@ def _mutation_allowed(runtime: WorkbenchRuntime, session_id: str) -> JSONRespons
 
 
 def _safe_error(exc: BaseException) -> JSONResponse:
+    if isinstance(exc, RepositoryNameConflictError):
+        return api_error(
+            HTTPStatus.CONFLICT,
+            "repository_name_conflict",
+            "Ein Repository mit diesem lokalen Namen existiert bereits.",
+        )
+    if isinstance(exc, DeployKeyAlreadyBoundError):
+        return api_error(
+            HTTPStatus.CONFLICT,
+            "deploy_key_already_bound",
+            "Der Deploy Key ist bereits an ein lokales Repository gebunden.",
+        )
+    if isinstance(exc, GitOperationTimeoutError):
+        return api_error(
+            HTTPStatus.GATEWAY_TIMEOUT,
+            "git_operation_timeout",
+            "Der Git-Vorgang hat das zulässige Zeitlimit überschritten.",
+        )
     if isinstance(exc, RuntimeUnavailableError):
         return api_error(
             HTTPStatus.SERVICE_UNAVAILABLE,
@@ -170,7 +215,13 @@ def _safe_error(exc: BaseException) -> JSONResponse:
         )
     if isinstance(exc, RuntimeConflictError):
         return api_error(HTTPStatus.CONFLICT, "operation_conflict", str(exc))
-    if isinstance(exc, GitOperationError):
+    if isinstance(exc, ThreadUnavailableError):
+        return api_error(
+            HTTPStatus.NOT_FOUND,
+            "thread_unavailable",
+            "Der Thread wurde gelöscht oder ist nicht verfügbar.",
+        )
+    if isinstance(exc, GitOperationError | DeployKeyError):
         return api_error(
             HTTPStatus.BAD_GATEWAY,
             "native_operation_failed",
@@ -214,12 +265,15 @@ async def repositories(request: Request) -> JSONResponse:
 
 @router.get("/capabilities")
 async def capabilities(
-    request: Request, repositoryId: str | None = None, refresh: bool = False
+    request: Request,
+    repositoryId: str | None = None,
+    refresh: bool = False,
+    tools: Literal["none", "skills", "plugins", "all"] = "none",
 ) -> JSONResponse:
     try:
         return JSONResponse(
             await _runtime(request).capabilities(
-                repositoryId, _session(request).id, refresh=refresh
+                repositoryId, _session(request).id, refresh=refresh, tools=tools
             )
         )
     except Exception as exc:
@@ -242,7 +296,7 @@ async def create_repository(payload: RepositoryCreateRequest, request: Request) 
     if limited is not None:
         return limited
     try:
-        result = await runtime.git.create(payload.name, readme=payload.readme)
+        result = await runtime.create_repository(payload.name, readme=payload.readme)
         return JSONResponse(result.browser_dict(), status_code=HTTPStatus.CREATED)
     except Exception as exc:
         return _safe_error(exc)
@@ -260,7 +314,7 @@ async def clone_repository(payload: RepositoryCloneRequest, request: Request) ->
             repository_id=None,
             repository_name=payload.name,
             job_type="git_clone",
-            operation=lambda: runtime.git.clone(payload.name, payload.url),
+            operation=lambda: runtime.clone_repository(payload.name, payload.url),
         )
         return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
     except Exception as exc:
@@ -274,6 +328,193 @@ async def clone_repository_preflight(
     try:
         _session(request)
         return JSONResponse(await _runtime(request).git.clone_preflight(payload.url))
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/private-connect")
+async def connect_private_repository(
+    payload: PrivateRepositoryConnectRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        deploy_key, created = await runtime.deploy_keys.connect_private(
+            payload.githubRepository
+        )
+        return JSONResponse(
+            {"deployKey": deploy_key, "reused": not created},
+            status_code=HTTPStatus.CREATED if created else HTTPStatus.OK,
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/private-clone")
+async def clone_private_repository(
+    payload: PrivateRepositoryCloneRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        reservation = await asyncio.to_thread(runtime.git.reserve_clone_target, payload.name)
+    except Exception as exc:
+        return _safe_error(exc)
+    try:
+        job = await runtime.jobs.start(
+            owner_session_id=session.id,
+            repository_id=None,
+            repository_name=payload.name,
+            job_type="git_clone",
+            operation=lambda: runtime.clone_private_repository(
+                reservation, payload.credentialId
+            ),
+        )
+        return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
+    except Exception as exc:
+        with suppress(GitOperationError):
+            await asyncio.to_thread(runtime.git.release_clone_target, reservation)
+        return _safe_error(exc)
+
+
+@router.get("/repositories/{repository_id}/deploy-key")
+async def repository_deploy_key(repository_id: str, request: Request) -> JSONResponse:
+    try:
+        runtime = _runtime(request)
+        _session(request)
+        await asyncio.to_thread(runtime.repositories.resolve_repository_id, repository_id)
+        deploy_key = await runtime.deploy_keys.view_for_repository(repository_id)
+        return JSONResponse({"deployKey": deploy_key})
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/{repository_id}/deploy-key")
+async def create_repository_deploy_key(repository_id: str, request: Request) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        await asyncio.to_thread(runtime.repositories.resolve_repository_id, repository_id)
+        slug = await runtime.git.github_origin_slug(repository_id)
+        deploy_key = await runtime.deploy_keys.create(slug, repository_id=repository_id)
+        return JSONResponse({"deployKey": deploy_key}, status_code=HTTPStatus.CREATED)
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.get("/repositories/{repository_id}/deploy-key/remote-preview")
+async def deploy_key_remote_preview(repository_id: str, request: Request) -> JSONResponse:
+    try:
+        _session(request)
+        return JSONResponse(await _runtime(request).git.deploy_key_remote_preview(repository_id))
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/repositories/{repository_id}/deploy-key/switch-origin")
+async def switch_deploy_key_origin(
+    repository_id: str, payload: DeployKeyRemoteSwitchRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            await runtime.git.switch_origin_to_deploy_key(
+                repository_id, confirmation=payload.confirmation
+            )
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.get("/deploy-keys/{credential_id}")
+async def deploy_key(credential_id: str, request: Request) -> JSONResponse:
+    try:
+        _session(request)
+        return JSONResponse(
+            {"deployKey": await _runtime(request).deploy_keys.view_for_credential(credential_id)}
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/deploy-keys/{credential_id}/test")
+async def test_deploy_key(
+    credential_id: str, payload: DeployKeyTestRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            await runtime.deploy_keys.test_access(
+                credential_id, candidate=payload.candidate
+            )
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/deploy-keys/{credential_id}/rotate")
+async def rotate_deploy_key(credential_id: str, request: Request) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            {"deployKey": await runtime.deploy_keys.rotate(credential_id)}
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.post("/deploy-keys/{credential_id}/promote")
+async def promote_deploy_key(credential_id: str, request: Request) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            {"deployKey": await runtime.deploy_keys.promote_rotation(credential_id)}
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.delete("/deploy-keys/{credential_id}/retired")
+async def remove_retired_deploy_key(credential_id: str, request: Request) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            {"deployKey": await runtime.deploy_keys.remove_retired(credential_id)}
+        )
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.delete("/deploy-keys/{credential_id}")
+async def remove_deploy_key(credential_id: str, request: Request) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        await runtime.deploy_keys.remove(credential_id)
+        return JSONResponse({"removed": True})
     except Exception as exc:
         return _safe_error(exc)
 
@@ -498,6 +739,26 @@ async def read_thread(thread_id: str, request: Request) -> JSONResponse:
     try:
         thread = await _runtime(request).read_thread(thread_id, _session(request).id)
         return JSONResponse({"thread": thread})
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.delete("/threads/{thread_id}")
+async def delete_thread(
+    thread_id: str, payload: ThreadDeleteRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            await runtime.delete_thread(
+                thread_id=thread_id,
+                repository_id=payload.repositoryId,
+                session_id=session.id,
+            )
+        )
     except Exception as exc:
         return _safe_error(exc)
 

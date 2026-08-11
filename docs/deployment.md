@@ -39,7 +39,7 @@ Bind-Mount unter `/volume1/docker/codex`.
 | `/volume1/docker/codex/workbench/data` | `/var/lib/codex-workbench` | rw | Workbench-Metadatenroot |
 | `/volume1/docker/codex/workbench/data/state` | wie oben, Unterpfad | rw | SQLite einschließlich WAL/SHM |
 | `/volume1/docker/codex/workbench/uploads` | `/var/lib/codex-workbench/uploads` | rw | temporäre private Uploaddateien |
-| `/volume1/docker/codex/workbench/secrets/password` | `/var/lib/codex-workbench/security` | rw | exklusiv erzeugter Argon2id-Verifier |
+| `/volume1/docker/codex/workbench/secrets/password` | `/var/lib/codex-workbench/security` | rw | persistenter Security-Mount: Argon2id-Verifier und repository-spezifische Deploy Keys |
 | `/volume1/docker/codex/workbench/secrets/session` | `/run/secrets/workbench` | ro | Sitzungsschlüssel `session.key` |
 | `/volume1/docker/codex/config/.codex` | `/home/workbench/.codex` | rw | bestehende Codex-Anmeldung, Konfiguration und Codex-Threads |
 | `/volume1/docker/codex/workspace` | `/workspace` | rw | Workspace und Repositories |
@@ -61,8 +61,9 @@ akzeptiert ausschließlich positive non-root Werte, prüft abweichende Eigentüm
 Workspace, ändert diese gemeinsamen Pfade aber nicht. Beide Container laufen mit derselben
 konfigurierten numerischen Identität vollständig non-root.
 
-Workbench-Verzeichnisse sind Modus 0700, Sitzungsschlüssel, Passwort-Verifier, SQLite-Dateien und
-Uploads Modus 0600. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
+Workbench-Verzeichnisse und Deploy-Key-Slots sind Modus 0700; Sitzungsschlüssel,
+Passwort-Verifier, SQLite-Dateien, Uploads und private Deploy Keys Modus 0600. Öffentliche Deploy
+Keys sind Modus 0644. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
 Station oder mit den auf dem NAS verfügbaren ACL-Werkzeugen geprüft werden. Der Runtime-Test in
 [synology-test-plan.md](synology-test-plan.md) ist deshalb verpflichtend.
 
@@ -166,6 +167,12 @@ Docker-Prune-Befehle sind kein Bestandteil des Updates.
    dadurch bleiben vorige Images rollbackfähig. Bind-Adresse und Host-Port sind nicht konfigurierbar
    und deshalb keine `.env`-Variablen.
 
+   `WORKBENCH_PLUGIN_DISCOVERY_ENABLED=false` ist der sichere Produktstandard. Damit ist
+   `plugin/list` nicht Teil von Startup, Repositorywechsel oder globalem Health. Nur Betreiber,
+   die den optionalen, expliziten Plugin-Probe benötigen, setzen den Wert auf `true`; der
+   Capability-Circuit-Breaker bleibt dabei aktiv. Skills werden unabhängig davon ausschließlich
+   beim Öffnen des Tool-Menüs geladen.
+
 5. Installer erneut ausführen:
 
        sudo ./scripts/init-deployment.sh
@@ -210,6 +217,21 @@ Backend für jede Nicht-Health-API und jeden WebSocket zusätzlich genau einen p
 oben beschrieben erhält, scheitert daher sichtbar und fail-closed.
 
 ## Konfiguration, Build und Start
+
+### Git-Zeitlimits
+
+Die drei Git-Zeitlimits sind nach Operationsart getrennt. Kurze lokale Befehle wie `status`,
+`diff`, Branch-/Remote-/Log-Abfragen, `add`, `commit` und Branchwechsel verwenden
+`WORKBENCH_GIT_COMMAND_TIMEOUT_SECONDS` (Standard 30 Sekunden, zulässig 5–300). Kurze
+Authentifizierungs- und Erreichbarkeitsproben wie `git ls-remote` bleiben ebenfalls an dieses eng
+begrenzte Zeitlimit gebunden.
+
+`fetch`, `pull` und `push` verwenden `WORKBENCH_GIT_NETWORK_TIMEOUT_SECONDS` (Standard 300
+Sekunden, zulässig 30–1800). Öffentliche HTTPS-/SSH-Clones, GitHub-CLI-Clones und private
+Deploy-Key-Clones verwenden `WORKBENCH_GIT_CLONE_TIMEOUT_SECONDS` (Standard 900 Sekunden, zulässig
+60–3600). Damit gilt das 30-Sekunden-Limit nur für kurze Operationen und bricht einen regulären
+Clone auf langsamer NAS-Hardware nicht künstlich ab. Die Werte enthalten keine Secrets und können
+bei Bedarf in der nicht versionierten `.env` innerhalb dieser Grenzen angepasst werden.
 
 Vor Initialinstallation oder einem Start nach Wartungsarbeiten muss TCP 8085 frei sein:
 
@@ -436,8 +458,9 @@ Codex-Home. Vorher aktive SSH-Codex-Turns beenden. Dann als root:
     sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env > "${workbench_backup_root}/codex-workbench-image-${workbench_stamp}.txt"
     docker-compose up -d --no-build
 
-Das Archiv enthält SQLite/WAL, Uploaddateien und -metadaten, Passwort-Verifier, Sitzungsschlüssel,
-Codex-Authentifizierung/-Threads und `.env` als eine Einheit. Es enthält absichtlich nicht alle
+Das Archiv enthält SQLite/WAL, Uploaddateien und -metadaten, Passwort-Verifier, Deploy-Key-Material,
+Sitzungsschlüssel, Codex-Authentifizierung/-Threads und `.env` als eine Einheit. Es enthält
+absichtlich nicht alle
 Workspace-Repositories. Diese werden separat mit Synology Hyper Backup beziehungsweise einem
 Btrfs-Snapshot gesichert; alternativ kann im selben ruhenden Fenster ein eigenes Archiv von
 `/volume1/docker/codex/workspace` erstellt werden. Das Ziel wird bewusst nicht vom Installer erzeugt

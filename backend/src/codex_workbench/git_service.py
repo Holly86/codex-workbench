@@ -5,13 +5,23 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import secrets
 import shutil
+import signal
+import stat
+import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
 from codex_workbench.repositories import RepositoryDiscovery
+
+if TYPE_CHECKING:
+    from codex_workbench.deploy_keys import DeployKeyService
 
 _REF = re.compile(r"^(?![-./])(?!.*(?:\.\.|//|@\{|\\))[A-Za-z0-9._/-]{1,200}(?<![./])$")
 _REPOSITORY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -19,6 +29,14 @@ _REPOSITORY_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 class GitOperationError(RuntimeError):
     pass
+
+
+class GitOperationTimeoutError(GitOperationError):
+    """A bounded Git or GitHub operation exceeded its configured deadline."""
+
+
+class RepositoryNameConflictError(ValueError):
+    """A requested direct-child clone target already exists."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +57,17 @@ class GitResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CloneTargetReservation:
+    """Opaque proof that this service atomically created a clone target."""
+
+    token: str
+    name: str
+    target: Path
+    device: int
+    inode: int
+
+
 class GitService:
     def __init__(
         self,
@@ -46,13 +75,21 @@ class GitService:
         root: Path,
         *,
         output_limit: int,
-        timeout_seconds: float = 30.0,
+        command_timeout_seconds: float = 30.0,
+        network_timeout_seconds: float = 300.0,
+        clone_timeout_seconds: float = 900.0,
+        deploy_keys: DeployKeyService | None = None,
     ) -> None:
         self._repositories = repositories
         self._root = root
         self._output_limit = output_limit
-        self._timeout = timeout_seconds
+        self._command_timeout = command_timeout_seconds
+        self._network_timeout = network_timeout_seconds
+        self._clone_timeout = clone_timeout_seconds
+        self._deploy_keys = deploy_keys
         self._locks: dict[str, asyncio.Lock] = {}
+        self._reservation_lock = threading.Lock()
+        self._clone_reservations: dict[str, CloneTargetReservation] = {}
 
     async def run(
         self,
@@ -67,11 +104,25 @@ class GitService:
             self._repositories.resolve_repository_id, repository_id
         )
         args, mutating = self._arguments(action, files=files, message=message, branch=branch)
+        environment = (
+            await self._deploy_keys.repository_environment(repository_id)
+            if self._deploy_keys is not None and action in {"fetch", "pull", "push"}
+            else None
+        )
         lock = self._locks.setdefault(repository_id, asyncio.Lock())
+        timeout_seconds = (
+            self._network_timeout
+            if action in {"fetch", "pull", "push"}
+            else self._command_timeout
+        )
         if mutating:
             async with lock:
-                return await self._execute(cwd, args)
-        return await self._execute(cwd, args)
+                return await self._execute(
+                    cwd, args, environment=environment, timeout_seconds=timeout_seconds
+                )
+        return await self._execute(
+            cwd, args, environment=environment, timeout_seconds=timeout_seconds
+        )
 
     async def create(self, name: str, *, readme: bool) -> GitResult:
         self.validate_name(name)
@@ -81,7 +132,11 @@ class GitService:
             raise GitOperationError("repository already exists")
         target.mkdir(mode=0o750)
         try:
-            result = await self._execute(target, ("init", "--initial-branch=main"))
+            result = await self._execute(
+                target,
+                ("init", "--initial-branch=main"),
+                timeout_seconds=self._command_timeout,
+            )
             if result.exit_code != 0:
                 raise GitOperationError("git init failed")
             if readme:
@@ -112,13 +167,98 @@ class GitService:
             return await self._execute_external(
                 (executable, "repo", "clone", slug, name),
                 cwd=root,
-                timeout_seconds=self._timeout,
+                timeout_seconds=self._clone_timeout,
             )
         return await self._execute(
             root,
             ("clone", "--", safe_url, name),
             display=("clone", "--", self.redact_url(safe_url), name),
+            timeout_seconds=self._clone_timeout,
         )
+
+    def reserve_clone_target(self, name: str) -> CloneTargetReservation:
+        """Atomically reserve one validated direct-child name before a job is created."""
+        self.validate_name(name)
+        root = self._root.resolve(strict=True)
+        target = root / name
+        if target.parent != root or target.exists() or target.is_symlink():
+            raise RepositoryNameConflictError("repository name is already in use")
+        try:
+            target.mkdir(mode=0o750)
+        except FileExistsError:
+            raise RepositoryNameConflictError("repository name is already in use") from None
+        try:
+            metadata = target.lstat()
+            resolved = target.resolve(strict=True)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or target.is_symlink()
+                or resolved.parent != root
+                or resolved == root
+            ):
+                raise GitOperationError("clone target reservation is unsafe")
+            reservation = CloneTargetReservation(
+                token=secrets.token_urlsafe(24),
+                name=name,
+                target=target,
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+            )
+            with self._reservation_lock:
+                self._clone_reservations[reservation.token] = reservation
+            return reservation
+        except BaseException:
+            if target.exists() and not target.is_symlink() and not any(target.iterdir()):
+                target.rmdir()
+            raise
+
+    def release_clone_target(self, reservation: CloneTargetReservation) -> None:
+        """Remove only the still-identical target created by this exact reservation."""
+        with self._reservation_lock:
+            registered = self._clone_reservations.get(reservation.token)
+        if registered != reservation:
+            raise GitOperationError("clone target reservation is unavailable")
+        if not reservation.target.exists() and not reservation.target.is_symlink():
+            with self._reservation_lock:
+                self._clone_reservations.pop(reservation.token, None)
+            return
+        self._require_clone_reservation(reservation)
+        shutil.rmtree(reservation.target)
+        with self._reservation_lock:
+            self._clone_reservations.pop(reservation.token, None)
+
+    async def clone_with_deploy_key(
+        self, reservation: CloneTargetReservation, credential_id: str
+    ) -> GitResult:
+        root = self._root.resolve(strict=True)
+        completed = False
+        try:
+            if self._deploy_keys is None:
+                raise GitOperationError("deploy key service is unavailable")
+            self._require_clone_reservation(reservation, require_empty=True)
+            url, environment = await self._deploy_keys.clone_environment(credential_id)
+            result = await self._execute(
+                root,
+                ("clone", "--", url, reservation.name),
+                display=("clone", "--", "github.com:repository", reservation.name),
+                environment=environment,
+                timeout_seconds=self._clone_timeout,
+            )
+            if result.exit_code != 0:
+                return result
+            summary, _path = await asyncio.to_thread(
+                self._repositories.resolve_repository_id,
+                self.repository_id_for_name(reservation.name),
+            )
+            await self._deploy_keys.bind_after_clone(credential_id, summary.id)
+            self._require_clone_reservation(reservation)
+            with self._reservation_lock:
+                self._clone_reservations.pop(reservation.token, None)
+            completed = True
+            return result
+        finally:
+            if not completed:
+                await asyncio.to_thread(self.release_clone_target, reservation)
 
     async def clone_preflight(self, url: str) -> dict[str, object]:
         safe_url = self.validate_clone_url(url)
@@ -129,6 +269,7 @@ class GitService:
             root,
             ("ls-remote", "--exit-code", safe_url, "HEAD"),
             display=("ls-remote", "--exit-code", self.redact_url(safe_url), "HEAD"),
+            timeout_seconds=self._command_timeout,
         )
         if probe.exit_code == 0:
             return {
@@ -143,7 +284,7 @@ class GitService:
             if capability.get("authenticated") is True:
                 private_probe = await self._execute_external(
                     (executable, "repo", "view", slug, "--json", "name"),
-                    timeout_seconds=10,
+                    timeout_seconds=self._command_timeout,
                 )
                 if private_probe.exit_code == 0:
                     return {
@@ -226,7 +367,8 @@ class GitService:
         account: str | None = None
         try:
             probe = await self._execute_external(
-                (executable, "api", "user", "--jq", ".login"), timeout_seconds=10
+                (executable, "api", "user", "--jq", ".login"),
+                timeout_seconds=self._command_timeout,
             )
             if probe.exit_code == 0:
                 candidate = probe.output.strip()
@@ -255,6 +397,60 @@ class GitService:
             "remoteUrl": remote_url,
             "webUrl": web_url,
         }
+
+    async def github_origin_slug(self, repository_id: str) -> str:
+        from codex_workbench.deploy_keys import normalize_github_repository
+
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        result = await self._execute(
+            cwd,
+            ("remote", "get-url", "origin"),
+            timeout_seconds=self._command_timeout,
+        )
+        if result.exit_code != 0:
+            raise ValueError("origin remote is unavailable")
+        return normalize_github_repository(result.output.strip()).slug
+
+    async def deploy_key_remote_preview(self, repository_id: str) -> dict[str, object]:
+        if self._deploy_keys is None:
+            raise GitOperationError("deploy key service is unavailable")
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        current = await self._execute(
+            cwd,
+            ("remote", "get-url", "origin"),
+            timeout_seconds=self._command_timeout,
+        )
+        if current.exit_code != 0:
+            raise ValueError("origin remote is unavailable")
+        new_url = await self._deploy_keys.verified_repository_url(repository_id)
+        return {
+            "currentUrl": self.redact_url(current.output.strip()),
+            "newUrl": new_url,
+        }
+
+    async def switch_origin_to_deploy_key(
+        self, repository_id: str, *, confirmation: str
+    ) -> dict[str, object]:
+        preview = await self.deploy_key_remote_preview(repository_id)
+        new_url = preview["newUrl"]
+        if not isinstance(new_url, str) or confirmation != new_url:
+            raise ValueError("origin change confirmation does not match")
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        result = await self._execute(
+            cwd,
+            ("remote", "set-url", "origin", new_url),
+            display=("remote", "set-url", "origin", "github.com:repository"),
+            timeout_seconds=self._command_timeout,
+        )
+        if result.exit_code != 0:
+            raise GitOperationError("origin remote could not be changed")
+        return {"currentUrl": preview["currentUrl"], "newUrl": new_url, "changed": True}
 
     async def publish_github(
         self,
@@ -300,7 +496,9 @@ class GitService:
             args.append("--push")
         lock = self._locks.setdefault(repository_id, asyncio.Lock())
         async with lock:
-            return await self._execute_external(tuple(args), cwd=cwd, timeout_seconds=120)
+            return await self._execute_external(
+                tuple(args), cwd=cwd, timeout_seconds=self._network_timeout
+            )
 
     @staticmethod
     def validate_name(name: str) -> None:
@@ -350,6 +548,10 @@ class GitService:
     def _github_slug(cls, value: str) -> str | None:
         web = cls.github_web_url(value)
         return None if web is None else web.removeprefix("https://github.com/")
+
+    @staticmethod
+    def repository_id_for_name(name: str) -> str:
+        return sha256(name.encode("utf-8")).hexdigest()[:16]
 
     def _arguments(
         self, action: str, *, files: tuple[str, ...], message: str | None, branch: str | None
@@ -410,7 +612,13 @@ class GitService:
         return value
 
     async def _execute(
-        self, cwd: Path, args: tuple[str, ...], *, display: tuple[str, ...] | None = None
+        self,
+        cwd: Path,
+        args: tuple[str, ...],
+        *,
+        display: tuple[str, ...] | None = None,
+        environment: dict[str, str] | None = None,
+        timeout_seconds: float,
     ) -> GitResult:
         started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
@@ -420,14 +628,10 @@ class GitService:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            env=self._native_env(optional_locks=True),
+            env=self._git_environment(environment),
+            start_new_session=os.name == "posix",
         )
-        try:
-            output, _ = await asyncio.wait_for(process.communicate(), timeout=self._timeout)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise GitOperationError("Git operation timed out") from None
+        output = await self._communicate(process, timeout_seconds=timeout_seconds)
         truncated = len(output) > self._output_limit
         safe_output = output[: self._output_limit].decode("utf-8", errors="replace")
         shown = display or args
@@ -438,6 +642,39 @@ class GitService:
             round((time.monotonic() - started) * 1000),
             truncated,
         )
+
+    def _require_clone_reservation(
+        self, reservation: CloneTargetReservation, *, require_empty: bool = False
+    ) -> None:
+        root = self._root.resolve(strict=True)
+        with self._reservation_lock:
+            registered = self._clone_reservations.get(reservation.token)
+        if registered != reservation:
+            raise GitOperationError("clone target reservation is unavailable")
+        try:
+            metadata = reservation.target.lstat()
+            resolved = reservation.target.resolve(strict=True)
+        except FileNotFoundError:
+            raise GitOperationError("clone target reservation is unavailable") from None
+        if (
+            reservation.target.is_symlink()
+            or not stat.S_ISDIR(metadata.st_mode)
+            or resolved.parent != root
+            or resolved == root
+            or reservation.target.parent != root
+            or metadata.st_dev != reservation.device
+            or metadata.st_ino != reservation.inode
+        ):
+            raise GitOperationError("clone target reservation is unsafe")
+        if require_empty and any(reservation.target.iterdir()):
+            raise GitOperationError("clone target reservation is not empty")
+
+    def _git_environment(self, selected: dict[str, str] | None) -> dict[str, str]:
+        if selected is None:
+            return self._native_env(optional_locks=True)
+        environment = dict(selected)
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        return environment
 
     async def _execute_external(
         self, args: tuple[str, ...], *, cwd: Path | None = None, timeout_seconds: float
@@ -450,13 +687,9 @@ class GitService:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=self._native_env(optional_locks=False),
+            start_new_session=os.name == "posix",
         )
-        try:
-            output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
-            raise GitOperationError("native operation timed out") from None
+        output = await self._communicate(process, timeout_seconds=timeout_seconds)
         truncated = len(output) > self._output_limit
         safe_output = output[: self._output_limit].decode("utf-8", errors="replace")
         display = "gh " + " ".join(args[2:]) if Path(args[0]).name == "gh" else Path(args[0]).name
@@ -467,6 +700,60 @@ class GitService:
             round((time.monotonic() - started) * 1000),
             truncated,
         )
+
+    async def _communicate(
+        self, process: asyncio.subprocess.Process, *, timeout_seconds: float
+    ) -> bytes:
+        communication = asyncio.create_task(process.communicate())
+        try:
+            output, _stderr = await asyncio.wait_for(
+                asyncio.shield(communication), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            await self._terminate_process_tree(process, communication)
+            raise GitOperationTimeoutError("Git operation timed out") from None
+        except BaseException:
+            await self._terminate_process_tree(process, communication)
+            raise
+        return output or b""
+
+    async def _terminate_process_tree(
+        self,
+        process: asyncio.subprocess.Process,
+        communication: asyncio.Task[tuple[bytes | None, bytes | None]],
+    ) -> None:
+        if process.returncode is None:
+            self._signal_process(process, hard=False)
+        try:
+            await asyncio.wait_for(asyncio.shield(communication), timeout=2.0)
+            return
+        except TimeoutError:
+            if process.returncode is None:
+                self._signal_process(process, hard=True)
+        except BaseException:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(communication), timeout=2.0)
+        except TimeoutError:
+            communication.cancel()
+            await asyncio.gather(communication, return_exceptions=True)
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+        except BaseException:
+            return
+
+    @staticmethod
+    def _signal_process(process: asyncio.subprocess.Process, *, hard: bool) -> None:
+        if os.name == "posix":
+            selected_signal = 9 if hard else signal.SIGTERM
+            with suppress(ProcessLookupError):
+                os.kill(-process.pid, selected_signal)
+            return
+        if hard:
+            process.kill()
+        else:
+            process.terminate()
 
     @staticmethod
     def _native_env(*, optional_locks: bool) -> dict[str, str]:

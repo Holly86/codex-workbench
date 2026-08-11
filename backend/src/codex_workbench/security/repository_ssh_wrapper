@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Exec OpenSSH with one Workbench-selected identity and pinned host keys."""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def required_path(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value or "\x00" in value or "\n" in value or "\r" in value:
+        raise SystemExit(126)
+    path = Path(value)
+    if not path.is_absolute():
+        raise SystemExit(126)
+    return str(path)
+
+
+identity = required_path("WORKBENCH_SSH_IDENTITY")
+known_hosts = required_path("WORKBENCH_SSH_KNOWN_HOSTS")
+arguments = (
+    "ssh",
+    "-F",
+    "/dev/null",
+    "-i",
+    identity,
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "IdentityAgent=none",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    f"UserKnownHostsFile={known_hosts}",
+    "-o",
+    "GlobalKnownHostsFile=/dev/null",
+    *sys.argv[1:],
+)
+os.execvp(arguments[0], arguments)

@@ -9,9 +9,9 @@ This is an independent community open-source project. It is not an official Open
 not affiliated with or endorsed by OpenAI. “OpenAI”, “Codex”, and related names belong to their
 respective owners. The project does not bundle ChatGPT artwork or other proprietary product assets.
 
-> **Early release:** `v0.1.0` is the intended first public version. The repository and container
-> release are still blocked until the project owner selects a license and a private security-report
-> channel. Treat interfaces, persistence formats, and operating procedures as subject to change.
+> **Early release:** `v0.1.0` is the intended first public version. Publication remains blocked
+> until a private security-report channel is configured. Treat interfaces, persistence formats,
+> and operating procedures as subject to change.
 
 ## What it is for
 
@@ -42,7 +42,8 @@ Backend (FastAPI, one worker)
 Only the backend can read the Codex home, launch the pinned App Server child, or operate on the
 workspace. Browser requests use opaque repository identities and authenticated, CSRF-protected,
 same-origin routes. The backend is never assigned a host port; the frontend is the only ingress.
-See [architecture](docs/architecture.md) and the [security model](docs/security-model.md).
+See [architecture](docs/architecture.md), the [security model](docs/security-model.md), and the
+[repository-scoped deploy-key guide](docs/deploy-keys.md).
 
 ## Main capabilities
 
@@ -185,9 +186,7 @@ The generated JSON/TypeScript protocol files below `schemas/codex-app-server` co
 0.146.0 and must be regenerated only through `make schemas`. See [CONTRIBUTING.md](CONTRIBUTING.md)
 and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## License status
+## License
 
-No project license has been selected. Until the owner adds a license, no permission is granted to
-copy, modify, or redistribute the original Codex Workbench source beyond rights supplied by law.
-This is a blocking decision for the intended open-source release; see the release report for the
-license options that require an owner choice.
+Codex Workbench is licensed under the [Apache License 2.0](LICENSE) (`Apache-2.0`). Third-party
+components retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from codex_workbench.app_server.transport import JsonObject
-from codex_workbench.git_service import GitResult, GitService
+from codex_workbench.git_service import GitOperationTimeoutError, GitResult, GitService
 from codex_workbench.host_capabilities import detect_sandbox_capabilities
 from codex_workbench.jobs import BackgroundJobRegistry
 from codex_workbench.repositories import RepositoryDiscovery
@@ -46,6 +47,79 @@ async def test_background_job_survives_caller_lifetime_and_is_reconnect_projecte
     assert snapshot["status"] == "succeeded"
     assert snapshot["output"] == "done"
     assert [update["status"] for update in updates] == ["queued", "running", "succeeded"]
+
+
+@pytest.mark.asyncio
+async def test_background_job_failure_logs_only_safe_structured_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    registry = BackgroundJobRegistry()
+    sensitive = (
+        "credential deploy_sensitive at git@github.com:owner/private.git "
+        "using /var/lib/codex-workbench/security/deploy-keys/private"
+    )
+
+    class SensitiveCloneFailure(RuntimeError):
+        pass
+
+    async def operation() -> GitResult:
+        raise SensitiveCloneFailure(sensitive)
+
+    with caplog.at_level(logging.WARNING, logger="codex_workbench.jobs"):
+        await registry.start(
+            owner_session_id="session-sensitive",
+            repository_id=None,
+            repository_name="private",
+            job_type="git_clone",
+            operation=operation,
+        )
+        for _ in range(20):
+            await asyncio.sleep(0)
+            snapshot = (await registry.list_for_session("session-sensitive"))[0]
+            if snapshot["status"] == "failed":
+                break
+
+    failure = next(record for record in caplog.records if record.message == "background_job_failed")
+    assert failure.job_type == "git_clone"  # type: ignore[attr-defined]
+    assert failure.error_type == "SensitiveCloneFailure"  # type: ignore[attr-defined]
+    assert sensitive not in caplog.text
+    assert "deploy_sensitive" not in caplog.text
+    assert "github.com" not in caplog.text
+    assert "/var/lib/" not in caplog.text
+    assert snapshot["error"] == "Die native Operation konnte nicht abgeschlossen werden."
+    assert sensitive not in str(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_background_job_timeout_logs_specific_safe_error_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    registry = BackgroundJobRegistry()
+    sensitive = "git@github.com:owner/private.git via /secret/deploy-key"
+
+    async def operation() -> GitResult:
+        raise GitOperationTimeoutError(sensitive)
+
+    with caplog.at_level(logging.WARNING, logger="codex_workbench.jobs"):
+        await registry.start(
+            owner_session_id="session-timeout",
+            repository_id=None,
+            repository_name="private",
+            job_type="git_clone",
+            operation=operation,
+        )
+        for _ in range(20):
+            await asyncio.sleep(0)
+            snapshot = (await registry.list_for_session("session-timeout"))[0]
+            if snapshot["status"] == "failed":
+                break
+
+    failure = next(record for record in caplog.records if record.message == "background_job_failed")
+    assert failure.job_type == "git_clone"  # type: ignore[attr-defined]
+    assert failure.error_type == "GitOperationTimeoutError"  # type: ignore[attr-defined]
+    assert sensitive not in caplog.text
+    assert "github.com" not in caplog.text
+    assert "/secret/" not in caplog.text
 
 
 @pytest.mark.asyncio

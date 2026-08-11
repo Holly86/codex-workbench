@@ -38,6 +38,22 @@ class UploadRecord:
     error_code: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class DeployKeyRecord:
+    credential_id: str
+    repository_id: str | None
+    github_slug: str
+    active_created_at: int
+    candidate_created_at: int | None
+    retired_created_at: int | None
+    last_tested_at: int | None
+    last_success_at: int | None
+    last_test_succeeded: bool | None
+    last_test_key: str | None
+    created_at: int
+    updated_at: int
+
+
 def _upload_from_row(row: sqlite3.Row) -> UploadRecord:
     return UploadRecord(
         id=cast(str, row["id"]),
@@ -53,6 +69,24 @@ def _upload_from_row(row: sqlite3.Row) -> UploadRecord:
         expires_at=cast(int, row["expires_at"]),
         consumed_at=cast(int | None, row["consumed_at"]),
         error_code=cast(str | None, row["error_code"]),
+    )
+
+
+def _deploy_key_from_row(row: sqlite3.Row) -> DeployKeyRecord:
+    tested = cast(int | None, row["last_test_succeeded"])
+    return DeployKeyRecord(
+        credential_id=cast(str, row["credential_id"]),
+        repository_id=cast(str | None, row["repository_id"]),
+        github_slug=cast(str, row["github_slug"]),
+        active_created_at=cast(int, row["active_created_at"]),
+        candidate_created_at=cast(int | None, row["candidate_created_at"]),
+        retired_created_at=cast(int | None, row["retired_created_at"]),
+        last_tested_at=cast(int | None, row["last_tested_at"]),
+        last_success_at=cast(int | None, row["last_success_at"]),
+        last_test_succeeded=None if tested is None else bool(tested),
+        last_test_key=cast(str | None, row["last_test_key"]),
+        created_at=cast(int, row["created_at"]),
+        updated_at=cast(int, row["updated_at"]),
     )
 
 
@@ -135,6 +169,138 @@ class MetadataRepository:
         with self._database.connect() as connection:
             connection.execute("DELETE FROM workbench_threads WHERE thread_id = ?", (thread_id,))
 
+    def create_deploy_key(self, record: DeployKeyRecord) -> None:
+        with self._database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO deploy_key_credentials(
+                    credential_id, repository_id, github_slug, active_created_at,
+                    candidate_created_at, retired_created_at, last_tested_at,
+                    last_success_at, last_test_succeeded, last_test_key, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.credential_id,
+                    record.repository_id,
+                    record.github_slug,
+                    record.active_created_at,
+                    record.candidate_created_at,
+                    record.retired_created_at,
+                    record.last_tested_at,
+                    record.last_success_at,
+                    None if record.last_test_succeeded is None else int(record.last_test_succeeded),
+                    record.last_test_key,
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+
+    def deploy_key_by_credential(self, credential_id: str) -> DeployKeyRecord | None:
+        return self._deploy_key_where("credential_id", credential_id)
+
+    def deploy_key_by_repository(self, repository_id: str) -> DeployKeyRecord | None:
+        return self._deploy_key_where("repository_id", repository_id)
+
+    def deploy_key_by_slug(self, github_slug: str) -> DeployKeyRecord | None:
+        return self._deploy_key_where("github_slug", github_slug)
+
+    def _deploy_key_where(self, field: str, value: str) -> DeployKeyRecord | None:
+        if field not in {"credential_id", "repository_id", "github_slug"}:
+            raise ValueError("invalid deploy key lookup")
+        with self._database.connect() as connection:
+            row = connection.execute(
+                f"SELECT * FROM deploy_key_credentials WHERE {field} = ?", (value,)
+            ).fetchone()
+        return None if row is None else _deploy_key_from_row(row)
+
+    def bind_deploy_key(self, credential_id: str, repository_id: str, *, updated_at: int) -> None:
+        with self._database.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE deploy_key_credentials SET repository_id = ?, updated_at = ? "
+                "WHERE credential_id = ? AND repository_id IS NULL",
+                (repository_id, updated_at, credential_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("deploy key cannot be bound")
+
+    def update_deploy_key_test(
+        self,
+        credential_id: str,
+        *,
+        key_kind: str,
+        succeeded: bool,
+        tested_at: int,
+    ) -> None:
+        if key_kind not in {"active", "candidate"}:
+            raise ValueError("invalid deploy key kind")
+        with self._database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE deploy_key_credentials
+                SET last_tested_at = ?,
+                    last_success_at = CASE WHEN ? THEN ? ELSE last_success_at END,
+                    last_test_succeeded = ?, last_test_key = ?, updated_at = ?
+                WHERE credential_id = ?
+                """,
+                (
+                    tested_at,
+                    int(succeeded),
+                    tested_at,
+                    int(succeeded),
+                    key_kind,
+                    tested_at,
+                    credential_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("deploy key is unavailable")
+
+    def begin_deploy_key_rotation(self, credential_id: str, *, created_at: int) -> None:
+        with self._database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE deploy_key_credentials
+                SET candidate_created_at = ?, last_tested_at = NULL,
+                    last_test_succeeded = NULL, last_test_key = NULL, updated_at = ?
+                WHERE credential_id = ? AND candidate_created_at IS NULL
+                """,
+                (created_at, created_at, credential_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("deploy key rotation is already pending")
+
+    def promote_deploy_key_candidate(self, credential_id: str, *, promoted_at: int) -> None:
+        with self._database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE deploy_key_credentials
+                SET retired_created_at = active_created_at,
+                    active_created_at = candidate_created_at,
+                    candidate_created_at = NULL,
+                    last_tested_at = ?, last_success_at = ?, last_test_succeeded = 1,
+                    last_test_key = 'active', updated_at = ?
+                WHERE credential_id = ? AND candidate_created_at IS NOT NULL
+                    AND last_test_succeeded = 1 AND last_test_key = 'candidate'
+                """,
+                (promoted_at, promoted_at, promoted_at, credential_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("deploy key candidate has not been verified")
+
+    def clear_deploy_key_retired(self, credential_id: str, *, updated_at: int) -> None:
+        with self._database.connect() as connection:
+            connection.execute(
+                "UPDATE deploy_key_credentials SET retired_created_at = NULL, updated_at = ? "
+                "WHERE credential_id = ?",
+                (updated_at, credential_id),
+            )
+
+    def delete_deploy_key(self, credential_id: str) -> None:
+        with self._database.connect() as connection:
+            connection.execute(
+                "DELETE FROM deploy_key_credentials WHERE credential_id = ?", (credential_id,)
+            )
+
     def hidden_repository_ids(self) -> frozenset[str]:
         with self._database.connect() as connection:
             rows = connection.execute(
@@ -169,6 +335,26 @@ class MetadataRepository:
                 """,
                 (repository_id, relative_path, state, updated_at),
             )
+
+    def mark_repository_available(self, repository_id: str, relative_path: str) -> bool:
+        """Remove only the exact historical tombstone for a verified repository."""
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT relative_path FROM repository_registrations WHERE repository_id = ?",
+                (repository_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if cast(str, row["relative_path"]) != relative_path:
+                raise ValueError("repository registration path does not match")
+            cursor = connection.execute(
+                "DELETE FROM repository_registrations "
+                "WHERE repository_id = ? AND relative_path = ?",
+                (repository_id, relative_path),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("repository registration could not be reactivated")
+        return True
 
     def repository_preferences(self, repository_id: str) -> dict[str, str | None] | None:
         with self._database.connect() as connection:

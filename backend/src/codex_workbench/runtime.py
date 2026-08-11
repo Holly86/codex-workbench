@@ -7,7 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from codex_workbench.app_server.correlation import (
     AppServerDisconnectedError,
@@ -18,6 +18,7 @@ from codex_workbench.app_server.protocol import ProtocolAdapter
 from codex_workbench.app_server.supervisor import AppServerSupervisor, ProcessState
 from codex_workbench.app_server.transport import JsonObject, JsonScalar, JsonValue
 from codex_workbench.config import Settings
+from codex_workbench.deploy_keys import DeployKeyService
 from codex_workbench.domain.approvals import (
     ApprovalRecord,
     ApprovalRegistry,
@@ -26,7 +27,12 @@ from codex_workbench.domain.approvals import (
 )
 from codex_workbench.domain.capabilities import FullAccessRegistry
 from codex_workbench.domain.projection import DomainProjection, ProjectedThread
-from codex_workbench.git_service import GitService
+from codex_workbench.git_service import (
+    CloneTargetReservation,
+    GitOperationError,
+    GitResult,
+    GitService,
+)
 from codex_workbench.host_capabilities import detect_sandbox_capabilities
 from codex_workbench.jobs import BackgroundJobRegistry
 from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference
@@ -59,15 +65,24 @@ class RuntimeConflictError(RuntimeError):
     pass
 
 
+class ThreadUnavailableError(RuntimeError):
+    pass
+
+
 class WorkbenchRuntime:
     def __init__(self, settings: Settings, metadata: MetadataRepository) -> None:
         self.settings = settings
         self.metadata = metadata
         self.repositories = RepositoryDiscovery(settings.repositories_root)
+        self.deploy_keys = DeployKeyService(settings, metadata)
         self.git = GitService(
             self.repositories,
             settings.repositories_root,
             output_limit=settings.max_command_output_bytes,
+            command_timeout_seconds=settings.git_command_timeout_seconds,
+            network_timeout_seconds=settings.git_network_timeout_seconds,
+            clone_timeout_seconds=settings.git_clone_timeout_seconds,
+            deploy_keys=self.deploy_keys,
         )
         self.host_capabilities: JsonObject = {}
         self.broker = RealtimeBroker(
@@ -114,6 +129,7 @@ class WorkbenchRuntime:
         return self.supervisor.status.state is ProcessState.READY
 
     async def start(self) -> None:
+        await self.deploy_keys.initialize()
         await self.uploads.initialize()
         # Protocol integration tests use a fake child and must not inherit unrelated host sandbox
         # constraints. The detector itself has fixture coverage; deployed environments are probed.
@@ -146,6 +162,56 @@ class WorkbenchRuntime:
         repositories = await self.repositories.list_repositories()
         hidden = await asyncio.to_thread(self.metadata.hidden_repository_ids)
         return tuple(repository for repository in repositories if repository.id not in hidden)
+
+    async def create_repository(self, name: str, *, readme: bool) -> GitResult:
+        result = await self.git.create(name, readme=readme)
+        if result.exit_code == 0:
+            await self._mark_created_repository_available(name)
+        return result
+
+    async def clone_repository(self, name: str, url: str) -> GitResult:
+        result = await self.git.clone(name, url)
+        if result.exit_code == 0:
+            await self._mark_created_repository_available(name)
+        return result
+
+    async def clone_private_repository(
+        self, reservation: CloneTargetReservation, credential_id: str
+    ) -> GitResult:
+        result = await self.git.clone_with_deploy_key(reservation, credential_id)
+        if result.exit_code == 0:
+            await self._mark_created_repository_available(reservation.name)
+        return result
+
+    async def _mark_created_repository_available(self, name: str) -> RepositorySummary:
+        """Reactivate one freshly discovered direct-child repository, never a client ID."""
+        expected_id = GitService.repository_id_for_name(name)
+        try:
+            summary, path = await asyncio.to_thread(
+                self.repositories.resolve_repository_id, expected_id
+            )
+            root = self.settings.repositories_root.resolve(strict=True)
+            resolved = path.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise GitOperationError("created repository validation failed") from exc
+        if (
+            summary.id != expected_id
+            or summary.name != name
+            or summary.relative_path != name
+            or path.is_symlink()
+            or resolved == root
+            or resolved.parent != root
+        ):
+            raise GitOperationError("created repository identity does not match")
+        try:
+            await asyncio.to_thread(
+                self.metadata.mark_repository_available,
+                summary.id,
+                summary.relative_path,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise GitOperationError("repository reactivation failed") from exc
+        return summary
 
     async def repository_removal_preview(
         self, repository_id: str, session_id: str
@@ -298,6 +364,7 @@ class WorkbenchRuntime:
         session_id: str,
         *,
         refresh: bool = False,
+        tools: Literal["none", "skills", "plugins", "all"] = "all",
     ) -> JsonObject:
         """Return cached, fail-soft, schema-backed browser capability metadata."""
         cwd: str | None = None
@@ -306,7 +373,7 @@ class WorkbenchRuntime:
                 self.repositories.resolve_repository_id, repository_id
             )
             cwd = str(path)
-        key = repository_id or "__global__"
+        key = f"{repository_id or '__global__'}:{tools}"
         generation = self.supervisor.status.generation
         now = time.monotonic()
         async with self._capability_lock:
@@ -324,7 +391,7 @@ class WorkbenchRuntime:
             flight = self._capability_flights.get(key)
             if flight is None:
                 flight = asyncio.create_task(
-                    self._discover_capabilities(key, cwd, session_id, generation),
+                    self._discover_capabilities(key, cwd, session_id, generation, tools),
                     name=f"capability-discovery-{key[-8:]}",
                 )
                 self._capability_flights[key] = flight
@@ -354,7 +421,12 @@ class WorkbenchRuntime:
         )
 
     async def _discover_capabilities(
-        self, key: str, cwd: str | None, session_id: str, generation: int
+        self,
+        key: str,
+        cwd: str | None,
+        session_id: str,
+        generation: int,
+        tools: Literal["none", "skills", "plugins", "all"],
     ) -> JsonObject:
         states: JsonObject = {}
         models_result, model_reason = await self._capability_request(
@@ -407,9 +479,11 @@ class WorkbenchRuntime:
         states["models"] = self._capability_state(model_reason)
         skills: list[JsonValue] = []
         plugins: list[JsonValue] = []
-        skill_reason: str | None = None
-        plugin_reason: str | None = None
-        if cwd is not None:
+        skill_reason: str | None = "not_loaded"
+        plugin_reason: str | None = (
+            "not_loaded" if self.settings.plugin_discovery_enabled else "disabled"
+        )
+        if cwd is not None and tools in {"skills", "all"}:
             skill_payload, skill_reason = await self._capability_request(
                 key,
                 "skills_list",
@@ -434,6 +508,11 @@ class WorkbenchRuntime:
                                 "enabled": skill.get("enabled") is True,
                             }
                         )
+        if (
+            cwd is not None
+            and tools in {"plugins", "all"}
+            and self.settings.plugin_discovery_enabled
+        ):
             plugin_payload, plugin_reason = await self._capability_request(
                 key,
                 "plugin_list",
@@ -459,12 +538,22 @@ class WorkbenchRuntime:
                         )
         states["skills"] = self._capability_state(skill_reason)
         states["plugins"] = self._capability_state(plugin_reason)
-        available = sum(
-            1
-            for value in states.values()
-            if isinstance(value, dict) and value.get("available") is True
+        sandbox = self.host_capabilities.get("sandbox")
+        sandbox_values = list(sandbox.values()) if isinstance(sandbox, dict) else []
+        sandbox_available = any(
+            isinstance(value, dict) and value.get("available") is True
+            for value in sandbox_values
         )
-        overall = "ready" if available == 3 else "unavailable" if available == 0 else "partial"
+        overall = (
+            "unavailable"
+            if model_reason is not None or not sandbox_available
+            else "ready"
+            if all(
+                isinstance(value, dict) and value.get("available") is True
+                for value in sandbox_values
+            )
+            else "degraded"
+        )
         return {
             "models": models,
             "skills": skills,
@@ -482,6 +571,7 @@ class WorkbenchRuntime:
                 "cached": False,
                 "stale": False,
                 **states,
+                "apps": {"state": "disabled", "available": False, "reason": None},
             },
         }
 
@@ -590,7 +680,13 @@ class WorkbenchRuntime:
 
     @staticmethod
     def _capability_state(reason: str | None) -> JsonObject:
-        return {"available": reason is None, "reason": reason}
+        if reason in {"disabled", "not_loaded"}:
+            return {"state": reason, "available": False, "reason": None}
+        return {
+            "state": "ready" if reason is None else "unavailable",
+            "available": reason is None,
+            "reason": reason,
+        }
 
     @staticmethod
     def _capability_cache_view(value: JsonObject, *, cached: bool, stale: bool) -> JsonObject:
@@ -826,6 +922,51 @@ class WorkbenchRuntime:
             repository_available=repository_available,
         )
         return self.projection.thread_browser_dict(refreshed)
+
+    async def delete_thread(
+        self, *, thread_id: str, repository_id: str, session_id: str
+    ) -> JsonObject:
+        """Delete one known idle thread without hydrating it through thread/read."""
+        lock = self._thread_mutations.setdefault(thread_id, asyncio.Lock())
+        async with lock:
+            reference = await asyncio.to_thread(self.metadata.get_thread, thread_id)
+            if (
+                reference is None
+                or reference.repository_id != repository_id
+                or reference.last_session_id != session_id
+            ):
+                raise ThreadUnavailableError("thread is unavailable")
+            await asyncio.to_thread(
+                self.repositories.resolve_repository_id, reference.repository_id
+            )
+            if self.projection.thread_has_active_turn(thread_id):
+                raise RuntimeConflictError(
+                    "Der aktive Turn muss vor dem Löschen gestoppt werden."
+                )
+            await self._call(
+                "thread/delete", {"threadId": thread_id}, owner=session_id
+            )
+            await self.approvals.invalidate_turn(thread_id, None)
+            await asyncio.to_thread(self.metadata.delete_thread, thread_id)
+            self.projection.forget_thread(thread_id)
+            self._unavailable_threads.pop(thread_id, None)
+            self._reconciliation_failures.discard(thread_id)
+            await asyncio.to_thread(
+                self.metadata.audit,
+                "thread_deleted",
+                occurred_at=int(time.time()),
+                session_id=session_id,
+                thread_id=thread_id,
+                repository_id=repository_id,
+            )
+            await self.broker.publish(
+                session_id,
+                "thread.deleted",
+                {"threadId": thread_id, "repositoryId": repository_id},
+                thread_id=thread_id,
+            )
+        self._thread_mutations.pop(thread_id, None)
+        return {"deleted": True, "threadId": thread_id}
 
     async def start_turn(
         self,

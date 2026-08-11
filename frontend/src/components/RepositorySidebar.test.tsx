@@ -7,11 +7,16 @@ const repository = { id: "r", name: "codex-workbench", directoryName: "codex-wor
 
 it("filters repositories and exposes a keyboard-accessible context menu", () => {
   const action = vi.fn();
-  render(<RepositorySidebar repositories={[repository]} selectedRepositoryId="r" threads={[]} selectedThreadId={null} loading={false} onSelectRepository={vi.fn()} onSelectThread={vi.fn<(thread: ThreadView) => void>()} onNewThread={vi.fn()} onRepositoryAction={action} />);
+  render(<RepositorySidebar repositories={[repository]} selectedRepositoryId="r" threads={[]} selectedThreadId={null} loading={false} onSelectRepository={vi.fn()} onSelectThread={vi.fn<(thread: ThreadView) => void>()} onNewThread={vi.fn()} onDeleteThread={vi.fn()} onRepositoryAction={action} />);
   fireEvent.change(screen.getByRole("searchbox"), { target: { value: "missing" } });
   expect(screen.queryByText("codex-workbench")).not.toBeInTheDocument();
   fireEvent.change(screen.getByRole("searchbox"), { target: { value: "codex" } });
   fireEvent.click(screen.getByRole("button", { name: "codex-workbench Menü" }));
   fireEvent.click(screen.getByRole("menuitem", { name: "Commit…" }));
   expect(action).toHaveBeenCalledWith("commit", repository);
+  fireEvent.click(screen.getByRole("button", { name: "codex-workbench Menü" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "SSH / Deploy Key" }));
+  expect(action).toHaveBeenCalledWith("deploy-key", repository);
+  fireEvent.click(screen.getByRole("button", { name: "Privat" }));
+  expect(action).toHaveBeenCalledWith("connect-private", null);
 });

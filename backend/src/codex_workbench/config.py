@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     uploads_dir: Path = Path("/var/lib/codex-workbench/uploads")
     database_path: Path = Path("/var/lib/codex-workbench/security/workbench.sqlite3")
     password_verifier_file: Path = Path("/var/lib/codex-workbench/security/password.argon2id")
+    deploy_keys_dir: Path | None = None
     session_secret_file: Path = Path("/run/secrets/workbench/session.key")
     session_idle_timeout_seconds: int = Field(default=12 * 60 * 60, ge=300, le=30 * 24 * 60 * 60)
     session_absolute_timeout_seconds: int = Field(
@@ -84,6 +85,7 @@ class Settings(BaseSettings):
     app_server_backoff_max_seconds: float = Field(default=30.0, ge=0.1, le=300)
     capability_cache_ttl_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
     capability_failure_cooldown_seconds: float = Field(default=300.0, ge=10.0, le=3600.0)
+    plugin_discovery_enabled: bool = False
     realtime_history_size: int = Field(default=512, ge=16, le=10000)
     realtime_client_queue_size: int = Field(default=128, ge=8, le=2048)
     realtime_heartbeat_seconds: int = Field(default=20, ge=5, le=120)
@@ -93,6 +95,9 @@ class Settings(BaseSettings):
     mutation_rate_limit_global_requests: int = Field(default=1000, ge=10, le=20000)
     mutation_rate_limit_window_seconds: int = Field(default=60, ge=10, le=3600)
     max_command_output_bytes: int = Field(default=256 * 1024, ge=1024, le=4 * 1024 * 1024)
+    git_command_timeout_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
+    git_network_timeout_seconds: float = Field(default=300.0, ge=30.0, le=1800.0)
+    git_clone_timeout_seconds: float = Field(default=900.0, ge=60.0, le=3600.0)
     readiness_require_data_dir: bool = True
 
     @model_validator(mode="after")
@@ -105,6 +110,10 @@ class Settings(BaseSettings):
         self.password_verifier_file = _absolute_without_resolving_symlinks(
             self.password_verifier_file
         )
+        deploy_keys_dir = _resolved(
+            self.deploy_keys_dir or self.data_dir / "security" / "deploy-keys"
+        )
+        self.deploy_keys_dir = deploy_keys_dir
         # Preserve the configured final path so the key loader can reject a symlink itself.
         self.session_secret_file = _absolute_without_resolving_symlinks(self.session_secret_file)
 
@@ -120,6 +129,9 @@ class Settings(BaseSettings):
             self.data_dir,
             "password_verifier_file parent",
         )
+        _require_nested(deploy_keys_dir, self.data_dir, "deploy_keys_dir")
+        if deploy_keys_dir.is_relative_to(self.workspace_root):
+            raise ValueError("deploy_keys_dir must be outside workspace_root")
 
         if (
             self.public_origin.username is not None

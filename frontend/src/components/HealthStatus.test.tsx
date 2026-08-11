@@ -11,31 +11,20 @@ test("distinguishes an available backend from an unavailable Codex runtime", asy
       .mockResolvedValueOnce(new Response(null, { status: 503 })),
   );
 
-  render(<HealthStatus processConnection="failed" capabilities={null} />);
+  render(<HealthStatus processConnection="failed" />);
 
   expect(await screen.findByText("Backend verbunden")).toBeInTheDocument();
   expect(screen.getByText("Codex Runtime derzeit nicht verfügbar")).toBeInTheDocument();
   expect(screen.queryByText("Backend nicht erreichbar")).not.toBeInTheDocument();
 });
 
-test("reports optional plugin degradation without hiding model availability", async () => {
+test("keeps optional tool discovery out of global health", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
 
   render(
-    <HealthStatus
-      processConnection="connected"
-      capabilities={{
-        overall: "partial",
-        generation: 3,
-        cached: true,
-        stale: false,
-        models: { available: true, reason: null },
-        skills: { available: true, reason: null },
-        plugins: { available: false, reason: "unsupported" },
-      }}
-    />,
+    <HealthStatus processConnection="connected" />,
   );
 
-  expect(await screen.findByText("Plugins konnten nicht geladen werden")).toBeInTheDocument();
-  expect(screen.getByText("Codex Runtime bereit")).toBeInTheDocument();
+  expect(await screen.findByText("Codex Runtime bereit")).toBeInTheDocument();
+  expect(screen.queryByText(/Capabilities|Plugins/)).not.toBeInTheDocument();
 });

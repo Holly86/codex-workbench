@@ -207,6 +207,9 @@ def main() -> int:
             )
         elif method == "thread/read":
             send({"id": request_id, "result": {"thread": active_thread}})
+        elif method == "thread/delete":
+            active_thread = thread(active_cwd, "deleted-thread")
+            send({"id": request_id, "result": {}})
         elif method in {"thread/start", "thread/resume"}:
             active_cwd = params.get("cwd", active_cwd)
             active_thread = thread(active_cwd, params.get("threadId", active_thread["id"]))

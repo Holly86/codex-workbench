@@ -23,6 +23,43 @@ def test_settings_normalize_and_accept_nested_roots(tmp_path: Path) -> None:
     assert settings.repositories_root == (workspace / "repositories").resolve()
     assert settings.max_upload_bytes == 20 * 1024 * 1024
     assert settings.app_server_start_enabled is False
+    assert settings.git_command_timeout_seconds == 30
+    assert settings.git_network_timeout_seconds == 300
+    assert settings.git_clone_timeout_seconds == 900
+
+
+@pytest.mark.parametrize(
+    ("command_timeout", "network_timeout", "clone_timeout"),
+    [
+        (4, 300, 900),
+        (301, 300, 900),
+        (30, 29, 900),
+        (30, 1801, 900),
+        (30, 300, 59),
+        (30, 300, 3601),
+    ],
+)
+def test_settings_reject_git_timeouts_outside_safe_bounds(
+    tmp_path: Path,
+    command_timeout: float,
+    network_timeout: float,
+    clone_timeout: float,
+) -> None:
+    workspace = tmp_path / "workspace"
+    data = tmp_path / "data"
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            workspace_root=workspace,
+            repositories_root=workspace / "repositories",
+            data_dir=data,
+            uploads_dir=data / "uploads",
+            database_path=data / "security" / "workbench.sqlite3",
+            password_verifier_file=data / "security" / "password.argon2id",
+            git_command_timeout_seconds=command_timeout,
+            git_network_timeout_seconds=network_timeout,
+            git_clone_timeout_seconds=clone_timeout,
+        )
 
 
 def test_settings_reject_repository_root_outside_workspace(tmp_path: Path) -> None:

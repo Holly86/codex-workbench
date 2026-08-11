@@ -313,8 +313,16 @@ class DomainProjection:
             for thread in self._threads.values()
         )
 
+    def thread_has_active_turn(self, thread_id: str) -> bool:
+        thread = self._threads.get(thread_id)
+        return thread is not None and (
+            thread.active_turn_id is not None
+            or thread.status in {"running", "awaiting_approval"}
+        )
+
     def forget_thread(self, thread_id: str) -> None:
         self._threads.pop(thread_id, None)
+        self._activity.forget(thread_id)
 
     def mark_repository_unavailable(self, repository_id: str) -> None:
         for thread in self._threads.values():

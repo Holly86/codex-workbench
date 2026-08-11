@@ -44,6 +44,7 @@ images and use the attached SBOM to review the exact resolved packages.
 
 ## Workbench license
 
-No license has yet been selected for the original Codex Workbench source. Third-party licenses do
-not grant a license to that original code. The owner must resolve this before the intended
-open-source release.
+The original Codex Workbench source is licensed under the Apache License 2.0 (`Apache-2.0`), whose
+complete terms are in `LICENSE`. That project license does not replace or relicense any third-party
+component listed above; every dependency and container package retains its upstream license and
+notice obligations.
