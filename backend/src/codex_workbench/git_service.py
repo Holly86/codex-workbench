@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import secrets
 import shutil
+import stat
+import threading
 import time
 from dataclasses import dataclass
 from hashlib import sha256
@@ -26,6 +29,10 @@ class GitOperationError(RuntimeError):
     pass
 
 
+class RepositoryNameConflictError(ValueError):
+    """A requested direct-child clone target already exists."""
+
+
 @dataclass(frozen=True, slots=True)
 class GitResult:
     command: str
@@ -44,6 +51,17 @@ class GitResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CloneTargetReservation:
+    """Opaque proof that this service atomically created a clone target."""
+
+    token: str
+    name: str
+    target: Path
+    device: int
+    inode: int
+
+
 class GitService:
     def __init__(
         self,
@@ -60,6 +78,8 @@ class GitService:
         self._timeout = timeout_seconds
         self._deploy_keys = deploy_keys
         self._locks: dict[str, asyncio.Lock] = {}
+        self._reservation_lock = threading.Lock()
+        self._clone_reservations: dict[str, CloneTargetReservation] = {}
 
     async def run(
         self,
@@ -132,33 +152,88 @@ class GitService:
             display=("clone", "--", self.redact_url(safe_url), name),
         )
 
-    async def clone_with_deploy_key(self, name: str, credential_id: str) -> GitResult:
-        if self._deploy_keys is None:
-            raise GitOperationError("deploy key service is unavailable")
+    def reserve_clone_target(self, name: str) -> CloneTargetReservation:
+        """Atomically reserve one validated direct-child name before a job is created."""
         self.validate_name(name)
         root = self._root.resolve(strict=True)
         target = root / name
-        if target.exists() or target.is_symlink():
-            raise GitOperationError("repository already exists")
-        url, environment = await self._deploy_keys.clone_environment(credential_id)
-        result = await self._execute(
-            root,
-            ("clone", "--", url, name),
-            display=("clone", "--", "github.com:repository", name),
-            environment=environment,
-        )
-        if result.exit_code != 0:
-            return result
+        if target.parent != root or target.exists() or target.is_symlink():
+            raise RepositoryNameConflictError("repository name is already in use")
         try:
+            target.mkdir(mode=0o750)
+        except FileExistsError:
+            raise RepositoryNameConflictError("repository name is already in use") from None
+        try:
+            metadata = target.lstat()
+            resolved = target.resolve(strict=True)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or target.is_symlink()
+                or resolved.parent != root
+                or resolved == root
+            ):
+                raise GitOperationError("clone target reservation is unsafe")
+            reservation = CloneTargetReservation(
+                token=secrets.token_urlsafe(24),
+                name=name,
+                target=target,
+                device=metadata.st_dev,
+                inode=metadata.st_ino,
+            )
+            with self._reservation_lock:
+                self._clone_reservations[reservation.token] = reservation
+            return reservation
+        except BaseException:
+            if target.exists() and not target.is_symlink() and not any(target.iterdir()):
+                target.rmdir()
+            raise
+
+    def release_clone_target(self, reservation: CloneTargetReservation) -> None:
+        """Remove only the still-identical target created by this exact reservation."""
+        with self._reservation_lock:
+            registered = self._clone_reservations.get(reservation.token)
+        if registered != reservation:
+            raise GitOperationError("clone target reservation is unavailable")
+        if not reservation.target.exists() and not reservation.target.is_symlink():
+            with self._reservation_lock:
+                self._clone_reservations.pop(reservation.token, None)
+            return
+        self._require_clone_reservation(reservation)
+        shutil.rmtree(reservation.target)
+        with self._reservation_lock:
+            self._clone_reservations.pop(reservation.token, None)
+
+    async def clone_with_deploy_key(
+        self, reservation: CloneTargetReservation, credential_id: str
+    ) -> GitResult:
+        root = self._root.resolve(strict=True)
+        completed = False
+        try:
+            if self._deploy_keys is None:
+                raise GitOperationError("deploy key service is unavailable")
+            self._require_clone_reservation(reservation, require_empty=True)
+            url, environment = await self._deploy_keys.clone_environment(credential_id)
+            result = await self._execute(
+                root,
+                ("clone", "--", url, reservation.name),
+                display=("clone", "--", "github.com:repository", reservation.name),
+                environment=environment,
+            )
+            if result.exit_code != 0:
+                return result
             summary, _path = await asyncio.to_thread(
                 self._repositories.resolve_repository_id,
-                self.repository_id_for_name(name),
+                self.repository_id_for_name(reservation.name),
             )
             await self._deploy_keys.bind_after_clone(credential_id, summary.id)
-        except BaseException:
-            await asyncio.to_thread(self._remove_failed_clone, target)
-            raise
-        return result
+            self._require_clone_reservation(reservation)
+            with self._reservation_lock:
+                self._clone_reservations.pop(reservation.token, None)
+            completed = True
+            return result
+        finally:
+            if not completed:
+                await asyncio.to_thread(self.release_clone_target, reservation)
 
     async def clone_preflight(self, url: str) -> dict[str, object]:
         safe_url = self.validate_clone_url(url)
@@ -533,12 +608,31 @@ class GitService:
             truncated,
         )
 
-    def _remove_failed_clone(self, target: Path) -> None:
+    def _require_clone_reservation(
+        self, reservation: CloneTargetReservation, *, require_empty: bool = False
+    ) -> None:
         root = self._root.resolve(strict=True)
-        resolved = target.resolve(strict=True)
-        if target.is_symlink() or resolved.parent != root or resolved == root:
-            raise GitOperationError("failed clone cleanup target is unsafe")
-        shutil.rmtree(resolved)
+        with self._reservation_lock:
+            registered = self._clone_reservations.get(reservation.token)
+        if registered != reservation:
+            raise GitOperationError("clone target reservation is unavailable")
+        try:
+            metadata = reservation.target.lstat()
+            resolved = reservation.target.resolve(strict=True)
+        except FileNotFoundError:
+            raise GitOperationError("clone target reservation is unavailable") from None
+        if (
+            reservation.target.is_symlink()
+            or not stat.S_ISDIR(metadata.st_mode)
+            or resolved.parent != root
+            or resolved == root
+            or reservation.target.parent != root
+            or metadata.st_dev != reservation.device
+            or metadata.st_ino != reservation.inode
+        ):
+            raise GitOperationError("clone target reservation is unsafe")
+        if require_empty and any(reservation.target.iterdir()):
+            raise GitOperationError("clone target reservation is not empty")
 
     def _git_environment(self, selected: dict[str, str] | None) -> dict[str, str]:
         if selected is None:

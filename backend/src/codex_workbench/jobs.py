@@ -143,9 +143,13 @@ class BackgroundJobRegistry:
             job.status = "succeeded" if result.exit_code == 0 else "failed"
             if result.exit_code != 0:
                 job.error = "Die native Operation ist fehlgeschlagen."
-        except Exception:
+        except Exception as exc:
             job.status = "failed"
             job.error = "Die native Operation konnte nicht abgeschlossen werden."
+            logger.warning(
+                "background_job_failed",
+                extra={"job_type": job.type, "error_type": type(exc).__name__},
+            )
         finally:
             job.ended_at = int(time.time())
             await self._notify(job)

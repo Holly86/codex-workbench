@@ -27,6 +27,10 @@ class DeployKeyError(RuntimeError):
     """Safe deploy-key failure whose message is never returned to the browser."""
 
 
+class DeployKeyAlreadyBoundError(ValueError):
+    """A private-connect credential already belongs to a local repository."""
+
+
 @dataclass(frozen=True, slots=True)
 class GitHubRepository:
     slug: str
@@ -136,6 +140,18 @@ class DeployKeyService:
             await asyncio.to_thread(self._remove_slot, slot)
             raise
         return self.browser_dict(record)
+
+    async def connect_private(self, github: str) -> tuple[dict[str, object], bool]:
+        """Create or safely resume one unbound credential for a normalized GitHub slug."""
+        repository = normalize_github_repository(github)
+        existing = await asyncio.to_thread(
+            self._metadata.deploy_key_by_slug, repository.slug
+        )
+        if existing is not None:
+            if existing.repository_id is not None:
+                raise DeployKeyAlreadyBoundError("deploy key is already bound")
+            return self.browser_dict(existing), False
+        return await self.create(repository.slug, repository_id=None), True
 
     async def view_for_repository(self, repository_id: str) -> dict[str, object] | None:
         record = await asyncio.to_thread(

@@ -7,10 +7,17 @@ public key, SHA-256 fingerprint, lifecycle status, and timestamps only.
 ## Storage boundary
 
 Private material is stored below `<WORKBENCH_DATA_DIR>/security/deploy-keys`, outside
-`WORKBENCH_WORKSPACE_ROOT`. Directories use mode `0700`, private keys `0600`, and public keys at
-most `0644`. SQLite stores an opaque credential ID, the canonical GitHub `owner/repository` slug,
-the optional local repository ID, and non-secret lifecycle metadata. It stores neither key bytes
-nor browser-supplied paths.
+`WORKBENCH_WORKSPACE_ROOT`. In the supplied Compose profiles, `/var/lib/codex-workbench/security`
+is a separate persistent bind mount supplied by the legacy-named `WORKBENCH_PASSWORD_PATH` host
+variable. Consequently, the deployed path is
+`/var/lib/codex-workbench/security/deploy-keys`, and the corresponding host directory contains
+both the password verifier and repository-scoped deploy-key material. Treat and back up that whole
+mount as credential storage. A future dedicated-mount migration must preserve this existing path;
+this release deliberately performs no silent persistence migration.
+
+Directories use mode `0700`, private keys `0600`, and public keys at most `0644`. SQLite stores an
+opaque credential ID, the canonical GitHub `owner/repository` slug, the optional local repository
+ID, and non-secret lifecycle metadata. It stores neither key bytes nor browser-supplied paths.
 
 The storage root and every identity slot are checked against symlink and path traversal escapes.
 The directory is ignored by Git, and the default-deny `.dockerignore` does not admit runtime data
@@ -43,8 +50,16 @@ The remote changes only after the user enters the new SSH URL verbatim and confi
 
 Choose **Privat**, enter an `OWNER/REPO`, HTTPS GitHub URL, or GitHub SSH URL, and generate the
 dedicated key. Add only the displayed public key to that GitHub repository and run the access test.
-Clone remains disabled until the exact repository probe succeeds. A successful clone binds the
-credential to the derived local repository ID; failed binding removes the incomplete clone.
+Clone remains disabled until the exact repository probe succeeds. The local target name is
+validated and atomically reserved before a background job is created. Existing names return a
+synchronous conflict without exposing a host path. A successful clone binds the credential to the
+derived local repository ID; any failed clone or binding removes only the target reserved by that
+exact attempt.
+
+If cloning fails, opening the flow again with the same normalized GitHub slug resumes the existing
+unbound credential, including its verified status and unchanged public key. The user can select a
+different free local name and retry without installing another GitHub deploy key. A credential
+already bound to a local repository cannot be resumed or duplicated.
 
 ## Rotation and removal
 

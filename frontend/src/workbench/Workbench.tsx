@@ -796,6 +796,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       <DeployKeyDialog
         mode={deployKeyMode}
         repository={actionRepository}
+        repositoryNames={repositories.map((item) => item.directoryName)}
         csrfToken={session.csrfToken}
         onClose={() => setRepositoryAction(null)}
         onCloneStarted={async () => {

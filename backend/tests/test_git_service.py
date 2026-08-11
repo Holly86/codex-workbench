@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from codex_workbench.git_service import GitResult, GitService
+from codex_workbench.deploy_keys import DeployKeyService
+from codex_workbench.git_service import (
+    GitResult,
+    GitService,
+    RepositoryNameConflictError,
+)
 from codex_workbench.repositories import RepositoryDiscovery
 
 
@@ -13,6 +19,31 @@ def _service(tmp_path: Path) -> tuple[GitService, Path]:
     root.mkdir()
     discovery = RepositoryDiscovery(root)
     return GitService(discovery, root, output_limit=4096), root
+
+
+class FakeDeployKeys:
+    def __init__(self) -> None:
+        self.bound: list[tuple[str, str]] = []
+
+    async def clone_environment(self, credential_id: str) -> tuple[str, dict[str, str]]:
+        assert credential_id == "deploy_test_credential"
+        return "git@github.com:owner/private.git", {"PATH": "/usr/bin:/bin"}
+
+    async def bind_after_clone(self, credential_id: str, repository_id: str) -> None:
+        self.bound.append((credential_id, repository_id))
+
+
+def _private_clone_service(tmp_path: Path) -> tuple[GitService, FakeDeployKeys, Path]:
+    root = tmp_path / "repositories"
+    root.mkdir()
+    deploy_keys = FakeDeployKeys()
+    service = GitService(
+        RepositoryDiscovery(root),
+        root,
+        output_limit=4096,
+        deploy_keys=cast(DeployKeyService, deploy_keys),
+    )
+    return service, deploy_keys, root
 
 
 @pytest.mark.asyncio
@@ -31,6 +62,85 @@ async def test_create_and_status_use_native_git_without_codex(tmp_path: Path) ->
 def test_repository_names_reject_traversal_and_injection(name: str) -> None:
     with pytest.raises(ValueError):
         GitService.validate_name(name)
+
+
+def test_clone_target_conflict_is_synchronous_and_never_removes_preexisting_target(
+    tmp_path: Path,
+) -> None:
+    service, _root = _service(tmp_path)
+    existing = tmp_path / "repositories" / "existing"
+    existing.mkdir()
+    marker = existing / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(RepositoryNameConflictError):
+        service.reserve_clone_target("existing")
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_failed_private_clone_cleans_only_its_reserved_target_and_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, deploy_keys, root = _private_clone_service(tmp_path)
+    attempts = 0
+
+    async def execute(
+        _cwd: Path, _args: tuple[str, ...], **_kwargs: object
+    ) -> GitResult:
+        nonlocal attempts
+        attempts += 1
+        target = root / ("first" if attempts == 1 else "second")
+        if attempts == 1:
+            (target / "partial").write_text("partial", encoding="utf-8")
+            return GitResult("git clone -- github.com:repository first", 128, "", 2, False)
+        (target / ".git").mkdir()
+        return GitResult("git clone -- github.com:repository second", 0, "", 3, False)
+
+    monkeypatch.setattr(service, "_execute", execute)
+    first = service.reserve_clone_target("first")
+    failed = await service.clone_with_deploy_key(first, "deploy_test_credential")
+
+    assert failed.exit_code == 128
+    assert not (root / "first").exists()
+    assert deploy_keys.bound == []
+
+    second = service.reserve_clone_target("second")
+    succeeded = await service.clone_with_deploy_key(second, "deploy_test_credential")
+
+    assert succeeded.exit_code == 0
+    assert (root / "second" / ".git").is_dir()
+    assert deploy_keys.bound == [
+        ("deploy_test_credential", GitService.repository_id_for_name("second"))
+    ]
+
+
+def test_replaced_reserved_target_is_not_removed(tmp_path: Path) -> None:
+    service, root = _service(tmp_path)
+    reservation = service.reserve_clone_target("reserved")
+    original = root / "original-reservation"
+    reservation.target.rename(original)
+    reservation.target.mkdir()
+    marker = reservation.target / "preexisting.txt"
+    marker.write_text("do not remove", encoding="utf-8")
+
+    with pytest.raises(Exception, match="reservation is unsafe"):
+        service.release_clone_target(reservation)
+
+    assert marker.read_text(encoding="utf-8") == "do not remove"
+
+
+def test_missing_reserved_target_is_released_for_retry(tmp_path: Path) -> None:
+    service, root = _service(tmp_path)
+    reservation = service.reserve_clone_target("retry")
+    reservation.target.rmdir()
+
+    service.release_clone_target(reservation)
+    retried = service.reserve_clone_target("retry")
+
+    assert retried.target == root / "retry"
+    service.release_clone_target(retried)
 
 
 @pytest.mark.parametrize(

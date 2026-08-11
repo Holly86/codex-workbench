@@ -39,7 +39,7 @@ Bind-Mount unter `/volume1/docker/codex`.
 | `/volume1/docker/codex/workbench/data` | `/var/lib/codex-workbench` | rw | Workbench-Metadatenroot |
 | `/volume1/docker/codex/workbench/data/state` | wie oben, Unterpfad | rw | SQLite einschließlich WAL/SHM |
 | `/volume1/docker/codex/workbench/uploads` | `/var/lib/codex-workbench/uploads` | rw | temporäre private Uploaddateien |
-| `/volume1/docker/codex/workbench/secrets/password` | `/var/lib/codex-workbench/security` | rw | exklusiv erzeugter Argon2id-Verifier |
+| `/volume1/docker/codex/workbench/secrets/password` | `/var/lib/codex-workbench/security` | rw | persistenter Security-Mount: Argon2id-Verifier und repository-spezifische Deploy Keys |
 | `/volume1/docker/codex/workbench/secrets/session` | `/run/secrets/workbench` | ro | Sitzungsschlüssel `session.key` |
 | `/volume1/docker/codex/config/.codex` | `/home/workbench/.codex` | rw | bestehende Codex-Anmeldung, Konfiguration und Codex-Threads |
 | `/volume1/docker/codex/workspace` | `/workspace` | rw | Workspace und Repositories |
@@ -61,8 +61,9 @@ akzeptiert ausschließlich positive non-root Werte, prüft abweichende Eigentüm
 Workspace, ändert diese gemeinsamen Pfade aber nicht. Beide Container laufen mit derselben
 konfigurierten numerischen Identität vollständig non-root.
 
-Workbench-Verzeichnisse sind Modus 0700, Sitzungsschlüssel, Passwort-Verifier, SQLite-Dateien und
-Uploads Modus 0600. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
+Workbench-Verzeichnisse und Deploy-Key-Slots sind Modus 0700; Sitzungsschlüssel,
+Passwort-Verifier, SQLite-Dateien, Uploads und private Deploy Keys Modus 0600. Öffentliche Deploy
+Keys sind Modus 0644. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
 Station oder mit den auf dem NAS verfügbaren ACL-Werkzeugen geprüft werden. Der Runtime-Test in
 [synology-test-plan.md](synology-test-plan.md) ist deshalb verpflichtend.
 
@@ -442,8 +443,9 @@ Codex-Home. Vorher aktive SSH-Codex-Turns beenden. Dann als root:
     sed -n 's/^WORKBENCH_IMAGE_TAG=//p' .env > "${workbench_backup_root}/codex-workbench-image-${workbench_stamp}.txt"
     docker-compose up -d --no-build
 
-Das Archiv enthält SQLite/WAL, Uploaddateien und -metadaten, Passwort-Verifier, Sitzungsschlüssel,
-Codex-Authentifizierung/-Threads und `.env` als eine Einheit. Es enthält absichtlich nicht alle
+Das Archiv enthält SQLite/WAL, Uploaddateien und -metadaten, Passwort-Verifier, Deploy-Key-Material,
+Sitzungsschlüssel, Codex-Authentifizierung/-Threads und `.env` als eine Einheit. Es enthält
+absichtlich nicht alle
 Workspace-Repositories. Diese werden separat mit Synology Hyper Backup beziehungsweise einem
 Btrfs-Snapshot gesichert; alternativ kann im selben ruhenden Fenster ein eigenes Archiv von
 `/volume1/docker/codex/workspace` erstellt werden. Das Ziel wird bewusst nicht vom Installer erzeugt

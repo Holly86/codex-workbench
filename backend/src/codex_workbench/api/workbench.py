@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from contextlib import suppress
 from http import HTTPStatus
 from typing import Annotated, Literal, cast
 
@@ -15,9 +16,9 @@ from codex_workbench.app_server.protocol import (
     SUPPORTED_APPROVAL_POLICIES,
     SUPPORTED_SANDBOX_MODES,
 )
-from codex_workbench.deploy_keys import DeployKeyError
+from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError, DeployKeyError
 from codex_workbench.domain.capabilities import FullAccessConfirmationError
-from codex_workbench.git_service import GitOperationError
+from codex_workbench.git_service import GitOperationError, RepositoryNameConflictError
 from codex_workbench.jobs import JobType
 from codex_workbench.runtime import (
     RuntimeConflictError,
@@ -184,6 +185,18 @@ def _mutation_allowed(runtime: WorkbenchRuntime, session_id: str) -> JSONRespons
 
 
 def _safe_error(exc: BaseException) -> JSONResponse:
+    if isinstance(exc, RepositoryNameConflictError):
+        return api_error(
+            HTTPStatus.CONFLICT,
+            "repository_name_conflict",
+            "Ein Repository mit diesem lokalen Namen existiert bereits.",
+        )
+    if isinstance(exc, DeployKeyAlreadyBoundError):
+        return api_error(
+            HTTPStatus.CONFLICT,
+            "deploy_key_already_bound",
+            "Der Deploy Key ist bereits an ein lokales Repository gebunden.",
+        )
     if isinstance(exc, RuntimeUnavailableError):
         return api_error(
             HTTPStatus.SERVICE_UNAVAILABLE,
@@ -318,10 +331,13 @@ async def connect_private_repository(
     if limited is not None:
         return limited
     try:
-        deploy_key = await runtime.deploy_keys.create(
-            payload.githubRepository, repository_id=None
+        deploy_key, created = await runtime.deploy_keys.connect_private(
+            payload.githubRepository
         )
-        return JSONResponse({"deployKey": deploy_key}, status_code=HTTPStatus.CREATED)
+        return JSONResponse(
+            {"deployKey": deploy_key, "reused": not created},
+            status_code=HTTPStatus.CREATED if created else HTTPStatus.OK,
+        )
     except Exception as exc:
         return _safe_error(exc)
 
@@ -335,17 +351,23 @@ async def clone_private_repository(
     if limited is not None:
         return limited
     try:
+        reservation = await asyncio.to_thread(runtime.git.reserve_clone_target, payload.name)
+    except Exception as exc:
+        return _safe_error(exc)
+    try:
         job = await runtime.jobs.start(
             owner_session_id=session.id,
             repository_id=None,
             repository_name=payload.name,
             job_type="git_clone",
             operation=lambda: runtime.git.clone_with_deploy_key(
-                payload.name, payload.credentialId
+                reservation, payload.credentialId
             ),
         )
         return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
     except Exception as exc:
+        with suppress(GitOperationError):
+            await asyncio.to_thread(runtime.git.release_clone_target, reservation)
         return _safe_error(exc)
 
 

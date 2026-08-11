@@ -20,6 +20,7 @@ import { CopyButton } from "./CopyButton";
 interface DeployKeyDialogProps {
   mode: "repository" | "private-clone" | null;
   repository: Repository | null;
+  repositoryNames: readonly string[];
   csrfToken: string;
   onClose: () => void;
   onCloneStarted: () => Promise<void>;
@@ -28,6 +29,7 @@ interface DeployKeyDialogProps {
 export function DeployKeyDialog({
   mode,
   repository,
+  repositoryNames,
   csrfToken,
   onClose,
   onCloneStarted,
@@ -70,6 +72,10 @@ export function DeployKeyDialog({
 
   if (mode === null) return null;
 
+  const trimmedLocalName = localName.trim();
+  const knownNameConflict = mode === "private-clone"
+    && repositoryNames.includes(trimmedLocalName);
+
   const run = async (operation: () => Promise<void>) => {
     setPending(true);
     setError(null);
@@ -91,7 +97,7 @@ export function DeployKeyDialog({
     if (mode === "private-clone") {
       setLocalName(created.githubRepository.split("/").at(-1) ?? "");
     }
-    setMessage("Deploy Key erzeugt. Hinterlege jetzt ausschließlich den Public Key bei GitHub.");
+    setMessage("Deploy Key ist verfügbar. Hinterlege bei Bedarf ausschließlich den Public Key bei GitHub.");
   });
 
   const test = (candidate: boolean) => run(async () => {
@@ -150,8 +156,9 @@ export function DeployKeyDialog({
       </section> : null}
       {deployKey.retiredKeyAvailable ? <div className="deploy-key-warning"><p>Der vorherige lokale Key ist noch als Rückfalloption gespeichert. Ein GitHub-Key muss separat in GitHub entfernt werden.</p><button type="button" className="secondary-action" disabled={pending} onClick={() => void run(async () => setDeployKey(await removeRetiredDeployKey(csrfToken, deployKey.credentialId)))}>Alten lokalen Key entfernen</button></div> : null}
       {mode === "private-clone" ? <div className="private-clone-controls">
-        <label>Lokaler Repositoryname<input value={localName} onChange={(event) => setLocalName(event.target.value)} /></label>
-        <button type="button" className="primary-action" disabled={pending || deployKey.status !== "verified" || !localName} onClick={() => void run(async () => { await clonePrivateRepository(csrfToken, localName, deployKey.credentialId); await onCloneStarted(); onClose(); })}>Geprüften privaten Clone starten</button>
+        <label>Lokaler Repositoryname<input value={localName} onChange={(event) => { setLocalName(event.target.value); setError(null); }} /></label>
+        {knownNameConflict ? <p role="alert" className="inline-error">Dieser lokale Repositoryname wird bereits verwendet.</p> : null}
+        <button type="button" className="primary-action" disabled={pending || deployKey.status !== "verified" || !trimmedLocalName || knownNameConflict} onClick={() => void run(async () => { await clonePrivateRepository(csrfToken, trimmedLocalName, deployKey.credentialId); await onCloneStarted(); onClose(); })}>Geprüften privaten Clone starten</button>
       </div> : null}
       {mode === "repository" && repository !== null && deployKey.status === "verified" ? <div className="deploy-key-remote">
         {remotePreview === null ? <button type="button" className="secondary-action" disabled={pending} onClick={() => void run(async () => setRemotePreview(await deployKeyRemotePreview(repository.id)))}>origin auf Deploy-Key-SSH umstellen …</button> : <>

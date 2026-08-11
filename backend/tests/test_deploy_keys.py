@@ -11,7 +11,11 @@ from typing import cast
 
 import pytest
 
-from codex_workbench.deploy_keys import DeployKeyService, normalize_github_repository
+from codex_workbench.deploy_keys import (
+    DeployKeyAlreadyBoundError,
+    DeployKeyService,
+    normalize_github_repository,
+)
 from codex_workbench.persistence.metadata import DeployKeyRecord, MetadataRepository
 from tests.helpers import build_settings
 
@@ -235,6 +239,61 @@ async def test_keys_are_never_shared_across_repositories(tmp_path: Path) -> None
     with pytest.raises(ValueError):
         await deploy_keys.create("owner/first", repository_id="3" * 16)
     assert len(metadata.records) == 2
+
+
+@pytest.mark.asyncio
+async def test_private_connect_reuses_the_same_unbound_keypair(tmp_path: Path) -> None:
+    deploy_keys, metadata, root = await service(tmp_path)
+    first, created = await deploy_keys.connect_private("OWNER/Private")
+    slots_before = tuple(root.iterdir())
+
+    resumed, resumed_created = await deploy_keys.connect_private(
+        "https://github.com/owner/private.git"
+    )
+
+    assert created is True
+    assert resumed_created is False
+    assert resumed["credentialId"] == first["credentialId"]
+    assert cast(dict[str, object], resumed["active"])["publicKey"] == cast(
+        dict[str, object], first["active"]
+    )["publicKey"]
+    assert tuple(root.iterdir()) == slots_before
+    assert len(metadata.records) == 1
+
+
+@pytest.mark.asyncio
+async def test_private_connect_preserves_verified_unbound_status(tmp_path: Path) -> None:
+    deploy_keys, metadata, _root = await service(tmp_path)
+    first, _created = await deploy_keys.connect_private("owner/private")
+    credential_id = cast(str, first["credentialId"])
+    current = metadata.records[credential_id]
+    metadata.records[credential_id] = replace(
+        current,
+        last_tested_at=100,
+        last_success_at=100,
+        last_test_succeeded=True,
+        last_test_key="active",
+        updated_at=100,
+    )
+
+    resumed, created = await deploy_keys.connect_private("owner/private")
+
+    assert created is False
+    assert resumed["credentialId"] == credential_id
+    assert resumed["status"] == "verified"
+    assert resumed["lastSuccessfulTestAt"] == 100
+
+
+@pytest.mark.asyncio
+async def test_private_connect_rejects_an_already_bound_slug(tmp_path: Path) -> None:
+    deploy_keys, metadata, _root = await service(tmp_path)
+    original = await deploy_keys.create("owner/private", repository_id="d" * 16)
+
+    with pytest.raises(DeployKeyAlreadyBoundError):
+        await deploy_keys.connect_private("git@github.com:OWNER/Private.git")
+
+    assert len(metadata.records) == 1
+    assert next(iter(metadata.records)) == original["credentialId"]
 
 
 @pytest.mark.asyncio
