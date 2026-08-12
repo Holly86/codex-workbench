@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     app_server_restart_window_seconds: int = Field(default=300, ge=10, le=3600)
     app_server_backoff_initial_seconds: float = Field(default=0.5, ge=0.05, le=60)
     app_server_backoff_max_seconds: float = Field(default=30.0, ge=0.1, le=300)
+    app_server_backoff_jitter_ratio: float = Field(default=0.15, ge=0.0, le=0.5)
+    app_server_watchdog_enabled: bool = True
+    app_server_watchdog_idle_seconds: float = Field(default=45.0, ge=30.0, le=300.0)
+    app_server_watchdog_timeout_seconds: float = Field(default=8.0, ge=5.0, le=10.0)
+    app_server_watchdog_failure_threshold: int = Field(default=3, ge=2, le=10)
     capability_cache_ttl_seconds: float = Field(default=60.0, ge=1.0, le=3600.0)
     capability_failure_cooldown_seconds: float = Field(default=300.0, ge=10.0, le=3600.0)
     plugin_discovery_enabled: bool = False
@@ -98,6 +103,10 @@ class Settings(BaseSettings):
     git_command_timeout_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
     git_network_timeout_seconds: float = Field(default=300.0, ge=30.0, le=1800.0)
     git_clone_timeout_seconds: float = Field(default=900.0, ge=60.0, le=3600.0)
+    sqlite_busy_timeout_ms: int = Field(default=5000, ge=100, le=60000)
+    storage_warning_free_bytes: int = Field(
+        default=512 * 1024 * 1024, ge=16 * 1024 * 1024, le=100 * 1024 * 1024 * 1024
+    )
     readiness_require_data_dir: bool = True
 
     @model_validator(mode="after")

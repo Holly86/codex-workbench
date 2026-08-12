@@ -15,6 +15,7 @@ from codex_workbench import __version__
 from codex_workbench.api.auth import router as auth_router
 from codex_workbench.api.health import router as health_router
 from codex_workbench.api.realtime import router as realtime_router
+from codex_workbench.api.system import router as system_router
 from codex_workbench.api.uploads import router as uploads_router
 from codex_workbench.api.workbench import router as workbench_router
 from codex_workbench.config import Settings, get_settings
@@ -92,6 +93,7 @@ def create_app(
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(realtime_router)
+    app.include_router(system_router)
     app.include_router(uploads_router)
     app.include_router(workbench_router)
 

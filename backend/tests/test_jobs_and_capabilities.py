@@ -45,7 +45,9 @@ async def test_background_job_survives_caller_lifetime_and_is_reconnect_projecte
     snapshot = (await registry.list_for_session("session"))[0]
     assert snapshot["id"] == job.id
     assert snapshot["status"] == "succeeded"
-    assert snapshot["output"] == "done"
+    assert "output" not in snapshot
+    assert "command" not in snapshot
+    assert snapshot["operationLabel"] == "Remote-Stand abrufen"
     assert [update["status"] for update in updates] == ["queued", "running", "succeeded"]
 
 
@@ -76,7 +78,7 @@ async def test_background_job_failure_logs_only_safe_structured_diagnostics(
         for _ in range(20):
             await asyncio.sleep(0)
             snapshot = (await registry.list_for_session("session-sensitive"))[0]
-            if snapshot["status"] == "failed":
+            if snapshot["status"] == "timed_out":
                 break
 
     failure = next(record for record in caplog.records if record.message == "background_job_failed")
@@ -120,6 +122,34 @@ async def test_background_job_timeout_logs_specific_safe_error_type(
     assert sensitive not in caplog.text
     assert "github.com" not in caplog.text
     assert "/secret/" not in caplog.text
+    assert snapshot["status"] == "timed_out"
+    assert snapshot["errorCode"] == "git_operation_timeout"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_marks_a_running_job_interrupted_without_output() -> None:
+    registry = BackgroundJobRegistry()
+    entered = asyncio.Event()
+
+    async def operation() -> GitResult:
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    await registry.start(
+        owner_session_id="session-shutdown",
+        repository_id="0123456789abcdef",
+        repository_name="repo",
+        job_type="git_pull",
+        operation=operation,
+    )
+    await entered.wait()
+    await registry.stop()
+    snapshot = (await registry.list_for_session("session-shutdown"))[0]
+    assert snapshot["status"] == "interrupted"
+    assert snapshot["errorCode"] == "service_shutdown"
+    assert snapshot["retryable"] is True
+    assert "output" not in snapshot
 
 
 @pytest.mark.asyncio

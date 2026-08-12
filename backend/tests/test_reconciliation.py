@@ -9,7 +9,7 @@ import pytest
 
 from codex_workbench.app_server.correlation import AppServerRequestError
 from codex_workbench.app_server.transport import JsonObject, JsonValue
-from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference
+from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference, ThreadTitle
 from codex_workbench.runtime import WorkbenchRuntime
 from tests.helpers import build_settings
 
@@ -27,6 +27,18 @@ class ReconciliationMetadata:
 
     def repository_registration_state(self, _repository_id: str) -> str | None:
         return None
+
+    def resolve_thread_title(
+        self, thread_id: str, *, native_title: str | None, fallback_title: str, observed_at: int
+    ) -> ThreadTitle:
+        return ThreadTitle(
+            thread_id,
+            native_title or fallback_title,
+            "native" if native_title else "fallback",
+            observed_at,
+            "succeeded" if native_title else "idle",
+            None,
+        )
 
 
 @pytest.mark.asyncio
@@ -56,9 +68,7 @@ async def test_stale_thread_is_isolated_and_warning_is_deduplicated(
     metadata = ReconciliationMetadata(references)
     runtime = WorkbenchRuntime(settings, cast(MetadataRepository, metadata))
 
-    async def call(
-        method: str, params: JsonObject | None, *, owner: str
-    ) -> JsonValue:
+    async def call(method: str, params: JsonObject | None, *, owner: str) -> JsonValue:
         del method, owner
         assert params is not None
         if params["threadId"] == "stale-thread":

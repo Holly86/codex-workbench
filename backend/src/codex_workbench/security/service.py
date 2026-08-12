@@ -37,7 +37,10 @@ class SecurityService:
             window_seconds=settings.login_rate_limit_window_seconds,
             clock=monotonic_clock,
         )
-        self._database = Database(settings.database_path)
+        self._database = Database(
+            settings.database_path,
+            busy_timeout_ms=settings.sqlite_busy_timeout_ms,
+        )
         self._wall_clock = wall_clock
         self.sessions: SessionManager | None = None
         self.metadata: MetadataRepository | None = None

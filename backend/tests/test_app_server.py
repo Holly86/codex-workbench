@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -27,6 +28,7 @@ from codex_workbench.app_server.transport import (
     AppServerProtocolError,
     JsonObject,
     JsonScalar,
+    JsonValue,
     SubprocessJsonlTransport,
 )
 from codex_workbench.config import Settings
@@ -700,3 +702,163 @@ async def test_version_mismatch_fails_without_restart_loop(tmp_path: Path) -> No
     assert supervisor.status.generation == 0
     assert supervisor.status.restart_attempts == 0
     await supervisor.stop()
+
+
+class _WatchdogClient:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[str, JsonObject | None, str]] = []
+
+    async def call(
+        self, method: str, params: JsonObject | None, *, owner: str
+    ) -> JsonValue:
+        self.calls.append((method, params, owner))
+        if self.error is not None:
+            raise self.error
+        return {"data": [], "nextCursor": None}
+
+
+def _unit_supervisor(tmp_path: Path) -> AppServerSupervisor:
+    settings = build_settings(tmp_path).model_copy(
+        update={
+            "app_server_start_enabled": True,
+            "app_server_watchdog_enabled": True,
+            "app_server_watchdog_failure_threshold": 3,
+        }
+    )
+
+    async def noop_notification(_generation: int, _method: str, _params: JsonObject) -> None:
+        return None
+
+    async def noop_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def noop_disconnect(_generation: int, _error: BaseException) -> None:
+        return None
+
+    async def noop_ready(_generation: int) -> None:
+        return None
+
+    return AppServerSupervisor(
+        settings,
+        notification_handler=noop_notification,
+        server_request_handler=noop_request,
+        disconnect_handler=noop_disconnect,
+        ready_handler=noop_ready,
+    )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_uses_only_side_effect_free_core_probe_and_resets_failures(
+    tmp_path: Path,
+) -> None:
+    supervisor = _unit_supervisor(tmp_path)
+    client = _WatchdogClient()
+    supervisor._state = ProcessState.READY  # noqa: SLF001
+    supervisor._generation = 7  # noqa: SLF001
+    supervisor._client = cast(AppServerClient, client)  # noqa: SLF001
+    supervisor._consecutive_probe_failures = 2  # noqa: SLF001
+
+    await supervisor._run_watchdog_probe(7)  # noqa: SLF001
+
+    assert client.calls == [
+        ("thread/loaded/list", {"cursor": None, "limit": 1}, "__workbench_watchdog__")
+    ]
+    assert supervisor.status.consecutive_probe_failures == 0
+    assert supervisor.status.last_activity_at is not None
+
+
+@pytest.mark.asyncio
+async def test_watchdog_requires_three_consecutive_failures_before_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor = _unit_supervisor(tmp_path)
+    client = _WatchdogClient(AppServerRequestTimeoutError("private timeout detail"))
+    supervisor._state = ProcessState.READY  # noqa: SLF001
+    supervisor._generation = 4  # noqa: SLF001
+    supervisor._client = cast(AppServerClient, client)  # noqa: SLF001
+    scheduled: list[bool] = []
+
+    async def schedule(*, immediate: bool = False, request_followup: bool = True) -> bool:
+        del immediate, request_followup
+        scheduled.append(True)
+        return True
+
+    monkeypatch.setattr(supervisor, "_schedule_restart", schedule)
+    await supervisor._run_watchdog_probe(4)  # noqa: SLF001
+    await supervisor._run_watchdog_probe(4)  # noqa: SLF001
+    assert scheduled == []
+    await supervisor._run_watchdog_probe(4)  # noqa: SLF001
+    assert scheduled == [True]
+    assert supervisor.status.error_code == "watchdog_unresponsive"
+
+
+@pytest.mark.asyncio
+async def test_manual_restart_is_single_flight_and_shutdown_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    supervisor = _unit_supervisor(tmp_path)
+    supervisor._state = ProcessState.READY  # noqa: SLF001
+    supervisor._generation = 2  # noqa: SLF001
+    release = asyncio.Event()
+
+    async def restart_after(_delay: float) -> None:
+        await release.wait()
+
+    monkeypatch.setattr(supervisor, "_restart_after", restart_after)
+    first = await supervisor.request_restart()
+    second = await supervisor.request_restart()
+    assert (first, second) == ("started", "coalesced")
+    assert supervisor.status.restart_attempts == 1
+    release.set()
+    await asyncio.sleep(0)
+    await supervisor.stop()
+    with pytest.raises(RuntimeError, match="stopping"):
+        await supervisor.request_restart()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_stress_100_successful_probes_do_not_schedule_recovery(
+    tmp_path: Path,
+) -> None:
+    supervisor = _unit_supervisor(tmp_path)
+    client = _WatchdogClient()
+    supervisor._state = ProcessState.READY  # noqa: SLF001
+    supervisor._generation = 11  # noqa: SLF001
+    supervisor._client = cast(AppServerClient, client)  # noqa: SLF001
+    for _ in range(100):
+        await supervisor._run_watchdog_probe(11)  # noqa: SLF001
+    assert len(client.calls) == 100
+    assert supervisor.status.restart_attempts == 0
+    assert supervisor.status.state is ProcessState.READY
+
+
+@pytest.mark.asyncio
+async def test_watchdog_does_not_restart_for_permanent_json_rpc_rejection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    supervisor = _unit_supervisor(tmp_path)
+    client = _WatchdogClient(AppServerRequestError(-32601, "sensitive response"))
+    supervisor._state = ProcessState.READY  # noqa: SLF001
+    supervisor._generation = 12  # noqa: SLF001
+    supervisor._client = cast(AppServerClient, client)  # noqa: SLF001
+    scheduled = False
+
+    async def schedule(*, immediate: bool = False, request_followup: bool = True) -> bool:
+        del immediate, request_followup
+        nonlocal scheduled
+        scheduled = True
+        return True
+
+    monkeypatch.setattr(supervisor, "_schedule_restart", schedule)
+    caplog.set_level(logging.WARNING, logger="codex_workbench.app_server.supervisor")
+    for _ in range(3):
+        await supervisor._run_watchdog_probe(12)  # noqa: SLF001
+
+    assert scheduled is False
+    assert supervisor.status.error_code == "watchdog_probe_rejected"
+    assert "sensitive response" not in caplog.text
+    assert "runtime_probe_failed" in caplog.text
+    assert "recovery_suppressed" in caplog.text

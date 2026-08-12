@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 
 from codex_workbench.app_server.transport import JsonObject, JsonValue
-from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference
+from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference, ThreadTitle
 from codex_workbench.realtime.broker import RealtimeEnvelope
 from codex_workbench.runtime import (
     RuntimeConflictError,
@@ -20,6 +20,7 @@ class MemoryThreadMetadata:
     def __init__(self) -> None:
         self.threads: dict[str, ThreadReference] = {}
         self.audits: list[str] = []
+        self.titles: dict[str, ThreadTitle] = {}
 
     def upsert_thread(self, reference: ThreadReference) -> None:
         self.threads[reference.thread_id] = reference
@@ -27,11 +28,47 @@ class MemoryThreadMetadata:
     def get_thread(self, thread_id: str) -> ThreadReference | None:
         return self.threads.get(thread_id)
 
+    def get_thread_title(self, thread_id: str) -> ThreadTitle | None:
+        return self.titles.get(thread_id)
+
     def delete_thread(self, thread_id: str) -> None:
         self.threads.pop(thread_id, None)
 
     def audit(self, event_type: str, **_values: object) -> None:
         self.audits.append(event_type)
+
+    def resolve_thread_title(
+        self, thread_id: str, *, native_title: str | None, fallback_title: str, observed_at: int
+    ) -> ThreadTitle:
+        existing = self.titles.get(thread_id)
+        if existing is not None and existing.source == "manual":
+            return existing
+        title = ThreadTitle(
+            thread_id,
+            native_title or fallback_title,
+            "native" if native_title else "fallback",
+            observed_at,
+            "succeeded" if native_title else "idle",
+            None,
+        )
+        self.titles[thread_id] = title
+        return title
+
+    def set_thread_title(
+        self,
+        thread_id: str,
+        display_title: str,
+        *,
+        source: str,
+        updated_at: int,
+        generation_state: str = "succeeded",
+        error_code: str | None = None,
+    ) -> ThreadTitle:
+        title = ThreadTitle(
+            thread_id, display_title, source, updated_at, generation_state, error_code
+        )
+        self.titles[thread_id] = title
+        return title
 
 
 async def runtime_with_thread(
@@ -74,9 +111,7 @@ async def runtime_with_thread(
             "cwd": str(repository_path),
             "status": "running" if active else "idle",
             "turns": (
-                [{"id": "active-turn", "status": "inProgress", "items": []}]
-                if active
-                else []
+                [{"id": "active-turn", "status": "inProgress", "items": []}] if active else []
             ),
         },
         repository_id=repository.id,
@@ -100,13 +135,68 @@ async def runtime_with_thread(
 
 
 @pytest.mark.asyncio
+async def test_manual_title_uses_native_set_and_wins_over_later_native_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _repository_id, calls = await runtime_with_thread(tmp_path, monkeypatch)
+    browser = await runtime.set_thread_title(
+        "thread-delete-me", "owner-session", "  Manual   release title  "
+    )
+    assert calls[-1] == (
+        "thread/name/set",
+        {"threadId": "thread-delete-me", "name": "Manual release title"},
+    )
+    assert browser["name"] == "Manual release title"
+    assert browser["titleSource"] == "manual"
+
+    await runtime.projection.ingest_notification(
+        1,
+        "thread/name/updated",
+        {"threadId": "thread-delete-me", "threadName": "Stale native title"},
+    )
+    projected = runtime.projection.thread_browser_dict(
+        runtime.projection.require_thread("thread-delete-me")
+    )
+    assert projected["name"] == "Manual release title"
+    assert projected["titleSource"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_completed_turn_refreshes_native_title_without_visible_title_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _repository_id, calls = await runtime_with_thread(tmp_path, monkeypatch)
+
+    async def call(method: str, params: JsonObject | None, *, owner: str) -> JsonValue:
+        assert owner == "owner-session"
+        calls.append((method, params))
+        return {
+            "thread": {
+                "id": "thread-delete-me",
+                "name": "Runtime Recovery zuverlässig absichern",
+            }
+        }
+
+    monkeypatch.setattr(runtime, "_call", call)
+    await runtime._refresh_native_thread_title("thread-delete-me")  # noqa: SLF001
+
+    assert calls == [
+        ("thread/read", {"threadId": "thread-delete-me", "includeTurns": False})
+    ]
+    browser = runtime.projection.thread_browser_dict(
+        runtime.projection.require_thread("thread-delete-me")
+    )
+    assert browser["name"] == "Runtime Recovery zuverlässig absichern"
+    assert browser["titleSource"] == "native"
+    assert browser["titleGenerationState"] == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_delete_idle_thread_cleans_local_state_and_emits_realtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime, repository_id, calls = await runtime_with_thread(tmp_path, monkeypatch)
-    subscription, _replay, _missed, _latest = await runtime.broker.subscribe(
-        "owner-session", None
-    )
+    subscription, _replay, _missed, _latest = await runtime.broker.subscribe("owner-session", None)
 
     result = await runtime.delete_thread(
         thread_id="thread-delete-me",
@@ -132,9 +222,7 @@ async def test_delete_idle_thread_cleans_local_state_and_emits_realtime(
 async def test_delete_active_thread_is_blocked_before_native_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime, repository_id, calls = await runtime_with_thread(
-        tmp_path, monkeypatch, active=True
-    )
+    runtime, repository_id, calls = await runtime_with_thread(tmp_path, monkeypatch, active=True)
     with pytest.raises(RuntimeConflictError):
         await runtime.delete_thread(
             thread_id="thread-delete-me",

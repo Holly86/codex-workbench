@@ -43,6 +43,10 @@ class ProjectedThread:
     usage: JsonObject | None = None
     latest_diff: str | None = None
     repository_available: bool = True
+    title_source: str = "fallback"
+    title_updated_at: int = 0
+    title_generation_state: str = "idle"
+    title_error_code: str | None = None
 
 
 class DomainProjection:
@@ -87,7 +91,7 @@ class DomainProjection:
             repository_relative_path=repository_relative_path,
             session_id=session_id,
             preview=self._safe_text(raw_thread.get("preview"), 500),
-            name=self._optional_text(raw_thread.get("name"), 200),
+            name=self._clean_display_title(self._optional_text(raw_thread.get("name"), 200)),
             status=self._thread_status(raw_thread.get("status")),
             sandbox_mode=sandbox_mode,
             approval_policy=approval_policy,
@@ -124,7 +128,39 @@ class DomainProjection:
                 updated_at=updated,
             ),
         )
+        title = await asyncio.to_thread(
+            self._metadata.resolve_thread_title,
+            thread_id,
+            native_title=projection.name,
+            fallback_title=self._fallback_title(projection.preview),
+            observed_at=updated,
+        )
+        projection.name = title.display_title
+        projection.title_source = title.source
+        projection.title_updated_at = title.updated_at
+        projection.title_generation_state = title.generation_state
+        projection.title_error_code = title.error_code
         return projection
+
+    async def apply_thread_title(
+        self,
+        thread_id: str,
+        *,
+        display_title: str,
+        source: str,
+        updated_at: int,
+        generation_state: str = "succeeded",
+        error_code: str | None = None,
+    ) -> JsonObject:
+        async with self._lock:
+            thread = self.require_thread(thread_id)
+            thread.name = display_title
+            thread.title_source = source
+            thread.title_updated_at = updated_at
+            thread.title_generation_state = generation_state
+            thread.title_error_code = error_code
+            thread.updated_at = max(thread.updated_at, updated_at)
+            return self.thread_browser_dict(thread)
 
     async def set_permission_selection(
         self, thread_id: str, sandbox_mode: str, approval_policy: str
@@ -163,6 +199,28 @@ class DomainProjection:
             item_id = self._optional_text(params.get("itemId"), 200)
 
         event_type, payload = self._apply_notification(thread, method, params)
+        if method == "thread/name/updated":
+            title = await asyncio.to_thread(
+                self._metadata.resolve_thread_title,
+                thread.id,
+                native_title=self._clean_display_title(
+                    self._optional_text(params.get("threadName"), 200)
+                ),
+                fallback_title=self._fallback_title(thread.preview),
+                observed_at=int(time.time()),
+            )
+            thread.name = title.display_title
+            thread.title_source = title.source
+            thread.title_updated_at = title.updated_at
+            thread.title_generation_state = title.generation_state
+            thread.title_error_code = title.error_code
+            payload = {
+                "name": thread.name,
+                "titleSource": thread.title_source,
+                "titleUpdatedAt": thread.title_updated_at,
+                "titleGenerationState": thread.title_generation_state,
+                "titleErrorCode": thread.title_error_code,
+            }
         activity = self._activity.notification(thread_id, method, params)
         if event_type is not None:
             await self.broker.publish(
@@ -313,6 +371,13 @@ class DomainProjection:
             for thread in self._threads.values()
         )
 
+    def has_active_turns(self) -> bool:
+        return any(
+            thread.active_turn_id is not None
+            or thread.status in {"running", "awaiting_approval"}
+            for thread in self._threads.values()
+        )
+
     def thread_has_active_turn(self, thread_id: str) -> bool:
         thread = self._threads.get(thread_id)
         return thread is not None and (
@@ -341,6 +406,10 @@ class DomainProjection:
             "repositoryName": thread.repository_name,
             "preview": thread.preview,
             "name": thread.name,
+            "titleSource": thread.title_source,
+            "titleUpdatedAt": thread.title_updated_at,
+            "titleGenerationState": thread.title_generation_state,
+            "titleErrorCode": thread.title_error_code,
             "status": thread.status,
             "sandboxMode": thread.sandbox_mode,
             "approvalPolicy": thread.approval_policy,
@@ -854,6 +923,18 @@ class DomainProjection:
     @staticmethod
     def _optional_text(value: JsonValue | None, limit: int) -> str | None:
         return value[:limit] if isinstance(value, str) else None
+
+    @staticmethod
+    def _clean_display_title(value: str | None) -> str | None:
+        if value is None:
+            return None
+        title = " ".join(value.split()).strip(" \t\r\n\"'`#*_~")
+        title = title.removesuffix("...").strip()
+        return title[:80].rstrip() or None
+
+    @classmethod
+    def _fallback_title(cls, preview: str) -> str:
+        return cls._clean_display_title(preview) or "Neuer Thread"
 
     @staticmethod
     def _safe_int(value: JsonValue | None) -> int | None:

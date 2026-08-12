@@ -22,6 +22,16 @@ class ThreadReference:
 
 
 @dataclass(frozen=True, slots=True)
+class ThreadTitle:
+    thread_id: str
+    display_title: str
+    source: str
+    updated_at: int
+    generation_state: str
+    error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class UploadRecord:
     id: str
     owner_session_id: str
@@ -90,9 +100,119 @@ def _deploy_key_from_row(row: sqlite3.Row) -> DeployKeyRecord:
     )
 
 
+def _thread_title_from_row(row: sqlite3.Row) -> ThreadTitle:
+    return ThreadTitle(
+        thread_id=cast(str, row["thread_id"]),
+        display_title=cast(str, row["display_title"]),
+        source=cast(str, row["source"]),
+        updated_at=cast(int, row["updated_at"]),
+        generation_state=cast(str, row["generation_state"]),
+        error_code=cast(str | None, row["error_code"]),
+    )
+
+
 class MetadataRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
+
+    def database_quick_check(self) -> bool:
+        return self._database.quick_check()
+
+    def get_thread_title(self, thread_id: str) -> ThreadTitle | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM thread_titles WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+        return _thread_title_from_row(row) if row is not None else None
+
+    def resolve_thread_title(
+        self,
+        thread_id: str,
+        *,
+        native_title: str | None,
+        fallback_title: str,
+        observed_at: int,
+    ) -> ThreadTitle:
+        """Persist native/fallback display state without overwriting a manual title."""
+
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM thread_titles WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+            if row is not None and cast(str, row["source"]) == "manual":
+                return _thread_title_from_row(row)
+            if native_title is not None:
+                connection.execute(
+                    """
+                    INSERT INTO thread_titles(
+                        thread_id, display_title, source, updated_at,
+                        generation_state, error_code
+                    ) VALUES (?, ?, 'native', ?, 'succeeded', NULL)
+                    ON CONFLICT(thread_id) DO UPDATE SET
+                        display_title = excluded.display_title,
+                        source = 'native', updated_at = excluded.updated_at,
+                        generation_state = 'succeeded', error_code = NULL
+                    WHERE thread_titles.source != 'manual'
+                    """,
+                    (thread_id, native_title, observed_at),
+                )
+            elif row is None:
+                connection.execute(
+                    """
+                    INSERT INTO thread_titles(
+                        thread_id, display_title, source, updated_at,
+                        generation_state, error_code
+                    ) VALUES (?, ?, 'fallback', ?, 'idle', NULL)
+                    """,
+                    (thread_id, fallback_title, observed_at),
+                )
+            resolved = connection.execute(
+                "SELECT * FROM thread_titles WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+        if resolved is None:
+            raise RuntimeError("thread title could not be resolved")
+        return _thread_title_from_row(resolved)
+
+    def set_thread_title(
+        self,
+        thread_id: str,
+        display_title: str,
+        *,
+        source: str,
+        updated_at: int,
+        generation_state: str = "succeeded",
+        error_code: str | None = None,
+    ) -> ThreadTitle:
+        if source not in {"native", "ai", "manual", "fallback"}:
+            raise ValueError("invalid title source")
+        with self._database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO thread_titles(
+                    thread_id, display_title, source, updated_at,
+                    generation_state, error_code
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(thread_id) DO UPDATE SET
+                    display_title = excluded.display_title, source = excluded.source,
+                    updated_at = excluded.updated_at,
+                    generation_state = excluded.generation_state,
+                    error_code = excluded.error_code
+                """,
+                (
+                    thread_id,
+                    display_title,
+                    source,
+                    updated_at,
+                    generation_state,
+                    error_code,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM thread_titles WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("thread title could not be stored")
+        return _thread_title_from_row(row)
 
     def upsert_thread(self, reference: ThreadReference) -> None:
         with self._database.connect() as connection:

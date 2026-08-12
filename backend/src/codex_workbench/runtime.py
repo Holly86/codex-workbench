@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from codex_workbench import __version__
 from codex_workbench.app_server.correlation import (
     AppServerDisconnectedError,
     AppServerRequestError,
@@ -35,10 +38,11 @@ from codex_workbench.git_service import (
 )
 from codex_workbench.host_capabilities import detect_sandbox_capabilities
 from codex_workbench.jobs import BackgroundJobRegistry
-from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference
+from codex_workbench.persistence.metadata import MetadataRepository, ThreadReference, ThreadTitle
 from codex_workbench.realtime.broker import RealtimeBroker
 from codex_workbench.repositories import RepositoryDiscovery, RepositorySummary
 from codex_workbench.security.rate_limit import LoginRateLimiter, RateLimitDecision
+from codex_workbench.service_status import ComponentStatus, ServiceState, SystemStatus
 from codex_workbench.uploads import UploadService
 
 logger = logging.getLogger("codex_workbench.runtime")
@@ -111,6 +115,7 @@ class WorkbenchRuntime:
         )
         self._thread_mutations: dict[str, asyncio.Lock] = {}
         self._approval_expiry_tasks: dict[str, asyncio.Task[None]] = {}
+        self._title_refresh_tasks: dict[str, asyncio.Task[None]] = {}
         self._capability_cache: dict[str, CapabilityCacheEntry] = {}
         self._capability_flights: dict[str, asyncio.Task[JsonObject]] = {}
         self._capability_circuits: dict[tuple[str, str], CapabilityCircuit] = {}
@@ -123,6 +128,7 @@ class WorkbenchRuntime:
             global_limit=settings.mutation_rate_limit_global_requests,
             window_seconds=settings.mutation_rate_limit_window_seconds,
         )
+        self._manual_restart_session_id: str | None = None
 
     @property
     def app_server_ready(self) -> bool:
@@ -151,6 +157,11 @@ class WorkbenchRuntime:
 
     async def stop(self) -> None:
         await self.jobs.stop()
+        for task in self._title_refresh_tasks.values():
+            task.cancel()
+        if self._title_refresh_tasks:
+            await asyncio.gather(*self._title_refresh_tasks.values(), return_exceptions=True)
+        self._title_refresh_tasks.clear()
         for task in self._approval_expiry_tasks.values():
             task.cancel()
         if self._approval_expiry_tasks:
@@ -357,6 +368,239 @@ class WorkbenchRuntime:
 
     def consume_mutation(self, session_id: str) -> RateLimitDecision:
         return self._mutation_limiter.consume(session_id)
+
+    async def system_status(self) -> SystemStatus:
+        """Build an authenticated, content-free operator status snapshot."""
+
+        observed_at = int(time.time())
+        supervisor = self.supervisor.status
+        app_state = {
+            ProcessState.READY: ServiceState.HEALTHY,
+            ProcessState.RESTARTING: ServiceState.RECOVERING,
+            ProcessState.CHECKING: ServiceState.RECOVERING,
+            ProcessState.STARTING: ServiceState.RECOVERING,
+            ProcessState.INITIALIZING: ServiceState.RECOVERING,
+            ProcessState.FAILED: ServiceState.FAILED,
+            ProcessState.DRAINING: ServiceState.BLOCKED,
+            ProcessState.STOPPED: ServiceState.BLOCKED,
+        }[supervisor.state]
+        if not self.settings.app_server_start_enabled:
+            app_state = ServiceState.BLOCKED
+        elif app_state is ServiceState.HEALTHY and supervisor.error_code is not None:
+            app_state = ServiceState.DEGRADED
+
+        database_ready = await asyncio.to_thread(self.metadata.database_quick_check)
+        repository_state = self._storage_state(self.settings.repositories_root)
+        upload_state = self._storage_state(self.settings.uploads_dir)
+        _stream_count, connection_count = self.broker.status_counts()
+        active_jobs, queued_jobs, failed_jobs = await self.jobs.status_counts()
+        jobs_state = (
+            ServiceState.DEGRADED if failed_jobs > 0 else ServiceState.HEALTHY
+        )
+        plugin_state = (
+            ServiceState.BLOCKED
+            if not self.settings.plugin_discovery_enabled
+            else ServiceState.DEGRADED
+            if any(key[0] == "plugin/list" for key in self._capability_circuits)
+            else ServiceState.HEALTHY
+        )
+        components = (
+            ComponentStatus(
+                component="backend_http",
+                state=ServiceState.HEALTHY,
+                observedAt=observed_at,
+                lastSuccessAt=observed_at,
+            ),
+            ComponentStatus(
+                component="codex_app_server",
+                state=app_state,
+                observedAt=observed_at,
+                errorCode=supervisor.error_code,
+                lastSuccessAt=supervisor.last_ready_at,
+                lastRecoveryAt=supervisor.last_recovery_at,
+                nextRecoveryAt=supervisor.next_recovery_at,
+                generation=supervisor.generation,
+                restartAttempts=supervisor.restart_attempts,
+                restartLimit=self.settings.app_server_restart_limit,
+                enabled=self.settings.app_server_start_enabled,
+            ),
+            ComponentStatus(
+                component="realtime_websocket",
+                state=(
+                    ServiceState.HEALTHY
+                    if connection_count > 0
+                    else ServiceState.UNKNOWN
+                ),
+                observedAt=observed_at,
+                connectionCount=connection_count,
+            ),
+            ComponentStatus(
+                component="sqlite_metadata",
+                state=ServiceState.HEALTHY if database_ready else ServiceState.FAILED,
+                observedAt=observed_at,
+                errorCode=None if database_ready else "database_quick_check_failed",
+            ),
+            ComponentStatus(
+                component="repository_root",
+                state=repository_state,
+                observedAt=observed_at,
+                errorCode=(
+                    "storage_unavailable"
+                    if repository_state is ServiceState.FAILED
+                    else "storage_capacity_low"
+                    if repository_state is ServiceState.DEGRADED
+                    else None
+                ),
+            ),
+            ComponentStatus(
+                component="upload_storage",
+                state=upload_state,
+                observedAt=observed_at,
+                errorCode=(
+                    "storage_unavailable"
+                    if upload_state is ServiceState.FAILED
+                    else "storage_capacity_low"
+                    if upload_state is ServiceState.DEGRADED
+                    else None
+                ),
+            ),
+            ComponentStatus(
+                component="background_jobs",
+                state=jobs_state,
+                observedAt=observed_at,
+                activeCount=active_jobs,
+                queuedCount=queued_jobs,
+                failedCount=failed_jobs,
+            ),
+            ComponentStatus(
+                component="plugin_discovery",
+                state=plugin_state,
+                observedAt=observed_at,
+                errorCode=(
+                    "plugin_discovery_degraded"
+                    if plugin_state is ServiceState.DEGRADED
+                    else None
+                ),
+                optional=True,
+                enabled=self.settings.plugin_discovery_enabled,
+            ),
+        )
+        required_states = [component.state for component in components if not component.optional]
+        overall = (
+            ServiceState.FAILED
+            if ServiceState.FAILED in required_states
+            else ServiceState.RECOVERING
+            if ServiceState.RECOVERING in required_states
+            else ServiceState.DEGRADED
+            if ServiceState.DEGRADED in required_states
+            else ServiceState.DEGRADED
+            if ServiceState.UNKNOWN in required_states
+            else ServiceState.BLOCKED
+            if ServiceState.BLOCKED in required_states
+            else ServiceState.HEALTHY
+        )
+        return SystemStatus(
+            status=overall,
+            workbenchVersion=__version__,
+            codexVersion=supervisor.version,
+            observedAt=observed_at,
+            components=components,
+        )
+
+    async def restart_app_server(self, session_id: str, confirmation: str) -> str:
+        if confirmation != "CODEX RUNTIME NEU STARTEN":
+            raise ValueError("manual restart confirmation does not match")
+        if not self.settings.app_server_start_enabled:
+            raise RuntimeUnavailableError("app-server startup is disabled")
+        if self.projection.has_active_turns():
+            raise RuntimeConflictError(
+                "Die Codex Runtime kann während eines aktiven Turns nicht neu gestartet werden."
+            )
+        try:
+            result = await self.supervisor.request_restart()
+        except RuntimeError as exc:
+            raise RuntimeUnavailableError("app-server restart is unavailable") from exc
+        if result == "blocked":
+            raise RuntimeUnavailableError("app-server restart budget is exhausted")
+        generation = self.supervisor.status.generation
+        self._manual_restart_session_id = session_id
+        await self.projection.connection_state("reconnecting", generation, "manual_restart")
+        await asyncio.to_thread(
+            self.metadata.audit,
+            "app_server_restart_requested",
+            occurred_at=int(time.time()),
+            session_id=session_id,
+        )
+        logger.warning(
+            "manual_runtime_restart_requested",
+            extra={
+                "component": "codex_app_server",
+                "generation": generation,
+                "state": "recovering",
+            },
+        )
+        return result
+
+    async def set_thread_title(
+        self, thread_id: str, session_id: str, display_title: str
+    ) -> JsonObject:
+        """Set one native title and persist manual precedence across reconciliation."""
+
+        thread = self.projection.require_thread(thread_id)
+        if thread.session_id != session_id:
+            raise ThreadUnavailableError("thread is unavailable")
+        title = " ".join(display_title.split()).strip(" \t\r\n\"'`#*_~")
+        title = title.removesuffix("...").strip()
+        if not title or len(title) > 80:
+            raise ValueError("thread title is invalid")
+        async with self._thread_mutations.setdefault(thread_id, asyncio.Lock()):
+            await self._call(
+                "thread/name/set",
+                {"threadId": thread_id, "name": title},
+                owner=session_id,
+            )
+            updated_at = int(time.time())
+            stored = await asyncio.to_thread(
+                self.metadata.set_thread_title,
+                thread_id,
+                title,
+                source="manual",
+                updated_at=updated_at,
+            )
+            browser = await self.projection.apply_thread_title(
+                thread_id,
+                display_title=stored.display_title,
+                source=stored.source,
+                updated_at=stored.updated_at,
+                generation_state=stored.generation_state,
+                error_code=stored.error_code,
+            )
+        await self.broker.publish(
+            session_id,
+            "thread.name",
+            {
+                "name": stored.display_title,
+                "titleSource": stored.source,
+                "titleUpdatedAt": stored.updated_at,
+                "titleGenerationState": stored.generation_state,
+                "titleErrorCode": stored.error_code,
+            },
+            thread_id=thread_id,
+        )
+        return browser
+
+    def _storage_state(self, path: Path) -> ServiceState:
+        if not path.is_dir() or not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+            return ServiceState.FAILED
+        try:
+            free = shutil.disk_usage(path).free
+        except OSError:
+            return ServiceState.FAILED
+        return (
+            ServiceState.DEGRADED
+            if free < self.settings.storage_warning_free_bytes
+            else ServiceState.HEALTHY
+        )
 
     async def capabilities(
         self,
@@ -1175,6 +1419,121 @@ class WorkbenchRuntime:
                 )
                 for record in invalidated:
                     await self.projection.publish_approval_resolved(thread_id, record.id)
+                if thread_id not in self._title_refresh_tasks:
+                    task = asyncio.create_task(
+                        self._refresh_native_thread_title(thread_id),
+                        name="thread-title-refresh",
+                    )
+                    self._title_refresh_tasks[thread_id] = task
+
+                    def forget_title_refresh(_completed: asyncio.Task[None]) -> None:
+                        self._title_refresh_tasks.pop(thread_id, None)
+
+                    task.add_done_callback(forget_title_refresh)
+
+    async def _refresh_native_thread_title(self, thread_id: str) -> None:
+        """Refresh Codex's native title after a completed turn without creating a turn."""
+
+        try:
+            thread = self.projection.require_thread(thread_id)
+            stored = await asyncio.to_thread(self.metadata.get_thread_title, thread_id)
+            if stored is None or stored.source == "manual":
+                return
+            pending = await asyncio.to_thread(
+                self.metadata.set_thread_title,
+                thread_id,
+                stored.display_title,
+                source=stored.source,
+                updated_at=int(time.time()),
+                generation_state="pending",
+                error_code=None,
+            )
+            await self._publish_thread_title(thread_id, thread.session_id, pending)
+            result = await self._call(
+                "thread/read",
+                {"threadId": thread_id, "includeTurns": False},
+                owner=thread.session_id,
+            )
+            response = self._object(result, "thread/read title refresh result")
+            raw_thread = self._object(response.get("thread"), "thread/read title refresh thread")
+            if raw_thread.get("id") != thread_id:
+                raise ValueError("thread title refresh returned a different thread")
+            raw_name = raw_thread.get("name")
+            native_title = self._clean_thread_title(raw_name if isinstance(raw_name, str) else None)
+            if native_title is None:
+                unavailable = await asyncio.to_thread(
+                    self.metadata.set_thread_title,
+                    thread_id,
+                    pending.display_title,
+                    source=pending.source,
+                    updated_at=int(time.time()),
+                    generation_state="unavailable",
+                    error_code="native_title_unavailable",
+                )
+                await self._publish_thread_title(thread_id, thread.session_id, unavailable)
+                return
+            resolved = await asyncio.to_thread(
+                self.metadata.resolve_thread_title,
+                thread_id,
+                native_title=native_title,
+                fallback_title=pending.display_title,
+                observed_at=int(time.time()),
+            )
+            await self._publish_thread_title(thread_id, thread.session_id, resolved)
+        except asyncio.CancelledError:
+            raise
+        except (AppServerRequestError, AppServerRequestTimeoutError, AppServerDisconnectedError):
+            await self._mark_title_refresh_failed(thread_id, "native_title_refresh_failed")
+        except (RuntimeUnavailableError, RuntimeError, ValueError):
+            await self._mark_title_refresh_failed(thread_id, "native_title_refresh_invalid")
+
+    async def _mark_title_refresh_failed(self, thread_id: str, error_code: str) -> None:
+        stored = await asyncio.to_thread(self.metadata.get_thread_title, thread_id)
+        if stored is None or stored.source == "manual":
+            return
+        failed = await asyncio.to_thread(
+            self.metadata.set_thread_title,
+            thread_id,
+            stored.display_title,
+            source=stored.source,
+            updated_at=int(time.time()),
+            generation_state="failed",
+            error_code=error_code,
+        )
+        thread = self.projection.require_thread(thread_id)
+        await self._publish_thread_title(thread_id, thread.session_id, failed)
+
+    async def _publish_thread_title(
+        self, thread_id: str, session_id: str, stored: ThreadTitle
+    ) -> None:
+        await self.projection.apply_thread_title(
+            thread_id,
+            display_title=stored.display_title,
+            source=stored.source,
+            updated_at=stored.updated_at,
+            generation_state=stored.generation_state,
+            error_code=stored.error_code,
+        )
+        await self.broker.publish(
+            session_id,
+            "thread.name",
+            {
+                "name": stored.display_title,
+                "titleSource": stored.source,
+                "titleUpdatedAt": stored.updated_at,
+                "titleGenerationState": stored.generation_state,
+                "titleErrorCode": stored.error_code,
+            },
+            thread_id=thread_id,
+        )
+
+    @staticmethod
+    def _clean_thread_title(value: str | None) -> str | None:
+        if value is None:
+            return None
+        title = " ".join(value.split()).strip(" \t\r\n\"'`#*_~")
+        title = title.removesuffix("...").strip()
+        return title[:80].rstrip() or None
 
     async def _on_job_updated(self, session_id: str, job: JsonObject) -> None:
         await self.broker.publish(session_id, "job.updated", job)
@@ -1223,9 +1582,39 @@ class WorkbenchRuntime:
         await self.projection.connection_state("connected", generation)
         if generation > 1:
             await self._reconcile()
+        session_id = self._manual_restart_session_id
+        if session_id is not None:
+            self._manual_restart_session_id = None
+            await asyncio.to_thread(
+                self.metadata.audit,
+                "app_server_restart_completed",
+                occurred_at=int(time.time()),
+                session_id=session_id,
+            )
+            logger.info(
+                "manual_runtime_restart_completed",
+                extra={
+                    "component": "codex_app_server",
+                    "generation": generation,
+                    "state": "healthy",
+                    "succeeded": True,
+                },
+            )
 
     async def _on_terminal_failure(self, generation: int, error_code: str) -> None:
         await self.projection.connection_state("failed", generation, error_code)
+        if self._manual_restart_session_id is not None:
+            self._manual_restart_session_id = None
+            logger.warning(
+                "manual_runtime_restart_completed",
+                extra={
+                    "component": "codex_app_server",
+                    "generation": generation,
+                    "error_code": error_code,
+                    "state": "failed",
+                    "succeeded": False,
+                },
+            )
 
     async def _expire_approval(self, record: ApprovalRecord) -> None:
         try:
@@ -1346,7 +1735,9 @@ class WorkbenchRuntime:
             raise RuntimeUnavailableError("app-server is not ready")
         generation = self.supervisor.status.generation
         try:
-            return await self.supervisor.client.call(method, params, owner=owner)
+            result = await self.supervisor.client.call(method, params, owner=owner)
+            self.supervisor.note_activity(generation)
+            return result
         except AppServerRequestError as exc:
             logger.warning(
                 "app_server_request_error",
@@ -1373,7 +1764,9 @@ class WorkbenchRuntime:
             client = self.supervisor.client_for_generation(generation)
         except RuntimeError as exc:
             raise RuntimeUnavailableError("app-server generation is not ready") from exc
-        return await client.call(method, params, owner=owner)
+        result = await client.call(method, params, owner=owner)
+        self.supervisor.note_activity(generation)
+        return result
 
     @staticmethod
     def _object(value: JsonValue | None, label: str) -> JsonObject:

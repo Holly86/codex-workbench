@@ -136,6 +136,13 @@ class RealtimeBroker:
         stream = self._sessions.get(session_id)
         return 0 if stream is None else stream.next_sequence - 1
 
+    def status_counts(self) -> tuple[int, int]:
+        """Return aggregate, non-identifying stream and connection counts."""
+
+        return len(self._sessions), sum(
+            len(stream.subscribers) for stream in self._sessions.values()
+        )
+
     def _stream(self, session_id: str) -> _SessionStream:
         stream = self._sessions.get(session_id)
         if stream is None:

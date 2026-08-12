@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
+from codex_workbench.app_server.transport import JsonObject, JsonValue
 from codex_workbench.repositories import RepositoryDiscovery
 
 if TYPE_CHECKING:
@@ -360,6 +361,25 @@ class GitService:
             "observedAt": int(time.time()),
         }
 
+    async def branches(self, repository_id: str) -> JsonObject:
+        """Return a typed local/remote branch inventory without command output."""
+
+        result = await self.run(repository_id, "branches")
+        if result.exit_code != 0:
+            raise GitOperationError("branch inventory failed")
+        local: list[JsonValue] = []
+        remote: list[JsonValue] = []
+        for line in result.output.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 3:
+                continue
+            name, full_ref, head = fields
+            if not name or name.endswith("/HEAD"):
+                continue
+            item: JsonObject = {"name": name, "current": head == "*"}
+            (remote if full_ref.startswith("refs/remotes/") else local).append(item)
+        return {"local": local, "remote": remote}
+
     async def github_capability(self, repository_id: str | None = None) -> dict[str, object]:
         executable = shutil.which("gh")
         if executable is None:
@@ -567,7 +587,15 @@ class GitService:
         if action == "push":
             return (("push",), True)
         if action == "branches":
-            return (("branch", "--format=%(refname:short)\t%(HEAD)\t%(upstream:short)"), False)
+            return (
+                (
+                    "for-each-ref",
+                    "--format=%(refname:short)\t%(refname)\t%(HEAD)",
+                    "refs/heads",
+                    "refs/remotes",
+                ),
+                False,
+            )
         if action == "remotes":
             return (("remote", "-v"), False)
         if action == "log":

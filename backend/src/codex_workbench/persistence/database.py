@@ -132,6 +132,21 @@ _MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON deploy_key_credentials(repository_id);
         """,
     ),
+    (
+        6,
+        """
+        CREATE TABLE thread_titles (
+            thread_id TEXT PRIMARY KEY REFERENCES workbench_threads(thread_id) ON DELETE CASCADE,
+            display_title TEXT NOT NULL,
+            source TEXT NOT NULL CHECK(source IN ('native', 'ai', 'manual', 'fallback')),
+            updated_at INTEGER NOT NULL,
+            generation_state TEXT NOT NULL CHECK(
+                generation_state IN ('idle', 'pending', 'succeeded', 'failed', 'unavailable')
+            ),
+            error_code TEXT
+        );
+        """,
+    ),
 )
 
 
@@ -142,8 +157,9 @@ class DatabaseError(RuntimeError):
 class Database:
     """Own SQLite connection setup and forward-only schema migrations."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, busy_timeout_ms: int = 5000) -> None:
         self.path = path
+        self._busy_timeout_ms = busy_timeout_ms
 
     def initialize(self) -> None:
         if not self.path.parent.is_dir():
@@ -176,6 +192,11 @@ class Database:
                         f"BEGIN IMMEDIATE;\n{sql}\n"
                         f"INSERT INTO schema_migrations(version) VALUES ({version});\nCOMMIT;"
                     )
+                result = connection.execute("PRAGMA quick_check").fetchone()
+                if result is None or result[0] != "ok":
+                    raise DatabaseError("database integrity check failed")
+        except DatabaseError:
+            raise
         except sqlite3.Error as exc:
             raise DatabaseError("database initialization failed") from exc
 
@@ -186,9 +207,10 @@ class Database:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = sqlite3.connect(self.path, timeout=self._busy_timeout_ms / 1000)
         try:
             connection.row_factory = sqlite3.Row
+            connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = FULL")
@@ -199,3 +221,13 @@ class Database:
             raise
         finally:
             connection.close()
+
+    def quick_check(self) -> bool:
+        """Run SQLite's non-destructive quick integrity check."""
+
+        try:
+            with self.connect() as connection:
+                row = connection.execute("PRAGMA quick_check").fetchone()
+            return row is not None and row[0] == "ok"
+        except sqlite3.Error:
+            return False

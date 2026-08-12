@@ -63,6 +63,10 @@ class ThreadDeleteRequest(StrictModel):
     repositoryId: Annotated[str, Field(pattern=r"^[0-9a-f]{16}$")]
 
 
+class ThreadTitleRequest(StrictModel):
+    name: Annotated[str, Field(min_length=1, max_length=80)]
+
+
 class ImageReference(StrictModel):
     uploadId: Annotated[str, Field(pattern=r"^upload_[A-Za-z0-9_-]{20,100}$")]
     detail: Literal["auto", "low", "high", "original"] = "auto"
@@ -561,6 +565,15 @@ async def git_status(repository_id: str, request: Request) -> JSONResponse:
         return _safe_error(exc)
 
 
+@router.get("/repositories/{repository_id}/git/branches")
+async def git_branches(repository_id: str, request: Request) -> JSONResponse:
+    try:
+        _session(request)
+        return JSONResponse(await _runtime(request).git.branches(repository_id))
+    except Exception as exc:
+        return _safe_error(exc)
+
+
 @router.patch("/repositories/{repository_id}")
 async def update_repository(
     repository_id: str, payload: RepositoryPreferencesRequest, request: Request
@@ -730,6 +743,22 @@ async def resume_thread(
             confirmation_id=payload.confirmationId,
         )
         return JSONResponse({"thread": thread})
+    except Exception as exc:
+        return _safe_error(exc)
+
+
+@router.patch("/threads/{thread_id}/title")
+async def set_thread_title(
+    thread_id: str, payload: ThreadTitleRequest, request: Request
+) -> JSONResponse:
+    runtime, session = _runtime(request), _session(request)
+    limited = _mutation_allowed(runtime, session.id)
+    if limited is not None:
+        return limited
+    try:
+        return JSONResponse(
+            {"thread": await runtime.set_thread_title(thread_id, session.id, payload.name)}
+        )
     except Exception as exc:
         return _safe_error(exc)
 
