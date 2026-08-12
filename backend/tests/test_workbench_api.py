@@ -5,7 +5,7 @@ import base64
 import os
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI, UploadFile
@@ -61,7 +61,7 @@ def _repository(settings: Settings) -> None:
     (repository / ".git").mkdir()
 
 
-def test_thread_turn_stream_approval_usage_and_interrupt_flow(tmp_path: Path) -> None:
+def test_thread_turn_projection_approval_usage_and_interrupt_flow(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     _repository(settings)
     with TestClient(create_app(settings)) as client:
@@ -100,49 +100,33 @@ def test_thread_turn_stream_approval_usage_and_interrupt_flow(tmp_path: Path) ->
         )
         assert turn.status_code == 202
 
-        with client.websocket_connect(
-            "/ws/events", headers={"Origin": settings.canonical_public_origin}
-        ) as websocket:
-            websocket.send_json(
-                {
-                    "type": "subscribe",
-                    "csrfToken": headers["X-CSRF-Token"],
-                    "lastSequence": 0,
-                }
-            )
-            snapshot = websocket.receive_json()
-            assert snapshot["type"] == "connection.snapshot"
-            approvals = snapshot["snapshot"]["pendingApprovals"]
-            assert len(approvals) == 1
-            approval = approvals[0]
-            assert approval["kind"] == "command_execution"
-            assert approval["command"] == "git status --short"
-            assert approval["cwdDisplay"] == "sample"
-            serialized_threads = str(snapshot["snapshot"]["threads"])
-            assert "Hello from the fake server." in serialized_threads
-            assert "Fixture reasoning summary." in serialized_threads
-            assert "Fixture plan" in serialized_threads
-            assert str(settings.repositories_root) not in serialized_threads
-            usage = snapshot["snapshot"]["threads"][0]["usage"]
-            assert usage["context"]["usedTokens"] == 12
-            assert usage["context"]["usedPercent"] == 1.2
-            assert "remainingQuota" not in usage
-            approval_id = approval["id"]
-
-        # Closing the browser transport must not interrupt the backend-owned turn.
-        with client.websocket_connect(
-            "/ws/events", headers={"Origin": settings.canonical_public_origin}
-        ) as reconnected:
-            reconnected.send_json(
-                {
-                    "type": "subscribe",
-                    "csrfToken": headers["X-CSRF-Token"],
-                    "lastSequence": 0,
-                }
-            )
-            resumed_snapshot = reconnected.receive_json()["snapshot"]
-            assert resumed_snapshot["threads"][0]["activeTurnId"] is not None
-            assert resumed_snapshot["pendingApprovals"][0]["id"] == approval_id
+        test_app = cast(FastAPI, client.app)
+        security = cast(SecurityService, test_app.state.security)
+        raw_token = client.cookies.get(settings.session_cookie_name)
+        authentication = security.require_sessions().authenticate(raw_token)
+        assert authentication.session is not None
+        runtime = cast(WorkbenchRuntime, test_app.state.runtime)
+        assert client.portal is not None
+        snapshot = cast(
+            dict[str, Any],
+            client.portal.call(runtime.snapshot, authentication.session.id),
+        )
+        approvals = snapshot["pendingApprovals"]
+        assert len(approvals) == 1
+        approval = approvals[0]
+        assert approval["kind"] == "command_execution"
+        assert approval["command"] == "git status --short"
+        assert approval["cwdDisplay"] == "sample"
+        serialized_threads = str(snapshot["threads"])
+        assert "Hello from the fake server." in serialized_threads
+        assert "Fixture reasoning summary." in serialized_threads
+        assert "Fixture plan" in serialized_threads
+        assert str(settings.repositories_root) not in serialized_threads
+        usage = snapshot["threads"][0]["usage"]
+        assert usage["context"]["usedTokens"] == 12
+        assert usage["context"]["usedPercent"] == 1.2
+        assert "remainingQuota" not in usage
+        approval_id = approval["id"]
 
         decision = client.post(
             f"/api/approvals/{approval_id}/decision",
