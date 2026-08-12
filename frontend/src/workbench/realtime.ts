@@ -10,6 +10,11 @@ import type {
   ThreadView,
   Turn,
 } from "./types";
+import {
+  advanceRecoveryEpisodes,
+  initialRecoveryEpisodeState,
+} from "./recoveryEpisodes";
+import type { RecoveryEpisodeState } from "./recoveryEpisodes";
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
 
@@ -32,6 +37,7 @@ export interface RealtimeState {
   missedEvents: boolean;
   timeline: Record<string, TimelineEntry[]>;
   jobs: NativeJob[];
+  recoveryEpisodes: RecoveryEpisodeState;
 }
 
 const unavailableRates: RateLimits = { available: false, observedAt: 0 };
@@ -47,6 +53,7 @@ export const initialRealtimeState: RealtimeState = {
   missedEvents: false,
   timeline: {},
   jobs: [],
+  recoveryEpisodes: initialRecoveryEpisodeState,
 };
 
 export type Action =
@@ -402,6 +409,11 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
     };
   }
 
+  const recoveryEpisodes = advanceRecoveryEpisodes(
+    state.recoveryEpisodes,
+    { runtime: state.processConnection, realtime: state.connection },
+    { runtime: processConnection, realtime: state.connection },
+  );
   return {
     ...state,
     threads,
@@ -410,13 +422,22 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
     processConnection,
     generation,
     jobs,
+    recoveryEpisodes,
     timeline,
     lastSequence: event.sequence,
   };
 }
 
 export function reducer(state: RealtimeState, action: Action): RealtimeState {
-  if (action.type === "socket") return { ...state, connection: action.state };
+  if (action.type === "socket") return {
+    ...state,
+    connection: action.state,
+    recoveryEpisodes: advanceRecoveryEpisodes(
+      state.recoveryEpisodes,
+      { runtime: state.processConnection, realtime: state.connection },
+      { runtime: state.processConnection, realtime: action.state },
+    ),
+  };
   if (action.type === "threads") return { ...state, threads: action.threads };
   if (action.type === "repositoryThreads") return {
     ...state,
@@ -437,17 +458,24 @@ export function reducer(state: RealtimeState, action: Action): RealtimeState {
   }
   if (action.type === "jobs") return { ...state, jobs: action.jobs };
   if (action.type === "snapshot") {
+    const processConnection = action.snapshot.connection.state;
+    const connection = "connected";
     return {
       ...state,
       threads: action.snapshot.threads,
       approvals: action.snapshot.pendingApprovals,
       rateLimits: action.snapshot.rateLimits,
-      processConnection: action.snapshot.connection.state,
+      processConnection,
       generation: action.snapshot.connection.generation,
-      connection: "connected",
+      connection,
       lastSequence: action.latest,
       missedEvents: action.missed,
       jobs: action.snapshot.jobs ?? [],
+      recoveryEpisodes: advanceRecoveryEpisodes(
+        state.recoveryEpisodes,
+        { runtime: state.processConnection, realtime: state.connection },
+        { runtime: processConnection, realtime: connection },
+      ),
     };
   }
   if (action.type === "events") {

@@ -78,6 +78,45 @@ describe("realtime streaming reducer", () => {
     expect(state.jobs).toEqual([]);
   });
 
+  it("creates a new realtime recovery episode after reconnect in the same generation", () => {
+    let state = reducer(initialRealtimeState, { type: "socket", state: "connected" });
+    state = reducer(state, { type: "socket", state: "disconnected" });
+    const first = state.recoveryEpisodes.realtime;
+    expect(first?.state).toBe("failed");
+    state = reducer(state, { type: "socket", state: "reconnecting" });
+    expect(state.recoveryEpisodes.realtime?.id).toBe(first?.id);
+    expect(state.recoveryEpisodes.realtime?.state).toBe("recovering");
+    state = reducer(state, { type: "socket", state: "connected" });
+    expect(state.recoveryEpisodes.realtime).toBeNull();
+    state = reducer(state, { type: "socket", state: "disconnected" });
+    expect(state.generation).toBe(0);
+    expect(state.recoveryEpisodes.realtime?.id).not.toBe(first?.id);
+  });
+
+  it("creates a new runtime episode after recovery without changing generation", () => {
+    const connected = {
+      ...initialRealtimeState,
+      processConnection: "ready",
+      connection: "connected" as const,
+    };
+    const failedEvent = (sequence: number, state: string): EventEnvelope => ({
+      sequence,
+      occurredAt: "2026-01-01T00:00:00Z",
+      type: "connection.state",
+      payload: { state, generation: 7 },
+      threadId: null,
+      turnId: null,
+      itemId: null,
+    });
+    let state = reducer(connected, { type: "event", event: failedEvent(1, "failed") });
+    const first = state.recoveryEpisodes.runtime;
+    state = reducer(state, { type: "event", event: failedEvent(2, "ready") });
+    expect(state.recoveryEpisodes.runtime).toBeNull();
+    state = reducer(state, { type: "event", event: failedEvent(3, "recovering") });
+    expect(state.generation).toBe(7);
+    expect(state.recoveryEpisodes.runtime?.id).not.toBe(first?.id);
+  });
+
   it("projects a reproducible long conversation batch without losing final text", () => {
     const state = { ...initialRealtimeState, threads: [thread] };
     const events = Array.from({ length: 5_000 }, (_, index) => delta(index + 1, "x"));

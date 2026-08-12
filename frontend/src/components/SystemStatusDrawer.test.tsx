@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { beforeEach, expect, test, vi } from "vitest";
 
@@ -54,6 +54,40 @@ test("loads and focuses exactly once across 100 parent rerenders", async () => {
   focus.mockRestore();
 });
 
+test("reloads repositories once while pending and reports success", async () => {
+  vi.mocked(api.readSystemStatus).mockResolvedValue(status);
+  let resolveReload: () => void = () => undefined;
+  const reload = vi.fn(() => new Promise<void>((resolve) => { resolveReload = resolve; }));
+  render(<SystemStatusDrawer open csrfToken="csrf" realtimeState="connected"
+    onClose={() => undefined} onReconnect={() => undefined}
+    onReloadRepositories={reload} />);
+  await screen.findByText("Codex App Server");
+  const button = screen.getByRole("button", { name: "Repositoryliste neu laden" });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(reload).toHaveBeenCalledTimes(1);
+  expect(button).toBeDisabled();
+  act(() => resolveReload());
+  expect(await screen.findByText("Repositoryliste wurde neu geladen.")).toBeInTheDocument();
+  expect(button).toBeEnabled();
+});
+
+test("contains repository reload failures without leaking raw exceptions", async () => {
+  vi.mocked(api.readSystemStatus).mockResolvedValue(status);
+  const unhandled = vi.fn();
+  window.addEventListener("unhandledrejection", unhandled);
+  const reload = vi.fn(() => Promise.reject(new Error("sensitive /srv/repositories path")));
+  render(<SystemStatusDrawer open csrfToken="csrf" realtimeState="connected"
+    onClose={() => undefined} onReconnect={() => undefined}
+    onReloadRepositories={reload} />);
+  await screen.findByText("Codex App Server");
+  fireEvent.click(screen.getByRole("button", { name: "Repositoryliste neu laden" }));
+  expect(await screen.findByText(/Repositoryliste konnte nicht neu geladen werden/)).toBeInTheDocument();
+  expect(screen.queryByText(/sensitive|\/srv\/repositories/)).not.toBeInTheDocument();
+  expect(unhandled).not.toHaveBeenCalled();
+  window.removeEventListener("unhandledrejection", unhandled);
+});
+
 test("desktop is nonmodal, returns focus, and resets confirmation on reopen", async () => {
   vi.mocked(api.readSystemStatus).mockResolvedValue(status);
   function Harness() {
@@ -67,6 +101,7 @@ test("desktop is nonmodal, returns focus, and resets confirmation on reopen", as
   const opener = screen.getByRole("button", { name: "Status öffnen" });
   opener.focus();
   fireEvent.click(opener);
+  expect(screen.getByRole("button", { name: "Codex Runtime neu starten" })).toBeDisabled();
   await screen.findByText("Codex App Server");
   expect(screen.queryByRole("dialog", { name: "Systemstatus" })).not.toBeInTheDocument();
   expect(document.querySelector(".drawer-scrim")).toBeNull();
@@ -74,6 +109,7 @@ test("desktop is nonmodal, returns focus, and resets confirmation on reopen", as
   fireEvent.click(screen.getByRole("button", { name: "Systemstatus schließen" }));
   expect(opener).toHaveFocus();
   fireEvent.click(opener);
+  expect(screen.getByRole("button", { name: "Codex Runtime neu starten" })).toBeDisabled();
   await screen.findByText("Codex App Server");
   expect(screen.getByRole("button", { name: "Codex Runtime neu starten" })).toBeDisabled();
 });

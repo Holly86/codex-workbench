@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../auth/api";
 import { readSystemStatus, restartRuntime } from "../workbench/api";
@@ -17,16 +17,29 @@ const COMPONENT_LABELS: Record<ComponentStatus["component"], string> = {
   plugin_discovery: "Plugin-Erkennung (optional)",
 };
 
-export function SystemStatusDrawer({ open, csrfToken, realtimeState, onClose, onReconnect, onReloadRepositories }: {
+interface SystemStatusDrawerProps {
   open: boolean; csrfToken: string; realtimeState: string; onClose: () => void;
   onReconnect: () => void; onReloadRepositories: () => Promise<void>;
-}) {
+}
+
+export function SystemStatusDrawer(props: SystemStatusDrawerProps) {
+  return props.open ? <OpenSystemStatusDrawer {...props} /> : null;
+}
+
+function OpenSystemStatusDrawer({ csrfToken, realtimeState, onClose, onReconnect, onReloadRepositories }: SystemStatusDrawerProps) {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<{ tone: "info" | "danger"; text: string } | null>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [restartPending, setRestartPending] = useState(false);
-  const { mobile, drawerRef, closeRef } = useDrawerLifecycle(open, onClose);
+  const [reloadPending, setReloadPending] = useState(false);
+  const reloadPendingRef = useRef(false);
+  const close = useCallback(() => {
+    setConfirmRestart(false);
+    onClose();
+  }, [onClose]);
+  const { mobile, drawerRef, closeRef } = useDrawerLifecycle(true, close);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setLoading(true); setError(null);
     try { setStatus(await readSystemStatus(signal)); }
@@ -34,17 +47,28 @@ export function SystemStatusDrawer({ open, csrfToken, realtimeState, onClose, on
     finally { if (!signal?.aborted) setLoading(false); }
   }, []);
   useEffect(() => {
-    if (!open) return;
     const controller = new AbortController();
-    queueMicrotask(() => {
-      if (!controller.signal.aborted) {
-        setConfirmRestart(false);
-        setRestartPending(false);
-      }
-    });
     queueMicrotask(() => { if (!controller.signal.aborted) void refresh(controller.signal); });
     return () => controller.abort();
-  }, [open, refresh]);
+  }, [refresh]);
+  const reloadRepositories = async () => {
+    if (reloadPendingRef.current) return;
+    reloadPendingRef.current = true;
+    setReloadPending(true);
+    setActionMessage(null);
+    try {
+      await onReloadRepositories();
+      setActionMessage({ tone: "info", text: "Repositoryliste wurde neu geladen." });
+    } catch {
+      setActionMessage({
+        tone: "danger",
+        text: "Die Repositoryliste konnte nicht neu geladen werden. Bitte erneut versuchen.",
+      });
+    } finally {
+      reloadPendingRef.current = false;
+      setReloadPending(false);
+    }
+  };
   const restart = async () => {
     if (!confirmRestart || restartPending) return;
     setRestartPending(true); setError(null);
@@ -55,13 +79,13 @@ export function SystemStatusDrawer({ open, csrfToken, realtimeState, onClose, on
         : statusError(caught));
     } finally { setRestartPending(false); setConfirmRestart(false); }
   };
-  if (!open) return null;
   return <>
-    {mobile ? <button type="button" className="drawer-scrim" aria-label="Systemstatus schließen" onClick={onClose} /> : null}
+    {mobile ? <button type="button" className="drawer-scrim" aria-label="Systemstatus schließen" onClick={close} /> : null}
     <aside ref={drawerRef} className="system-status-drawer is-open" aria-label="Systemstatus" role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} tabIndex={-1}>
-      <header><div><p className="eyebrow">Workbench</p><h2>Systemstatus</h2></div><button ref={closeRef} type="button" className="icon-button" aria-label="Systemstatus schließen" onClick={onClose}>×</button></header>
+      <header><div><p className="eyebrow">Workbench</p><h2>Systemstatus</h2></div><button ref={closeRef} type="button" className="icon-button" aria-label="Systemstatus schließen" onClick={close}>×</button></header>
       <div className="drawer-scroll">
         {error ? <InlineAlert tone="danger">{error}</InlineAlert> : null}
+        {actionMessage ? <InlineAlert tone={actionMessage.tone}>{actionMessage.text}</InlineAlert> : null}
         {status === null && loading ? <p role="status">Komponenten werden geprüft …</p> : null}
         {status === null && !loading ? <EmptyState>Der Systemstatus ist noch nicht verfügbar.</EmptyState> : null}
         {status ? <>
@@ -75,7 +99,7 @@ export function SystemStatusDrawer({ open, csrfToken, realtimeState, onClose, on
         <section className="recovery-actions" aria-labelledby="recovery-heading"><h3 id="recovery-heading">Kontrollierte Wiederherstellung</h3>
           <button type="button" onClick={() => void refresh()} disabled={loading}>{loading ? "Prüfung läuft …" : "Status jetzt prüfen"}</button>
           <button type="button" onClick={onReconnect}>Realtime neu verbinden</button>
-          <button type="button" onClick={() => void onReloadRepositories()}>Repositoryliste neu laden</button>
+          <button type="button" disabled={reloadPending} onClick={() => void reloadRepositories()}>{reloadPending ? "Repositoryliste wird geladen …" : "Repositoryliste neu laden"}</button>
           <label className="checkbox-row"><input type="checkbox" checked={confirmRestart} onChange={(event) => setConfirmRestart(event.target.checked)} /><span>Ich bestätige: Codex Runtime neu starten. Aktive Turns werden nicht unterbrochen.</span></label>
           <button type="button" className="warning-action" disabled={!confirmRestart || restartPending} onClick={() => void restart()}>{restartPending ? "Neustart wird angefordert …" : "Codex Runtime neu starten"}</button>
         </section>

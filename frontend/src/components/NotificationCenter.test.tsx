@@ -7,10 +7,10 @@ import type { NativeJob } from "../workbench/types";
 import { readUiPreferences, writeUiPreferences } from "../workbench/uiPreferences";
 import { NotificationCenter } from "./NotificationCenter";
 
-function NotificationHarness(props: Omit<ComponentProps<typeof NotificationCenter>, "preferences" | "onPreferencesChange">) {
+function NotificationHarness(props: Omit<ComponentProps<typeof NotificationCenter>, "preferences" | "onPreferencesChange" | "recoveryEpisodes"> & { recoveryEpisodes?: ComponentProps<typeof NotificationCenter>["recoveryEpisodes"] }) {
   const [preferences, setPreferences] = useState(readUiPreferences);
   useEffect(() => writeUiPreferences(preferences), [preferences]);
-  return <NotificationCenter {...props} preferences={preferences} onPreferencesChange={setPreferences} />;
+  return <NotificationCenter {...props} recoveryEpisodes={props.recoveryEpisodes ?? []} preferences={preferences} onPreferencesChange={setPreferences} />;
 }
 
 const failed: NativeJob = {
@@ -46,8 +46,10 @@ test("closes with Escape", () => {
 test("shows recovery notices and dismisses every completed job in one action", () => {
   const succeeded = { ...failed, id: "job_done", status: "succeeded" as const,
     error: null, errorCode: null, retryable: false };
-  render(<NotificationHarness open jobs={[failed, succeeded]} processConnection="reconnecting"
-    realtimeConnection="disconnected" generation={4} onClose={() => undefined}
+  render(<NotificationHarness open jobs={[failed, succeeded]} recoveryEpisodes={[
+    { id: "recovery_000001", kind: "runtime", state: "recovering" },
+    { id: "recovery_000002", kind: "realtime", state: "failed" },
+  ]} onClose={() => undefined}
     onRetry={() => Promise.resolve()} />);
   expect(screen.getByText("Codex Runtime wird wiederhergestellt")).toBeInTheDocument();
   expect(screen.getByText("Live-Verbindung ist getrennt")).toBeInTheDocument();
@@ -59,7 +61,7 @@ test("does not refocus during 100 parent rerenders", async () => {
   const focus = vi.spyOn(HTMLButtonElement.prototype, "focus");
   function Parent({ tick }: { tick: number }) {
     void tick;
-    return <NotificationCenter open jobs={[]} preferences={readUiPreferences()}
+    return <NotificationCenter open jobs={[]} recoveryEpisodes={[]} preferences={readUiPreferences()}
       onPreferencesChange={() => undefined} onClose={() => undefined}
       onRetry={() => Promise.resolve()} />;
   }

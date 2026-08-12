@@ -51,6 +51,7 @@ import {
 } from "./access";
 import { useRealtime } from "./realtime";
 import { selectNotifications } from "./notifications";
+import { activeRecoveryEpisodes } from "./recoveryEpisodes";
 import { parseWorkbenchRoute, repositoryPath, threadPath, writeWorkbenchRoute } from "./routing";
 import { readUiPreferences, writeUiPreferences } from "./uiPreferences";
 import type {
@@ -175,12 +176,11 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const selectedThreadApprovalPolicy = selectedThread?.approvalPolicy ?? null;
   const selectedApproval = realtime.approvals.find((approval) => approval.threadId === selectedThreadId) ?? realtime.approvals[0] ?? null;
   const working = selectedThread?.activeTurnId !== null && selectedThread?.activeTurnId !== undefined;
+  const recoveryEpisodes = activeRecoveryEpisodes(realtime.recoveryEpisodes);
   const notificationSelection = selectNotifications({
     jobs,
+    episodes: recoveryEpisodes,
     preferences: uiPreferences.notifications,
-    processConnection: realtime.processConnection,
-    realtimeConnection: realtime.connection,
-    generation: realtime.generation,
   });
   const activeFullAccessIntent =
     capabilities !== null &&
@@ -893,9 +893,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
       <NotificationCenter
         open={notificationsOpen}
         jobs={jobs}
-        processConnection={realtime.processConnection}
-        realtimeConnection={realtime.connection}
-        generation={realtime.generation}
+        recoveryEpisodes={recoveryEpisodes}
         preferences={uiPreferences}
         onPreferencesChange={setUiPreferences}
         onClose={closeNotifications}
