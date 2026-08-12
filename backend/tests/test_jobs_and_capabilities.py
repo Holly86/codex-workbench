@@ -93,6 +93,104 @@ async def test_background_job_failure_logs_only_safe_structured_diagnostics(
 
 
 @pytest.mark.asyncio
+async def test_historical_job_failure_does_not_degrade_registry_health() -> None:
+    completed = asyncio.Event()
+
+    async def updated(_session_id: str, payload: JsonObject) -> None:
+        if payload["status"] == "failed":
+            completed.set()
+
+    registry = BackgroundJobRegistry(update_handler=updated)
+
+    async def failed_fetch() -> GitResult:
+        return GitResult("git fetch --prune", 1, "", 8, False)
+
+    await registry.start(
+        owner_session_id="session",
+        repository_id="0123456789abcdef",
+        repository_name="repo",
+        job_type="git_fetch",
+        operation=failed_fetch,
+    )
+    await completed.wait()
+    status = await registry.status_counts()
+
+    assert status.failed == 1
+    assert status.infrastructure_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_successful_retry_keeps_history_without_degrading_health() -> None:
+    completions: asyncio.Queue[str] = asyncio.Queue()
+
+    async def updated(_session_id: str, payload: JsonObject) -> None:
+        status = payload["status"]
+        if isinstance(status, str) and status in {"failed", "succeeded"}:
+            await completions.put(status)
+
+    registry = BackgroundJobRegistry(update_handler=updated)
+
+    async def failed_fetch() -> GitResult:
+        return GitResult("git fetch --prune", 1, "", 8, False)
+
+    async def successful_fetch() -> GitResult:
+        return GitResult("git fetch --prune", 0, "", 7, False)
+
+    for operation in (failed_fetch, successful_fetch):
+        await registry.start(
+            owner_session_id="session",
+            repository_id="0123456789abcdef",
+            repository_name="repo",
+            job_type="git_fetch",
+            operation=operation,
+        )
+        assert await completions.get() in {"failed", "succeeded"}
+
+    status = await registry.status_counts()
+    assert status.failed == 1
+    assert status.infrastructure_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_realtime_projection_failure_degrades_until_a_successful_update() -> None:
+    reject_updates = True
+    failed_update = asyncio.Event()
+    successful_completion = asyncio.Event()
+
+    async def updated(_session_id: str, payload: JsonObject) -> None:
+        if reject_updates:
+            failed_update.set()
+            raise RuntimeError("private broker detail")
+        if payload["status"] == "succeeded":
+            successful_completion.set()
+
+    registry = BackgroundJobRegistry(update_handler=updated)
+    release = asyncio.Event()
+
+    async def operation() -> GitResult:
+        await release.wait()
+        return GitResult("git fetch --prune", 0, "", 7, False)
+
+    await registry.start(
+        owner_session_id="session",
+        repository_id="0123456789abcdef",
+        repository_name="repo",
+        job_type="git_fetch",
+        operation=operation,
+    )
+    await failed_update.wait()
+    assert (await registry.status_counts()).infrastructure_error_code == (
+        "job_realtime_update_failed"
+    )
+
+    reject_updates = False
+    release.set()
+    await successful_completion.wait()
+    status = await registry.status_counts()
+    assert status.infrastructure_error_code is None
+
+
+@pytest.mark.asyncio
 async def test_background_job_timeout_logs_specific_safe_error_type(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -164,6 +262,64 @@ async def test_git_status_projects_branch_counts_and_conflicts(tmp_path: Path) -
     assert status["untracked"] == 1
     assert status["clean"] is False
     assert status["upstreamMissing"] is True
+
+
+@pytest.mark.asyncio
+async def test_branch_inventory_preserves_unique_remote_switch_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repositories"
+    root.mkdir()
+    service = GitService(RepositoryDiscovery(root), root, output_limit=4096)
+
+    async def run(_repository_id: str, _action: str, **_kwargs: object) -> GitResult:
+        return GitResult(
+            "git for-each-ref",
+            0,
+            "main\trefs/heads/main\t*\n"
+            "origin/HEAD\trefs/remotes/origin/HEAD\t\n"
+            "origin/release\trefs/remotes/origin/release\t\n"
+            "upstream/release\trefs/remotes/upstream/release\t\n",
+            3,
+            False,
+        )
+
+    monkeypatch.setattr(service, "run", run)
+    inventory = await service.branches("0123456789abcdef")
+    assert inventory["local"] == [{
+        "id": "refs/heads/main",
+        "kind": "local",
+        "displayName": "main",
+        "fullRef": "refs/heads/main",
+        "switchTarget": "main",
+        "current": True,
+        "disabledReason": "current_branch",
+    }]
+    assert inventory["remote"] == [
+        {
+            "id": "refs/remotes/origin/release",
+            "kind": "remote",
+            "displayName": "origin/release",
+            "fullRef": "refs/remotes/origin/release",
+            "switchTarget": "origin/release",
+            "current": False,
+            "disabledReason": None,
+        },
+        {
+            "id": "refs/remotes/upstream/release",
+            "kind": "remote",
+            "displayName": "upstream/release",
+            "fullRef": "refs/remotes/upstream/release",
+            "switchTarget": "upstream/release",
+            "current": False,
+            "disabledReason": None,
+        },
+    ]
+    args, mutating = service._arguments(  # noqa: SLF001
+        "branch-switch", files=(), message=None, branch="upstream/release",
+    )
+    assert args == ("switch", "upstream/release")
+    assert mutating is True
 
 
 @pytest.mark.asyncio

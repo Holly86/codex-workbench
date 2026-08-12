@@ -189,6 +189,218 @@ async def test_initialize_and_concurrent_request_correlation_are_deterministic()
 
 
 @pytest.mark.asyncio
+async def test_protocol_activity_accepts_only_valid_successful_inbound_events() -> None:
+    activities: list[int] = []
+
+    async def notification(_generation: int, _method: str, _params: JsonObject) -> None:
+        return None
+
+    async def server_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def disconnect(_generation: int, _error: BaseException) -> None:
+        return None
+
+    transport = _transport("plugin_method_not_found")
+    await transport.start()
+    client = AppServerClient(
+        transport,
+        generation=23,
+        application_version="0.1.0",
+        request_timeout_seconds=2,
+        notification_handler=notification,
+        server_request_handler=server_request,
+        disconnect_handler=disconnect,
+        activity_handler=activities.append,
+    )
+    try:
+        await client.initialize()
+        initialized_activity_count = len(activities)
+        assert await client.call("model/list", {}, owner="test")
+        assert activities == [23] * (initialized_activity_count + 1)
+
+        with pytest.raises(AppServerRequestError):
+            await client.call("plugin/list", {"cwds": []}, owner="test")
+        assert activities == [23] * (initialized_activity_count + 1)
+
+        assert await client.call("test/notifyThenRespond", {}, owner="test") == {"ok": True}
+        assert activities == [23] * (initialized_activity_count + 2)
+    finally:
+        await client.close()
+        await transport.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("synthetic_prompt", "expected_title"),
+    [
+        (
+            "Analysiere eine synthetische Warteschlange, härte ihren Worker und ergänze "
+            "deterministische Regressionstests.",
+            "Resiliente Warteschlangenverarbeitung absichern",
+        ),
+        (
+            "Inspect a synthetic queue, harden worker recovery, and add deterministic "
+            "regression coverage.",
+            "Harden queue recovery and regression coverage",
+        ),
+        (
+            "Prüfe ./fixture-workspace/config/settings.toml und dokumentiere eine sichere "
+            "Validierung.",
+            "Sichere Konfigurationsvalidierung dokumentieren",
+        ),
+        (
+            "Plane einen vollständig synthetischen Reliability-Sprint mit mehreren voneinander "
+            "abhängigen Prüfschritten, klaren Sicherheitsgrenzen, reproduzierbaren Browserfällen "
+            "und einem abschließenden Release-Gate, ohne dabei externe Systeme zu verwenden.",
+            "Mehrstufigen Reliability-Sprint strukturiert abschließen",
+        ),
+    ],
+)
+async def test_fake_codex_native_title_contract_is_semantic_and_reload_stable(
+    synthetic_prompt: str,
+    expected_title: str,
+) -> None:
+    title_updated = asyncio.Event()
+
+    async def notification(_generation: int, method: str, _params: JsonObject) -> None:
+        if method == "thread/name/updated":
+            title_updated.set()
+
+    async def server_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def disconnect(_generation: int, _error: BaseException) -> None:
+        return None
+
+    transport = _transport("title_contract")
+    await transport.start()
+    client = AppServerClient(
+        transport,
+        generation=31,
+        application_version="0.1.0",
+        request_timeout_seconds=2,
+        notification_handler=notification,
+        server_request_handler=server_request,
+        disconnect_handler=disconnect,
+    )
+    try:
+        await client.initialize()
+        started = await client.call(
+            "thread/start",
+            {
+                "cwd": "/tmp/synthetic-workspace",
+                "approvalPolicy": "untrusted",
+                "sandbox": "read-only",
+            },
+            owner="synthetic-title-contract",
+        )
+        assert isinstance(started, dict)
+        raw_thread = started["thread"]
+        assert isinstance(raw_thread, dict)
+        thread_id = raw_thread["id"]
+        assert isinstance(thread_id, str)
+        await client.call(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": synthetic_prompt, "text_elements": []}],
+                "cwd": "/tmp/synthetic-workspace",
+                "approvalPolicy": "untrusted",
+                "sandboxPolicy": {"type": "readOnly"},
+            },
+            owner="synthetic-title-contract",
+        )
+        await title_updated.wait()
+        first_read = await client.call(
+            "thread/read", {"threadId": thread_id, "includeTurns": False},
+            owner="synthetic-title-contract",
+        )
+        reloaded = await client.call(
+            "thread/read", {"threadId": thread_id, "includeTurns": False},
+            owner="synthetic-title-contract",
+        )
+        assert isinstance(first_read, dict) and isinstance(first_read["thread"], dict)
+        assert isinstance(reloaded, dict) and isinstance(reloaded["thread"], dict)
+        assert first_read["thread"]["name"] == expected_title
+        assert reloaded["thread"]["name"] == expected_title
+        assert not synthetic_prompt.startswith(expected_title)
+    finally:
+        await client.close()
+        await transport.stop()
+
+
+@pytest.mark.asyncio
+async def test_fake_codex_native_title_tracks_a_later_focus_change() -> None:
+    observed_titles: asyncio.Queue[str] = asyncio.Queue()
+
+    async def notification(_generation: int, method: str, params: JsonObject) -> None:
+        title = params.get("threadName")
+        if method == "thread/name/updated" and isinstance(title, str):
+            await observed_titles.put(title)
+
+    async def server_request(
+        _generation: int, _request_id: JsonScalar, _method: str, _params: JsonObject
+    ) -> None:
+        return None
+
+    async def disconnect(_generation: int, _error: BaseException) -> None:
+        return None
+
+    transport = _transport("title_contract")
+    await transport.start()
+    client = AppServerClient(
+        transport,
+        generation=32,
+        application_version="0.1.0",
+        request_timeout_seconds=2,
+        notification_handler=notification,
+        server_request_handler=server_request,
+        disconnect_handler=disconnect,
+    )
+    try:
+        await client.initialize()
+        started = await client.call(
+            "thread/start", {"cwd": "/tmp/synthetic-workspace"},
+            owner="synthetic-title-contract",
+        )
+        assert isinstance(started, dict) and isinstance(started["thread"], dict)
+        thread_id = started["thread"]["id"]
+        assert isinstance(thread_id, str)
+        for prompt in (
+            "Analysiere eine synthetische Warteschlange, härte ihren Worker und ergänze "
+            "deterministische Regressionstests.",
+            "Ändere den Schwerpunkt auf die Prüfung der Release-Readiness nach der Recovery.",
+        ):
+            await client.call(
+                "turn/start",
+                {
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": prompt, "text_elements": []}],
+                    "cwd": "/tmp/synthetic-workspace",
+                    "approvalPolicy": "untrusted",
+                    "sandboxPolicy": {"type": "readOnly"},
+                },
+                owner="synthetic-title-contract",
+            )
+        assert await observed_titles.get() == "Resiliente Warteschlangenverarbeitung absichern"
+        assert await observed_titles.get() == "Release-Readiness nach Recovery prüfen"
+        reloaded = await client.call(
+            "thread/read", {"threadId": thread_id, "includeTurns": False},
+            owner="synthetic-title-contract",
+        )
+        assert isinstance(reloaded, dict) and isinstance(reloaded["thread"], dict)
+        assert reloaded["thread"]["name"] == "Release-Readiness nach Recovery prüfen"
+    finally:
+        await client.close()
+        await transport.stop()
+
+
+@pytest.mark.asyncio
 async def test_unknown_response_ids_timeouts_and_cancellation_are_bounded() -> None:
     correlator = RequestCorrelator(7)
     pending = correlator.create("known", "test")
@@ -279,6 +491,7 @@ async def test_json_rpc_error_and_handler_error_do_not_disconnect_client() -> No
 @pytest.mark.asyncio
 async def test_malformed_json_is_a_transport_failure() -> None:
     disconnected: asyncio.Future[BaseException] = asyncio.get_running_loop().create_future()
+    activities: list[int] = []
 
     async def notification(_generation: int, _method: str, _params: JsonObject) -> None:
         return None
@@ -302,11 +515,14 @@ async def test_malformed_json_is_a_transport_failure() -> None:
         notification_handler=notification,
         server_request_handler=server_request,
         disconnect_handler=disconnect,
+        activity_handler=activities.append,
     )
     try:
         await client.initialize()
+        activity_count = len(activities)
         error = await asyncio.wait_for(disconnected, timeout=2)
         assert isinstance(error, AppServerProtocolError)
+        assert len(activities) == activity_count
     finally:
         await client.close()
         await transport.stop()
@@ -760,6 +976,7 @@ async def test_watchdog_uses_only_side_effect_free_core_probe_and_resets_failure
     supervisor._generation = 7  # noqa: SLF001
     supervisor._client = cast(AppServerClient, client)  # noqa: SLF001
     supervisor._consecutive_probe_failures = 2  # noqa: SLF001
+    supervisor._error_code = "watchdog_probe_rejected"  # noqa: SLF001
 
     await supervisor._run_watchdog_probe(7)  # noqa: SLF001
 
@@ -767,7 +984,57 @@ async def test_watchdog_uses_only_side_effect_free_core_probe_and_resets_failure
         ("thread/loaded/list", {"cursor": None, "limit": 1}, "__workbench_watchdog__")
     ]
     assert supervisor.status.consecutive_probe_failures == 0
+    assert supervisor.status.error_code is None
     assert supervisor.status.last_activity_at is not None
+
+
+def test_generation_scoped_activity_suppresses_probe_and_clears_only_watchdog_errors(
+    tmp_path: Path,
+) -> None:
+    supervisor = _unit_supervisor(tmp_path)
+    supervisor._state = ProcessState.READY  # noqa: SLF001
+    supervisor._generation = 8  # noqa: SLF001
+    supervisor._last_activity_monotonic = 100.0  # noqa: SLF001
+    supervisor._consecutive_probe_failures = 2  # noqa: SLF001
+    supervisor._error_code = "watchdog_unresponsive"  # noqa: SLF001
+
+    supervisor.note_activity(7)
+    assert supervisor._last_activity_monotonic == 100.0  # noqa: SLF001
+    assert supervisor.status.consecutive_probe_failures == 2
+    assert supervisor.status.error_code == "watchdog_unresponsive"
+
+    supervisor.note_activity(8)
+    observed = supervisor._last_activity_monotonic  # noqa: SLF001
+    assert observed > 100.0
+    assert supervisor.status.consecutive_probe_failures == 0
+    assert supervisor.status.error_code is None
+    assert supervisor.watchdog_probe_due(8, now=observed) is False
+    assert supervisor.watchdog_probe_due(
+        8,
+        now=observed + supervisor._settings.app_server_watchdog_idle_seconds,  # noqa: SLF001
+    ) is True
+
+    supervisor._error_code = "unsupported_version"  # noqa: SLF001
+    supervisor.note_activity(8)
+    assert supervisor.status.error_code == "unsupported_version"
+
+
+def test_regular_generation_activity_prevents_idle_probe_during_long_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = _unit_supervisor(tmp_path)
+    supervisor._state = ProcessState.READY  # noqa: SLF001
+    supervisor._generation = 9  # noqa: SLF001
+    interval = supervisor._settings.app_server_watchdog_idle_seconds  # noqa: SLF001
+    clock = 1_000.0
+    monkeypatch.setattr("codex_workbench.app_server.supervisor.time.monotonic", lambda: clock)
+
+    for index in range(20):
+        clock = 1_000.0 + (index * interval / 2)
+        supervisor.note_activity(9)
+        assert supervisor.watchdog_probe_due(9, now=clock) is False
+
+    assert supervisor.status.restart_attempts == 0
 
 
 @pytest.mark.asyncio
@@ -780,6 +1047,7 @@ async def test_watchdog_requires_three_consecutive_failures_before_recovery(
     supervisor._generation = 4  # noqa: SLF001
     supervisor._client = cast(AppServerClient, client)  # noqa: SLF001
     scheduled: list[bool] = []
+    disconnected: list[tuple[int, str]] = []
 
     async def schedule(*, immediate: bool = False, request_followup: bool = True) -> bool:
         del immediate, request_followup
@@ -787,11 +1055,17 @@ async def test_watchdog_requires_three_consecutive_failures_before_recovery(
         return True
 
     monkeypatch.setattr(supervisor, "_schedule_restart", schedule)
+
+    async def disconnect(generation: int, error: BaseException) -> None:
+        disconnected.append((generation, type(error).__name__))
+
+    monkeypatch.setattr(supervisor, "_external_disconnect_handler", disconnect)
     await supervisor._run_watchdog_probe(4)  # noqa: SLF001
     await supervisor._run_watchdog_probe(4)  # noqa: SLF001
     assert scheduled == []
     await supervisor._run_watchdog_probe(4)  # noqa: SLF001
     assert scheduled == [True]
+    assert disconnected == [(4, "AppServerRequestTimeoutError")]
     assert supervisor.status.error_code == "watchdog_unresponsive"
 
 

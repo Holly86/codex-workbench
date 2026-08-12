@@ -376,8 +376,18 @@ class GitService:
             name, full_ref, head = fields
             if not name or name.endswith("/HEAD"):
                 continue
-            item: JsonObject = {"name": name, "current": head == "*"}
-            (remote if full_ref.startswith("refs/remotes/") else local).append(item)
+            kind = "remote" if full_ref.startswith("refs/remotes/") else "local"
+            current = head == "*"
+            item: JsonObject = {
+                "id": full_ref,
+                "kind": kind,
+                "displayName": name,
+                "fullRef": full_ref,
+                "switchTarget": name,
+                "current": current,
+                "disabledReason": "current_branch" if current else None,
+            }
+            (remote if kind == "remote" else local).append(item)
         return {"local": local, "remote": remote}
 
     async def github_capability(self, repository_id: str | None = None) -> dict[str, object]:

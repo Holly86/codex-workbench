@@ -162,8 +162,18 @@ async def test_manual_title_uses_native_set_and_wins_over_later_native_update(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "native_title",
+    [
+        "Resiliente Runtime-Wiederherstellung absichern",
+        "Harden release recovery and navigation",
+        "Workspace-Pfade sicher validieren",
+        "Mehrstufigen Reliability-Sprint strukturiert abschließen",
+        "Release-Readiness nach Recovery prüfen",
+    ],
+)
 async def test_completed_turn_refreshes_native_title_without_visible_title_turn(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_title: str,
 ) -> None:
     runtime, _repository_id, calls = await runtime_with_thread(tmp_path, monkeypatch)
 
@@ -173,7 +183,7 @@ async def test_completed_turn_refreshes_native_title_without_visible_title_turn(
         return {
             "thread": {
                 "id": "thread-delete-me",
-                "name": "Runtime Recovery zuverlässig absichern",
+                "name": native_title,
             }
         }
 
@@ -186,7 +196,7 @@ async def test_completed_turn_refreshes_native_title_without_visible_title_turn(
     browser = runtime.projection.thread_browser_dict(
         runtime.projection.require_thread("thread-delete-me")
     )
-    assert browser["name"] == "Runtime Recovery zuverlässig absichern"
+    assert browser["name"] == native_title
     assert browser["titleSource"] == "native"
     assert browser["titleGenerationState"] == "succeeded"
 

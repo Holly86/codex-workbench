@@ -42,6 +42,8 @@ _VERSION_PATTERN = re.compile(
     r"codex-cli ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
 )
 
+_WATCHDOG_ERROR_CODES = frozenset({"watchdog_probe_rejected", "watchdog_unresponsive"})
+
 
 class VersionCheckReason(StrEnum):
     BINARY_NOT_FOUND = "binary_not_found"
@@ -335,6 +337,7 @@ class AppServerSupervisor:
             notification_handler=self._notification_handler,
             server_request_handler=self._server_request_handler,
             disconnect_handler=self._on_disconnect,
+            activity_handler=self.note_activity,
         )
         self._client = client
         try:
@@ -410,13 +413,31 @@ class AppServerSupervisor:
         return "started" if scheduled else "blocked"
 
     def note_activity(self, generation: int) -> None:
-        """Record a successful generation-scoped protocol interaction."""
+        """Record one validated, successful generation-scoped protocol interaction."""
 
         if generation != self._generation:
             return
         self._last_activity_monotonic = time.monotonic()
         self._last_activity_at = int(time.time())
         self._consecutive_probe_failures = 0
+        if self._error_code in _WATCHDOG_ERROR_CODES:
+            self._error_code = None
+
+    def watchdog_probe_due(self, generation: int, *, now: float | None = None) -> bool:
+        """Return whether the one idle watchdog is allowed to start a probe."""
+
+        observed = time.monotonic() if now is None else now
+        return (
+            not self._stopping
+            and generation == self._generation
+            and self._state is ProcessState.READY
+            and observed - self._last_activity_monotonic
+            >= self._settings.app_server_watchdog_idle_seconds
+            and (
+                self._watchdog_probe_task is None
+                or self._watchdog_probe_task.done()
+            )
+        )
 
     async def _schedule_restart(
         self, *, immediate: bool = False, request_followup: bool = True
@@ -539,10 +560,7 @@ class AppServerSupervisor:
                 await asyncio.sleep(interval * random.uniform(1.0 - jitter, 1.0 + jitter))
                 if self._stopping or generation != self._generation:
                     return
-                idle_for = time.monotonic() - self._last_activity_monotonic
-                if self._state is not ProcessState.READY or idle_for < interval:
-                    continue
-                if self._watchdog_probe_task is not None and not self._watchdog_probe_task.done():
+                if not self.watchdog_probe_due(generation):
                     continue
                 probe = asyncio.create_task(
                     self._run_watchdog_probe(generation),
@@ -627,9 +645,10 @@ class AppServerSupervisor:
             )
             if (
                 self._consecutive_probe_failures
-                >= self._settings.app_server_watchdog_failure_threshold
+                == self._settings.app_server_watchdog_failure_threshold
             ):
                 self._error_code = "watchdog_unresponsive"
+                await self._external_disconnect_handler(generation, exc)
                 await self._schedule_restart(request_followup=False)
         finally:
             if self._watchdog_probe_task is asyncio.current_task():

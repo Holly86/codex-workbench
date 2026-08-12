@@ -64,6 +64,14 @@ class BackgroundJob:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class BackgroundJobStatus:
+    active: int
+    queued: int
+    failed: int
+    infrastructure_error_code: str | None
+
+
 class BackgroundJobRegistry:
     """Own tasks independently from browser/WebSocket lifetimes."""
 
@@ -76,6 +84,7 @@ class BackgroundJobRegistry:
         self._tasks: set[asyncio.Task[None]] = set()
         self._blocked_repositories: set[str] = set()
         self._lock = asyncio.Lock()
+        self._infrastructure_error_code: str | None = None
 
     async def start(
         self,
@@ -119,8 +128,8 @@ class BackgroundJobRegistry:
                 for job in self._jobs.values()
             )
 
-    async def status_counts(self) -> tuple[int, int, int]:
-        """Return aggregate active, queued, and failed counts without job content."""
+    async def status_counts(self) -> BackgroundJobStatus:
+        """Separate subsystem health from historical user-operation outcomes."""
 
         async with self._lock:
             active = sum(job.status == "running" for job in self._jobs.values())
@@ -129,7 +138,8 @@ class BackgroundJobRegistry:
                 job.status in {"failed", "interrupted", "timed_out"}
                 for job in self._jobs.values()
             )
-        return active, queued, failed
+            infrastructure_error_code = self._infrastructure_error_code
+        return BackgroundJobStatus(active, queued, failed, infrastructure_error_code)
 
     async def reserve_repository_removal(self, repository_id: str) -> bool:
         async with self._lock:
@@ -200,7 +210,9 @@ class BackgroundJobRegistry:
         if self._update_handler is not None:
             try:
                 await self._update_handler(job.owner_session_id, job.browser_dict())
+                self._infrastructure_error_code = None
             except Exception as exc:
+                self._infrastructure_error_code = "job_realtime_update_failed"
                 logger.warning(
                     "job_realtime_update_failed",
                     extra={"error_type": type(exc).__name__},

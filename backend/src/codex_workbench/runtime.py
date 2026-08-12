@@ -393,9 +393,11 @@ class WorkbenchRuntime:
         repository_state = self._storage_state(self.settings.repositories_root)
         upload_state = self._storage_state(self.settings.uploads_dir)
         _stream_count, connection_count = self.broker.status_counts()
-        active_jobs, queued_jobs, failed_jobs = await self.jobs.status_counts()
+        job_status = await self.jobs.status_counts()
         jobs_state = (
-            ServiceState.DEGRADED if failed_jobs > 0 else ServiceState.HEALTHY
+            ServiceState.DEGRADED
+            if job_status.infrastructure_error_code is not None
+            else ServiceState.HEALTHY
         )
         plugin_state = (
             ServiceState.BLOCKED
@@ -468,9 +470,10 @@ class WorkbenchRuntime:
                 component="background_jobs",
                 state=jobs_state,
                 observedAt=observed_at,
-                activeCount=active_jobs,
-                queuedCount=queued_jobs,
-                failedCount=failed_jobs,
+                errorCode=job_status.infrastructure_error_code,
+                activeCount=job_status.active,
+                queuedCount=job_status.queued,
+                failedCount=job_status.failed,
             ),
             ComponentStatus(
                 component="plugin_discovery",
@@ -493,8 +496,6 @@ class WorkbenchRuntime:
             if ServiceState.RECOVERING in required_states
             else ServiceState.DEGRADED
             if ServiceState.DEGRADED in required_states
-            else ServiceState.DEGRADED
-            if ServiceState.UNKNOWN in required_states
             else ServiceState.BLOCKED
             if ServiceState.BLOCKED in required_states
             else ServiceState.HEALTHY
@@ -1735,9 +1736,7 @@ class WorkbenchRuntime:
             raise RuntimeUnavailableError("app-server is not ready")
         generation = self.supervisor.status.generation
         try:
-            result = await self.supervisor.client.call(method, params, owner=owner)
-            self.supervisor.note_activity(generation)
-            return result
+            return await self.supervisor.client.call(method, params, owner=owner)
         except AppServerRequestError as exc:
             logger.warning(
                 "app_server_request_error",
@@ -1764,9 +1763,7 @@ class WorkbenchRuntime:
             client = self.supervisor.client_for_generation(generation)
         except RuntimeError as exc:
             raise RuntimeUnavailableError("app-server generation is not ready") from exc
-        result = await client.call(method, params, owner=owner)
-        self.supervisor.note_activity(generation)
-        return result
+        return await client.call(method, params, owner=owner)
 
     @staticmethod
     def _object(value: JsonValue | None, label: str) -> JsonObject:
