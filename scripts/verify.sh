@@ -4,6 +4,9 @@ set -eu
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repository_root"
 
+./scripts/check-secrets.sh --current
+./scripts/check-secrets.sh --history
+
 (
     cd backend
     .venv/bin/ruff check .
@@ -20,7 +23,6 @@ cd "$repository_root"
     npm run test:e2e
 )
 
-./scripts/check-secrets.sh
 ./scripts/audit-dependencies.sh
 ./scripts/check-generated-schemas.sh
 backend/.venv/bin/python ./scripts/check-deployment-policy.py
