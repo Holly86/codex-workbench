@@ -325,6 +325,24 @@ Sie prüft `command -v codex`, Version und App-Server-Hilfe im Backend, UID/GID,
 Mountzugriff, Live/Ready, den einen App-Server-Prozess, effektive Ports/Netze und die
 Workbench-eigenen Containerzustände.
 
+## Healthchecks und Wiederherstellungsgrenze
+
+Die Compose-Healthchecks sind Beobachter. Docker Compose startet einen laufenden Container nicht allein deshalb neu, weil dessen Status auf `unhealthy` wechselt. `restart: unless-stopped` greift bei einem Prozessende oder Docker-Neustart, nicht bei einem fehlgeschlagenen Healthcheck.
+
+Die Workbench stellt deshalb ausschließlich eigene Subsysteme wieder her: Der vorhandene Supervisor kann genau seinen einen Codex-App-Server-Child kontrolliert neu starten, Realtime verbindet sich mit begrenztem Backoff und Jitter neu, und Threads werden anschließend reconciliert. Die Anwendung erhält weder Docker Socket noch Docker-API-, `sudo`- oder Containersteuerungsrechte. Ein automatisches Backend-Fail-Fast ist standardmäßig nicht vorhanden, weil permanente und transiente Gesamtprozessfehler nicht in jeder Lage crash-loop-sicher unterschieden werden können.
+
+Der App-Server-Watchdog wird standardmäßig erst nach 45 Sekunden ohne erfolgreiche Protokollaktivität aktiv. Er verwendet ausschließlich die side-effect-freie Core-Methode `thread/loaded/list`, startet keinen Turn und mutiert kein Repository. Drei aufeinanderfolgende, jeweils auf acht Sekunden begrenzte Fehlschläge führen in den bestehenden begrenzten Restartpfad. Die Werte sind über die dokumentierten `WORKBENCH_APP_SERVER_WATCHDOG_*`-Variablen konservativ anpassbar.
+
+Der authentifizierte Systemstatus zeigt ausschließlich content-freie Komponenten-, Zeit- und Fehlercode-Metadaten. Ein manueller Runtime-Neustart benötigt eine ausdrückliche Bestätigung, nutzt die normalen Origin-, CSRF- und Rate-Limit-Grenzen und wird bei aktiven Turns mit Konflikt abgelehnt.
+
+### Optionale externe NAS-Überwachung
+
+Eine Synology-Aufgabe kann außerhalb der Anwendung als zusätzliche, standardmäßig deaktivierte Betriebsoption eingerichtet werden. Sie darf nur die beiden Compose-Services dieses Projekts adressieren, muss eine exklusive Lockdatei und einen Cooldown besitzen und darf keine Zugangsdaten in Argumenten oder Logs führen. Aktivierung, DSM-Berechtigungen und Alarmierung bleiben eine bewusste Operatorentscheidung; das Repository installiert oder aktiviert keine solche Aufgabe automatisch.
+
+### SQLite-Fehler
+
+Beim Start werden Migrationen transaktional ausgeführt und anschließend mit `PRAGMA quick_check` nicht destruktiv geprüft. Schlägt die Prüfung fehl, bleibt die Sicherheitsinitialisierung geschlossen. Die Workbench repariert, ersetzt oder löscht die Datei nicht automatisch. Container stoppen, das geprüfte Backup einschließlich WAL/SHM nach dem unten beschriebenen Verfahren wiederherstellen und erst danach neu starten. Vor einem Restore niemals eine vermeintlich beschädigte Datei überschreiben, ohne sie separat zu sichern.
+
 ## Schutz der bestehenden Synology-Dienste
 
 Alle Compose-Befehle werden ausschließlich in diesem Repository mit

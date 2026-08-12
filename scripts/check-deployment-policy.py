@@ -150,9 +150,16 @@ def main() -> int:
         "WORKBENCH_CODEX_EXECUTABLE": "/usr/local/bin/codex",
         "WORKBENCH_EXPECTED_CODEX_VERSION": "${CODEX_VERSION:-0.146.0}",
         "WORKBENCH_APP_SERVER_START_ENABLED": "true",
+        "WORKBENCH_APP_SERVER_BACKOFF_JITTER_RATIO": "${WORKBENCH_APP_SERVER_BACKOFF_JITTER_RATIO:-0.15}",
+        "WORKBENCH_APP_SERVER_WATCHDOG_ENABLED": "${WORKBENCH_APP_SERVER_WATCHDOG_ENABLED:-true}",
+        "WORKBENCH_APP_SERVER_WATCHDOG_IDLE_SECONDS": "${WORKBENCH_APP_SERVER_WATCHDOG_IDLE_SECONDS:-45}",
+        "WORKBENCH_APP_SERVER_WATCHDOG_TIMEOUT_SECONDS": "${WORKBENCH_APP_SERVER_WATCHDOG_TIMEOUT_SECONDS:-8}",
+        "WORKBENCH_APP_SERVER_WATCHDOG_FAILURE_THRESHOLD": "${WORKBENCH_APP_SERVER_WATCHDOG_FAILURE_THRESHOLD:-3}",
         "WORKBENCH_GIT_COMMAND_TIMEOUT_SECONDS": "${WORKBENCH_GIT_COMMAND_TIMEOUT_SECONDS:-30}",
         "WORKBENCH_GIT_NETWORK_TIMEOUT_SECONDS": "${WORKBENCH_GIT_NETWORK_TIMEOUT_SECONDS:-300}",
         "WORKBENCH_GIT_CLONE_TIMEOUT_SECONDS": "${WORKBENCH_GIT_CLONE_TIMEOUT_SECONDS:-900}",
+        "WORKBENCH_SQLITE_BUSY_TIMEOUT_MS": "${WORKBENCH_SQLITE_BUSY_TIMEOUT_MS:-5000}",
+        "WORKBENCH_STORAGE_WARNING_FREE_BYTES": "${WORKBENCH_STORAGE_WARNING_FREE_BYTES:-536870912}",
     }
     for key, expected in required_environment.items():
         if environment.get(key) != expected:
@@ -165,12 +172,19 @@ def main() -> int:
         fail(".env.example must use generic non-root UID/GID defaults")
     if env.get("CODEX_VERSION") != "0.146.0":
         fail(".env.example must pin Codex 0.146.0")
-    expected_git_timeouts = {
+    expected_safe_defaults = {
+        "WORKBENCH_APP_SERVER_BACKOFF_JITTER_RATIO": "0.15",
+        "WORKBENCH_APP_SERVER_WATCHDOG_ENABLED": "true",
+        "WORKBENCH_APP_SERVER_WATCHDOG_IDLE_SECONDS": "45",
+        "WORKBENCH_APP_SERVER_WATCHDOG_TIMEOUT_SECONDS": "8",
+        "WORKBENCH_APP_SERVER_WATCHDOG_FAILURE_THRESHOLD": "3",
         "WORKBENCH_GIT_COMMAND_TIMEOUT_SECONDS": "30",
         "WORKBENCH_GIT_NETWORK_TIMEOUT_SECONDS": "300",
         "WORKBENCH_GIT_CLONE_TIMEOUT_SECONDS": "900",
+        "WORKBENCH_SQLITE_BUSY_TIMEOUT_MS": "5000",
+        "WORKBENCH_STORAGE_WARNING_FREE_BYTES": "536870912",
     }
-    for key, expected in expected_git_timeouts.items():
+    for key, expected in expected_safe_defaults.items():
         if env.get(key) != expected:
             fail(f".env.example must retain the safe default for {key}")
     if any(key in env for key in FORBIDDEN_CPU_KEYS) or any("CPU_QUOTA" in key for key in env):
