@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import cast
@@ -11,6 +12,8 @@ import pytest
 
 from codex_workbench.deploy_keys import DeployKeyService
 from codex_workbench.git_service import (
+    BranchLocalNameConflictError,
+    BranchTargetUnavailableError,
     GitOperationTimeoutError,
     GitResult,
     GitService,
@@ -24,6 +27,24 @@ def _service(tmp_path: Path) -> tuple[GitService, Path]:
     root.mkdir()
     discovery = RepositoryDiscovery(root)
     return GitService(discovery, root, output_limit=4096), root
+
+
+def _git(cwd: Path, *args: str, check: bool = True) -> str:
+    result = subprocess.run(
+        ("git", *args),
+        cwd=cwd,
+        check=check,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.stdout.strip()
+
+
+def _configure_identity(repository: Path) -> None:
+    _git(repository, "config", "user.name", "Workbench Test")
+    _git(repository, "config", "user.email", "workbench@example.test")
 
 
 class FakeDeployKeys:
@@ -209,6 +230,159 @@ async def test_file_arguments_are_repository_relative(tmp_path: Path) -> None:
     repository = (await service._repositories.list_repositories())[0]  # noqa: SLF001
     with pytest.raises(ValueError):
         await service.run(repository.id, "add", files=("../../outside",))
+
+
+@pytest.mark.asyncio
+async def test_status_preserves_special_paths_and_git_add_uses_exact_path(
+    tmp_path: Path,
+) -> None:
+    service, root = _service(tmp_path)
+    repository_path = root / "special-paths"
+    _git(root, "init", "--initial-branch=main", str(repository_path))
+    _configure_identity(repository_path)
+    tracked = ("space name.txt", "unicodé.txt", "both.txt", "delete.txt")
+    for name in tracked:
+        (repository_path / name).write_text("base\n", encoding="utf-8")
+    _git(repository_path, "add", "--", *tracked)
+    _git(repository_path, "commit", "-m", "base")
+
+    (repository_path / "space name.txt").write_text("unstaged\n", encoding="utf-8")
+    (repository_path / "unicodé.txt").write_text("staged\n", encoding="utf-8")
+    _git(repository_path, "add", "--", "unicodé.txt")
+    (repository_path / "both.txt").write_text("staged\n", encoding="utf-8")
+    _git(repository_path, "add", "--", "both.txt")
+    (repository_path / "both.txt").write_text("both\n", encoding="utf-8")
+    (repository_path / "delete.txt").unlink()
+    (repository_path / "-leading.txt").write_text("new\n", encoding="utf-8")
+    if os.name != "nt":
+        (repository_path / "tab\tname.txt").write_text("tab\n", encoding="utf-8")
+
+    repository_id = GitService.repository_id_for_name("special-paths")
+    status = await service.status(repository_id)
+    changes = {str(item["path"]): item for item in cast(list[dict[str, object]], status["changes"])}
+
+    expected_paths = {*tracked, "-leading.txt"}
+    if os.name != "nt":
+        expected_paths.add("tab\tname.txt")
+    assert set(changes) == expected_paths
+    assert changes["space name.txt"] == {
+        "path": "space name.txt", "staged": False, "unstaged": True, "kind": "modified",
+    }
+    assert changes["unicodé.txt"]["staged"] is True
+    assert changes["both.txt"]["staged"] is True
+    assert changes["both.txt"]["unstaged"] is True
+    if os.name != "nt":
+        assert changes["tab\tname.txt"]["kind"] == "untracked"
+    assert changes["delete.txt"]["kind"] == "deleted"
+    assert changes["-leading.txt"]["kind"] == "untracked"
+    assert status["staged"] == 2
+    assert status["modified"] == 3
+    assert status["untracked"] == (1 if os.name == "nt" else 2)
+
+    added = await service.run(repository_id, "add", files=("-leading.txt",))
+    assert added.exit_code == 0
+    after_add = await service.status(repository_id)
+    leading = next(
+        item
+        for item in cast(list[dict[str, object]], after_add["changes"])
+        if item["path"] == "-leading.txt"
+    )
+    assert leading["staged"] is True
+
+
+@pytest.mark.asyncio
+async def test_status_projects_conflict_path_without_whitespace_parsing(tmp_path: Path) -> None:
+    service, root = _service(tmp_path)
+    repository_path = root / "conflict"
+    _git(root, "init", "--initial-branch=main", str(repository_path))
+    _configure_identity(repository_path)
+    path = "conflict name.txt"
+    (repository_path / path).write_text("base\n", encoding="utf-8")
+    _git(repository_path, "add", "--", path)
+    _git(repository_path, "commit", "-m", "base")
+    _git(repository_path, "switch", "-c", "other")
+    (repository_path / path).write_text("other\n", encoding="utf-8")
+    _git(repository_path, "commit", "-am", "other")
+    _git(repository_path, "switch", "main")
+    (repository_path / path).write_text("main\n", encoding="utf-8")
+    _git(repository_path, "commit", "-am", "main")
+    _git(repository_path, "merge", "other", check=False)
+
+    status = await service.status(GitService.repository_id_for_name("conflict"))
+    assert status["conflicts"] == 1
+    assert status["clean"] is False
+    assert cast(list[dict[str, object]], status["changes"])[0]["path"] == path
+    assert cast(list[dict[str, object]], status["changes"])[0]["kind"] == "conflict"
+
+
+@pytest.mark.asyncio
+async def test_remote_targets_create_explicit_tracking_branches_from_fresh_inventory(
+    tmp_path: Path,
+) -> None:
+    service, root = _service(tmp_path)
+    origin = tmp_path / "origin.git"
+    upstream = tmp_path / "upstream.git"
+    seed = tmp_path / "seed"
+    _git(tmp_path, "init", "--bare", str(origin))
+    _git(tmp_path, "init", "--bare", str(upstream))
+    _git(tmp_path, "init", "--initial-branch=main", str(seed))
+    _configure_identity(seed)
+    (seed / "README.md").write_text("main\n", encoding="utf-8")
+    _git(seed, "add", "README.md")
+    _git(seed, "commit", "-m", "main")
+    _git(seed, "switch", "-c", "release")
+    (seed / "release.txt").write_text("release\n", encoding="utf-8")
+    _git(seed, "add", "release.txt")
+    _git(seed, "commit", "-m", "release")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "remote", "add", "upstream", str(upstream))
+    _git(seed, "push", "origin", "main", "release")
+    _git(seed, "push", "upstream", "release")
+    _git(origin, "symbolic-ref", "HEAD", "refs/heads/main")
+
+    clone = root / "clone"
+    _git(root, "clone", str(origin), str(clone))
+    _git(clone, "remote", "add", "upstream", str(upstream))
+    _git(clone, "fetch", "upstream")
+    repository_id = GitService.repository_id_for_name("clone")
+    inventory = await service.branches(repository_id)
+    remote = cast(list[dict[str, object]], inventory["remote"])
+    origin_target = next(item for item in remote if item["id"] == "refs/remotes/origin/release")
+    upstream_target = next(
+        item for item in remote if item["id"] == "refs/remotes/upstream/release"
+    )
+    assert origin_target["remoteName"] == "origin"
+    assert origin_target["remoteBranchName"] == "release"
+    assert origin_target["proposedLocalName"] == "release"
+    assert upstream_target["remoteName"] == "upstream"
+
+    switched = await service.switch_branch(repository_id, str(origin_target["id"]))
+    assert switched.exit_code == 0
+    assert _git(clone, "branch", "--show-current") == "release"
+    assert _git(clone, "rev-parse", "--abbrev-ref", "@{upstream}") == "origin/release"
+
+    with pytest.raises(BranchTargetUnavailableError):
+        await service.switch_branch(repository_id, "refs/heads/release")
+    switched_local = await service.switch_branch(repository_id, "refs/heads/main")
+    assert switched_local.exit_code == 0
+    assert _git(clone, "branch", "--show-current") == "main"
+    with pytest.raises(BranchLocalNameConflictError):
+        await service.switch_branch(repository_id, str(origin_target["id"]))
+
+    switched_upstream = await service.switch_branch(
+        repository_id,
+        str(upstream_target["id"]),
+        local_branch_name="upstream-release",
+    )
+    assert switched_upstream.exit_code == 0
+    assert _git(clone, "rev-parse", "--abbrev-ref", "@{upstream}") == "upstream/release"
+
+    _git(clone, "switch", "main")
+    _git(clone, "update-ref", "-d", "refs/remotes/upstream/release")
+    with pytest.raises(BranchTargetUnavailableError):
+        await service.switch_branch(repository_id, str(upstream_target["id"]))
+    with pytest.raises(BranchTargetUnavailableError):
+        await service.switch_branch(repository_id, "refs/remotes/origin/invented")
 
 
 @pytest.mark.asyncio

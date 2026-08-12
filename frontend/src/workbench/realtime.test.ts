@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialRealtimeState, reducer, type EventEnvelope } from "./realtime";
+import { initialRealtimeState, reconnectDelay, reducer, type EventEnvelope } from "./realtime";
 import type { ThreadView } from "./types";
 
 const thread: ThreadView = {
@@ -46,5 +46,99 @@ describe("realtime streaming reducer", () => {
     });
     expect(next.threads).toEqual([keep]);
     expect(next.timeline).toEqual({ [keep.id]: [] });
+  });
+
+  it("keeps 100 reconnect delays jittered and bounded without a retry loop", () => {
+    const values = Array.from({ length: 100 }, (_, index) => reconnectDelay(index + 1, index / 99));
+    expect(values.every((value) => value >= 850 && value <= 17_250)).toBe(true);
+    expect(new Set(values.slice(-20)).size).toBeGreaterThan(1);
+  });
+
+  it("reconciles 100 separate reconnect snapshots without duplicating state", () => {
+    let state = { ...initialRealtimeState, threads: [thread] };
+    for (let cycle = 1; cycle <= 100; cycle += 1) {
+      state = reducer(state, { type: "socket", state: "reconnecting" });
+      state = reducer(state, {
+        type: "snapshot",
+        snapshot: {
+          connection: { state: "connected", generation: cycle, message: null },
+          threads: [thread],
+          pendingApprovals: [],
+          rateLimits: { available: false, observedAt: cycle },
+          jobs: [],
+        },
+        latest: cycle,
+        missed: true,
+      });
+    }
+    expect(state.connection).toBe("connected");
+    expect(state.generation).toBe(100);
+    expect(state.lastSequence).toBe(100);
+    expect(state.threads).toEqual([thread]);
+    expect(state.jobs).toEqual([]);
+  });
+
+  it("creates a new realtime recovery episode after reconnect in the same generation", () => {
+    let state = reducer(initialRealtimeState, { type: "socket", state: "connected" });
+    state = reducer(state, { type: "socket", state: "disconnected" });
+    const first = state.recoveryEpisodes.realtime;
+    expect(first?.state).toBe("failed");
+    state = reducer(state, { type: "socket", state: "reconnecting" });
+    expect(state.recoveryEpisodes.realtime?.id).toBe(first?.id);
+    expect(state.recoveryEpisodes.realtime?.state).toBe("recovering");
+    state = reducer(state, { type: "socket", state: "connected" });
+    expect(state.recoveryEpisodes.realtime).toBeNull();
+    state = reducer(state, { type: "socket", state: "disconnected" });
+    expect(state.generation).toBe(0);
+    expect(state.recoveryEpisodes.realtime?.id).not.toBe(first?.id);
+  });
+
+  it("creates a new runtime episode after recovery without changing generation", () => {
+    const connected = {
+      ...initialRealtimeState,
+      processConnection: "ready",
+      connection: "connected" as const,
+    };
+    const failedEvent = (sequence: number, state: string): EventEnvelope => ({
+      sequence,
+      occurredAt: "2026-01-01T00:00:00Z",
+      type: "connection.state",
+      payload: { state, generation: 7 },
+      threadId: null,
+      turnId: null,
+      itemId: null,
+    });
+    let state = reducer(connected, { type: "event", event: failedEvent(1, "failed") });
+    const first = state.recoveryEpisodes.runtime;
+    state = reducer(state, { type: "event", event: failedEvent(2, "ready") });
+    expect(state.recoveryEpisodes.runtime).toBeNull();
+    state = reducer(state, { type: "event", event: failedEvent(3, "recovering") });
+    expect(state.generation).toBe(7);
+    expect(state.recoveryEpisodes.runtime?.id).not.toBe(first?.id);
+  });
+
+  it("projects a reproducible long conversation batch without losing final text", () => {
+    const state = { ...initialRealtimeState, threads: [thread] };
+    const events = Array.from({ length: 5_000 }, (_, index) => delta(index + 1, "x"));
+    const started = performance.now();
+    const next = reducer(state, { type: "events", events });
+    const duration = performance.now() - started;
+    expect(next.lastSequence).toBe(5_000);
+    expect(next.threads[0]?.turns[0]?.items[0]?.text).toHaveLength(5_000);
+    expect(duration).toBeLessThan(2_000);
+  });
+
+  it("applies a persisted thread title update in realtime", () => {
+    const next = reducer({ ...initialRealtimeState, threads: [thread] }, {
+      type: "event",
+      event: {
+        sequence: 1, occurredAt: "2026-01-01T00:00:00Z", type: "thread.name",
+        payload: { name: "Runtime Recovery absichern", titleSource: "manual",
+          titleUpdatedAt: 2, titleGenerationState: "succeeded", titleErrorCode: null },
+        threadId: thread.id, turnId: null, itemId: null,
+      },
+    });
+    expect(next.threads[0]?.name).toBe("Runtime Recovery absichern");
+    expect(next.threads[0]?.titleSource).toBe("manual");
   });
 });

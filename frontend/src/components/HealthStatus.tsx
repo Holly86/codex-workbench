@@ -5,9 +5,10 @@ type BackendState = "checking" | "connected" | "unavailable";
 interface HealthStatusProps {
   processConnection: string;
   realtimeConnection?: string;
+  onOpen: () => void;
 }
 
-export function HealthStatus({ processConnection, realtimeConnection = "connected" }: HealthStatusProps) {
+export function HealthStatus({ processConnection, realtimeConnection = "connected", onOpen }: HealthStatusProps) {
   const [backend, setBackend] = useState<BackendState>("checking");
   const [runtimeReady, setRuntimeReady] = useState(false);
 
@@ -55,14 +56,15 @@ export function HealthStatus({ processConnection, realtimeConnection = "connecte
   const backendText = backendLabel(backend);
   const runtimeText = runtimeLabel(backend, runtimeReady, processConnection, realtimeConnection);
   return (
-    <div className="health-status" role="status" aria-live="polite" aria-label={`${backendText}. ${runtimeText}.`}>
+    <button className="health-status" type="button" onClick={onOpen} aria-label={`${backendText}. ${runtimeText}. Systemstatus öffnen.`}>
       <span className="status-chip" data-state={backend === "connected" ? "positive" : backend === "checking" ? "pending" : "negative"} title={backendText}>
         <span className="status-dot" aria-hidden="true" /><span className="status-key">Backend</span><span className="status-value">{backendText}</span><span className="status-compact">{backend === "connected" ? "Verbunden" : backend === "checking" ? "Prüfung" : "Offline"}</span>
       </span>
       <span className="status-chip" data-state={runtimeTone(backend, runtimeReady, processConnection, realtimeConnection)} title={runtimeText}>
         <span className="status-dot" aria-hidden="true" /><span className="status-key">Runtime</span><span className="status-value">{runtimeText}</span><span className="status-compact">{processConnection === "connected" && runtimeReady ? "Bereit" : processConnection === "reconnecting" || realtimeConnection !== "connected" ? "Verbindet" : "Offline"}</span>
       </span>
-    </div>
+      <span className="sr-only" role="status" aria-live="polite">{backendText}. {runtimeText}.</span>
+    </button>
   );
 }
 

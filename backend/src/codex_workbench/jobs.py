@@ -11,10 +11,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from codex_workbench.app_server.transport import JsonObject
-from codex_workbench.git_service import GitResult
+from codex_workbench.git_service import GitOperationTimeoutError, GitResult
 
 type JobType = Literal["git_clone", "git_fetch", "git_pull", "git_push", "github_publish"]
-type JobStatus = Literal["queued", "running", "succeeded", "failed"]
+type JobStatus = Literal[
+    "queued", "running", "succeeded", "failed", "interrupted", "timed_out"
+]
 type JobUpdateHandler = Callable[[str, JsonObject], Awaitable[None]]
 
 logger = logging.getLogger("codex_workbench.jobs")
@@ -33,6 +35,7 @@ class BackgroundJob:
     exit_code: int | None = None
     output: str = ""
     error: str | None = None
+    error_code: str | None = None
     command: str = ""
     duration_ms: int | None = None
 
@@ -46,11 +49,27 @@ class BackgroundJob:
             "startedAt": self.started_at,
             "endedAt": self.ended_at,
             "exitCode": self.exit_code,
-            "output": self.output,
             "error": self.error,
-            "command": self.command,
+            "errorCode": self.error_code,
+            "retryable": self.type in {"git_fetch", "git_pull"}
+            and self.status in {"failed", "timed_out", "interrupted"},
+            "operationLabel": {
+                "git_clone": "Repository klonen",
+                "git_fetch": "Remote-Stand abrufen",
+                "git_pull": "Fast-Forward Pull",
+                "git_push": "Änderungen pushen",
+                "github_publish": "Repository veröffentlichen",
+            }[self.type],
             "durationMs": self.duration_ms,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundJobStatus:
+    active: int
+    queued: int
+    failed: int
+    infrastructure_error_code: str | None
 
 
 class BackgroundJobRegistry:
@@ -65,6 +84,7 @@ class BackgroundJobRegistry:
         self._tasks: set[asyncio.Task[None]] = set()
         self._blocked_repositories: set[str] = set()
         self._lock = asyncio.Lock()
+        self._infrastructure_error_code: str | None = None
 
     async def start(
         self,
@@ -108,6 +128,19 @@ class BackgroundJobRegistry:
                 for job in self._jobs.values()
             )
 
+    async def status_counts(self) -> BackgroundJobStatus:
+        """Separate subsystem health from historical user-operation outcomes."""
+
+        async with self._lock:
+            active = sum(job.status == "running" for job in self._jobs.values())
+            queued = sum(job.status == "queued" for job in self._jobs.values())
+            failed = sum(
+                job.status in {"failed", "interrupted", "timed_out"}
+                for job in self._jobs.values()
+            )
+            infrastructure_error_code = self._infrastructure_error_code
+        return BackgroundJobStatus(active, queued, failed, infrastructure_error_code)
+
     async def reserve_repository_removal(self, repository_id: str) -> bool:
         async with self._lock:
             if repository_id in self._blocked_repositories:
@@ -143,9 +176,28 @@ class BackgroundJobRegistry:
             job.status = "succeeded" if result.exit_code == 0 else "failed"
             if result.exit_code != 0:
                 job.error = "Die native Operation ist fehlgeschlagen."
+                job.error_code = "native_operation_failed"
+        except GitOperationTimeoutError:
+            job.status = "timed_out"
+            job.error = "Der Vorgang hat das zulässige Zeitlimit überschritten."
+            job.error_code = "git_operation_timeout"
+            logger.warning(
+                "background_job_failed",
+                extra={"job_type": job.type, "error_type": "GitOperationTimeoutError"},
+            )
+        except asyncio.CancelledError:
+            job.status = "interrupted"
+            job.error = "Der Vorgang wurde beim Herunterfahren kontrolliert beendet."
+            job.error_code = "service_shutdown"
+            logger.warning(
+                "background_job_interrupted",
+                extra={"job_type": job.type, "state": "interrupted"},
+            )
+            raise
         except Exception as exc:
             job.status = "failed"
             job.error = "Die native Operation konnte nicht abgeschlossen werden."
+            job.error_code = "native_operation_failed"
             logger.warning(
                 "background_job_failed",
                 extra={"job_type": job.type, "error_type": type(exc).__name__},
@@ -158,7 +210,9 @@ class BackgroundJobRegistry:
         if self._update_handler is not None:
             try:
                 await self._update_handler(job.owner_session_id, job.browser_dict())
+                self._infrastructure_error_code = None
             except Exception as exc:
+                self._infrastructure_error_code = "job_realtime_update_failed"
                 logger.warning(
                     "job_realtime_update_failed",
                     extra={"error_type": type(exc).__name__},
@@ -168,7 +222,11 @@ class BackgroundJobRegistry:
         if len(self._jobs) <= self._history_limit:
             return
         completed = sorted(
-            (job for job in self._jobs.values() if job.status in {"succeeded", "failed"}),
+            (
+                job
+                for job in self._jobs.values()
+                if job.status in {"succeeded", "failed", "interrupted", "timed_out"}
+            ),
             key=lambda job: job.started_at,
         )
         for job in completed[: len(self._jobs) - self._history_limit]:

@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 
+from codex_workbench.app_server.transport import JsonObject, JsonValue
 from codex_workbench.repositories import RepositoryDiscovery
 
 if TYPE_CHECKING:
@@ -37,6 +38,14 @@ class GitOperationTimeoutError(GitOperationError):
 
 class RepositoryNameConflictError(ValueError):
     """A requested direct-child clone target already exists."""
+
+
+class BranchLocalNameConflictError(GitOperationError):
+    """A remote branch cannot replace an existing local branch."""
+
+
+class BranchTargetUnavailableError(GitOperationError):
+    """A selected branch target is no longer present or cannot be switched."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,40 +319,81 @@ class GitService:
 
     async def status(self, repository_id: str) -> dict[str, object]:
         result = await self.run(repository_id, "status")
+        if result.truncated:
+            raise GitOperationError("status inventory failed")
         branch: str | None = None
         upstream: str | None = None
         ahead = behind = staged = modified = untracked = conflicts = 0
         detached = False
         changes: list[dict[str, object]] = []
-        for line in result.output.splitlines():
-            if line.startswith("# branch.head "):
-                value = line.removeprefix("# branch.head ")
+        for record in result.output.split("\x00"):
+            if record.startswith("# branch.head "):
+                value = record.removeprefix("# branch.head ")
                 detached = value == "(detached)"
                 branch = None if detached else value
-            elif line.startswith("# branch.upstream "):
-                upstream = line.removeprefix("# branch.upstream ")
-            elif line.startswith("# branch.ab "):
-                match = re.fullmatch(r"# branch\.ab \+(\d+) -(\d+)", line)
+            elif record.startswith("# branch.upstream "):
+                upstream = record.removeprefix("# branch.upstream ")
+            elif record.startswith("# branch.ab "):
+                match = re.fullmatch(r"# branch\.ab \+(\d+) -(\d+)", record)
                 if match:
                     ahead, behind = int(match.group(1)), int(match.group(2))
-            elif line.startswith("? "):
+            elif record.startswith("? "):
                 untracked += 1
-                changes.append({"path": line[2:], "staged": False, "kind": "untracked"})
-            elif line.startswith(("1 ", "2 ", "u ")):
-                parts = line.split(" ")
-                xy = parts[1] if len(parts) > 1 else ".."
-                path = parts[-1] if parts else ""
-                is_conflict = line.startswith("u ") or "U" in xy
+                changes.append(
+                    {
+                        "path": record[2:],
+                        "staged": False,
+                        "unstaged": True,
+                        "kind": "untracked",
+                    }
+                )
+            elif record.startswith("1 "):
+                # --no-renames guarantees one NUL record per path. A bounded split
+                # preserves every byte after the fixed Porcelain-v2 metadata fields.
+                parts = record.split(" ", 8)
+                if len(parts) != 9:
+                    raise GitOperationError("invalid status inventory")
+                xy, path = parts[1], parts[8]
+                is_conflict = "U" in xy
+                index_changed = xy[0] not in {".", "?"}
+                worktree_changed = xy[1] not in {".", "?"}
                 conflicts += int(is_conflict)
-                staged += int(xy[0] not in {".", "?"})
-                modified += int(xy[1] not in {".", "?"})
+                staged += int(index_changed)
+                modified += int(worktree_changed)
                 changes.append(
                     {
                         "path": path,
-                        "staged": xy[0] not in {".", "?"},
-                        "kind": "conflict" if is_conflict else "modified",
+                        "staged": index_changed,
+                        "unstaged": worktree_changed,
+                        "kind": (
+                            "conflict"
+                            if is_conflict
+                            else "deleted"
+                            if "D" in xy
+                            else "modified"
+                        ),
                     }
                 )
+            elif record.startswith("u "):
+                parts = record.split(" ", 10)
+                if len(parts) != 11:
+                    raise GitOperationError("invalid status inventory")
+                xy, path = parts[1], parts[10]
+                index_changed = xy[0] not in {".", "?"}
+                worktree_changed = xy[1] not in {".", "?"}
+                conflicts += 1
+                staged += int(index_changed)
+                modified += int(worktree_changed)
+                changes.append(
+                    {
+                        "path": path,
+                        "staged": index_changed,
+                        "unstaged": worktree_changed,
+                        "kind": "conflict",
+                    }
+                )
+            elif record.startswith("2 "):
+                raise GitOperationError("unexpected renamed status record")
         return {
             "branch": branch,
             "detached": detached,
@@ -359,6 +409,155 @@ class GitService:
             "changes": changes,
             "observedAt": int(time.time()),
         }
+
+    async def branches(self, repository_id: str) -> JsonObject:
+        """Return a typed local/remote branch inventory without command output."""
+
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        local, remote = await self._load_branch_inventory(cwd)
+        return {"local": local, "remote": remote}
+
+    async def switch_branch(
+        self,
+        repository_id: str,
+        target_id: str,
+        *,
+        local_branch_name: str | None = None,
+    ) -> GitResult:
+        """Switch only to a target from a fresh, server-owned branch inventory."""
+
+        _summary, cwd = await asyncio.to_thread(
+            self._repositories.resolve_repository_id, repository_id
+        )
+        lock = self._locks.setdefault(repository_id, asyncio.Lock())
+        async with lock:
+            local, remote = await self._load_branch_inventory(cwd)
+            targets = {
+                str(item["id"]): item
+                for item in (*local, *remote)
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+            target = targets.get(target_id)
+            if target is None or target.get("disabledReason") is not None:
+                raise BranchTargetUnavailableError("branch target unavailable")
+            if target["kind"] == "local":
+                branch_name = str(target["displayName"])
+                result = await self._execute(
+                    cwd,
+                    ("switch", "--", branch_name),
+                    timeout_seconds=self._command_timeout,
+                )
+                if result.exit_code != 0:
+                    raise GitOperationError("branch switch failed")
+                return result
+
+            proposed_name = str(target["proposedLocalName"])
+            branch_name = local_branch_name or proposed_name
+            if not _REF.fullmatch(branch_name):
+                raise ValueError("invalid local branch")
+            if any(
+                isinstance(item, dict) and item.get("displayName") == branch_name
+                for item in local
+            ):
+                raise BranchLocalNameConflictError("local branch already exists")
+            result = await self._execute(
+                cwd,
+                (
+                    "switch",
+                    "-c",
+                    branch_name,
+                    "--track=direct",
+                    "--",
+                    str(target["fullRef"]),
+                ),
+                timeout_seconds=self._command_timeout,
+            )
+            if result.exit_code != 0:
+                raise GitOperationError("tracking branch creation failed")
+            return result
+
+    async def _load_branch_inventory(
+        self, cwd: Path
+    ) -> tuple[list[JsonValue], list[JsonValue]]:
+        remotes_result = await self._execute(
+            cwd, ("remote",), timeout_seconds=self._command_timeout
+        )
+        refs_result = await self._execute(
+            cwd,
+            (
+                "for-each-ref",
+                "--format=%(refname)\t%(HEAD)",
+                "refs/heads",
+                "refs/remotes",
+            ),
+            timeout_seconds=self._command_timeout,
+        )
+        if (
+            remotes_result.exit_code != 0
+            or refs_result.exit_code != 0
+            or remotes_result.truncated
+            or refs_result.truncated
+        ):
+            raise GitOperationError("branch inventory failed")
+        remote_names = tuple(
+            sorted(
+                (name for name in remotes_result.output.splitlines() if _REF.fullmatch(name)),
+                key=len,
+                reverse=True,
+            )
+        )
+        local: list[JsonValue] = []
+        remote: list[JsonValue] = []
+        for line in refs_result.output.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 2:
+                continue
+            full_ref, head = fields
+            if full_ref.startswith("refs/heads/"):
+                kind = "local"
+                name = full_ref.removeprefix("refs/heads/")
+                remote_name: str | None = None
+                remote_branch_name: str | None = None
+                proposed_local_name: str | None = None
+            elif full_ref.startswith("refs/remotes/"):
+                kind = "remote"
+                remote_name = next(
+                    (
+                        candidate
+                        for candidate in remote_names
+                        if full_ref.startswith(f"refs/remotes/{candidate}/")
+                    ),
+                    None,
+                )
+                if remote_name is None:
+                    continue
+                remote_branch_name = full_ref.removeprefix(
+                    f"refs/remotes/{remote_name}/"
+                )
+                if not remote_branch_name or remote_branch_name == "HEAD":
+                    continue
+                proposed_local_name = remote_branch_name
+                name = f"{remote_name}/{remote_branch_name}"
+            else:
+                continue
+            if not name:
+                continue
+            current = head == "*"
+            item: JsonObject = {
+                "id": full_ref,
+                "kind": kind,
+                "displayName": name,
+                "fullRef": full_ref,
+                "remoteName": remote_name,
+                "remoteBranchName": remote_branch_name,
+                "proposedLocalName": proposed_local_name,
+                "current": current,
+                "disabledReason": "current_branch" if current else None,
+            }
+            (remote if kind == "remote" else local).append(item)
+        return local, remote
 
     async def github_capability(self, repository_id: str | None = None) -> dict[str, object]:
         executable = shutil.which("gh")
@@ -557,7 +756,17 @@ class GitService:
         self, action: str, *, files: tuple[str, ...], message: str | None, branch: str | None
     ) -> tuple[tuple[str, ...], bool]:
         if action == "status":
-            return (("status", "--porcelain=v2", "--branch", "--untracked-files=all"), False)
+            return (
+                (
+                    "status",
+                    "--porcelain=v2",
+                    "-z",
+                    "--branch",
+                    "--untracked-files=all",
+                    "--no-renames",
+                ),
+                False,
+            )
         if action == "diff":
             return (("diff", "--no-ext-diff", "--"), False)
         if action == "fetch":
@@ -567,7 +776,15 @@ class GitService:
         if action == "push":
             return (("push",), True)
         if action == "branches":
-            return (("branch", "--format=%(refname:short)\t%(HEAD)\t%(upstream:short)"), False)
+            return (
+                (
+                    "for-each-ref",
+                    "--format=%(refname:short)\t%(refname)\t%(HEAD)",
+                    "refs/heads",
+                    "refs/remotes",
+                ),
+                False,
+            )
         if action == "remotes":
             return (("remote", "-v"), False)
         if action == "log":
@@ -589,13 +806,12 @@ class GitService:
             if message is None or not message.strip() or len(message) > 10_000 or "\x00" in message:
                 raise ValueError("invalid commit message")
             return (("commit", "-m", message.strip()), True)
-        if action in {"branch-create", "branch-switch"}:
+        if action == "branch-create":
             if branch is None or not _REF.fullmatch(branch):
                 raise ValueError("invalid branch")
-            return (
-                (("switch", "-c", branch) if action == "branch-create" else ("switch", branch)),
-                True,
-            )
+            return (("switch", "-c", branch), True)
+        if action == "branch-switch":
+            raise ValueError("branch switch requires a server-validated target")
         raise ValueError("unsupported Git action")
 
     @staticmethod
@@ -603,7 +819,6 @@ class GitService:
         path = PurePosixPath(value)
         if (
             not value
-            or value.startswith("-")
             or path.is_absolute()
             or ".." in path.parts
             or "\x00" in value

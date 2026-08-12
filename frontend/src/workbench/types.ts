@@ -10,18 +10,46 @@ export interface Repository {
   renameCapabilities: { displayName: boolean; directory: boolean; remote: boolean };
 }
 
-export interface GitChange { path: string; staged: boolean; kind: string }
+export interface GitChange { path: string; staged: boolean; unstaged: boolean; kind: string }
 export interface GitStatus {
   branch: string | null; detached: boolean; upstream: string | null; upstreamMissing: boolean;
   ahead: number; behind: number; staged: number; modified: number; untracked: number;
   conflicts: number; clean: boolean; changes: GitChange[]; observedAt: number;
 }
+export interface BranchTarget {
+  id: string;
+  kind: "local" | "remote";
+  displayName: string;
+  fullRef: string;
+  remoteName: string | null;
+  remoteBranchName: string | null;
+  proposedLocalName: string | null;
+  current: boolean;
+  disabledReason: "current_branch" | null;
+}
 export interface NativeJob {
   id: string; repositoryId: string | null; repositoryName: string;
   type: "git_clone" | "git_fetch" | "git_pull" | "git_push" | "github_publish";
-  status: "queued" | "running" | "succeeded" | "failed"; startedAt: number;
-  endedAt: number | null; exitCode: number | null; output: string; error: string | null;
-  command: string; durationMs: number | null;
+  status: "queued" | "running" | "succeeded" | "failed" | "interrupted" | "timed_out";
+  startedAt: number; endedAt: number | null; exitCode: number | null; error: string | null;
+  errorCode: string | null; retryable: boolean; operationLabel: string; durationMs: number | null;
+}
+
+export type ServiceState = "healthy" | "degraded" | "recovering" | "blocked" | "failed" | "unknown";
+export type ServiceComponent =
+  | "backend_http" | "codex_app_server" | "realtime_websocket" | "sqlite_metadata"
+  | "repository_root" | "upload_storage" | "background_jobs" | "plugin_discovery";
+export interface ComponentStatus {
+  component: ServiceComponent; state: ServiceState; observedAt: number; errorCode: string | null;
+  lastSuccessAt: number | null; lastRecoveryAt: number | null; nextRecoveryAt: number | null;
+  generation: number | null;
+  restartAttempts: number | null; restartLimit: number | null; activeCount: number | null;
+  queuedCount: number | null; failedCount: number | null; connectionCount: number | null;
+  optional: boolean; enabled: boolean;
+}
+export interface SystemStatus {
+  status: ServiceState; workbenchVersion: string; codexVersion: string | null;
+  observedAt: number; components: ComponentStatus[];
 }
 export interface GitHubCapability {
   available: boolean; authenticated: boolean; account?: string | null; reason?: string | null;
@@ -178,6 +206,10 @@ export interface ThreadView {
   repositoryName: string;
   preview: string;
   name: string | null;
+  titleSource?: "native" | "ai" | "manual" | "fallback";
+  titleUpdatedAt?: number;
+  titleGenerationState?: "idle" | "pending" | "succeeded" | "failed" | "unavailable";
+  titleErrorCode?: string | null;
   status: string;
   sandboxMode: SandboxMode;
   approvalPolicy: ApprovalPolicy;

@@ -11,3 +11,14 @@ HTMLDialogElement.prototype.showModal = function showModal() {
 HTMLDialogElement.prototype.close = function close() {
   this.removeAttribute("open");
 };
+
+if (typeof window.PointerEvent === "undefined") {
+  class TestPointerEvent extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  Object.defineProperty(window, "PointerEvent", { configurable: true, value: TestPointerEvent });
+}

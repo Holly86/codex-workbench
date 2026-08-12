@@ -11,10 +11,12 @@ import type {
   WorkbenchCapabilities,
   RepositoryRemovalPreview,
   GitHubCapability,
+  BranchTarget,
   GitStatus,
   NativeJob,
   DeployKeyRemotePreview,
   DeployKeyView,
+  SystemStatus,
 } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -129,6 +131,35 @@ export async function listRepositories(signal?: AbortSignal): Promise<Repository
   return parseRepositories(await requestJson("/api/repositories", { method: "GET", signal }));
 }
 
+export async function readSystemStatus(signal?: AbortSignal): Promise<SystemStatus> {
+  const value = requireRecord(await requestJson("/api/system/status", { method: "GET", signal }));
+  if (typeof value.status !== "string" || !Array.isArray(value.components)) {
+    throw new ApiError(502, "invalid_response", "Ungültige Systemstatus-Antwort.", null);
+  }
+  return value as unknown as SystemStatus;
+}
+
+export async function updateThreadTitle(
+  csrfToken: string, threadId: string, name: string,
+): Promise<ThreadView> {
+  return parseThreadBody(await requestJson(
+    `/api/threads/${encodeURIComponent(threadId)}/title`,
+    { method: "PATCH", body: JSON.stringify({ name }) }, csrfToken,
+  ));
+}
+
+export async function restartRuntime(csrfToken: string): Promise<"started" | "coalesced"> {
+  const value = requireRecord(await requestJson(
+    "/api/system/runtime/restart",
+    { method: "POST", body: JSON.stringify({ confirmation: "CODEX RUNTIME NEU STARTEN" }) },
+    csrfToken,
+  ));
+  if (value.result !== "started" && value.result !== "coalesced") {
+    throw new ApiError(502, "invalid_response", "Ungültige Recovery-Antwort.", null);
+  }
+  return value.result;
+}
+
 export async function readCapabilities(
   repositoryId: string, tools: "none" | "skills" | "plugins" | "all" = "none",
 ): Promise<WorkbenchCapabilities> {
@@ -148,13 +179,66 @@ export async function gitStatus(repositoryId: string): Promise<GitStatus> {
   )) as unknown as GitStatus;
 }
 
+export async function gitBranches(
+  repositoryId: string,
+): Promise<{ local: BranchTarget[]; remote: BranchTarget[] }> {
+  const body = requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/git/branches`, { method: "GET" },
+  ));
+  if (!Array.isArray(body.local) || !Array.isArray(body.remote)) {
+    throw new ApiError(502, "invalid_response", "Ungültige Branch-Antwort.", null);
+  }
+  return {
+    local: body.local.map((value) => parseBranchTarget(value, "local")),
+    remote: body.remote.map((value) => parseBranchTarget(value, "remote")),
+  };
+}
+
+function parseBranchTarget(value: unknown, expectedKind: BranchTarget["kind"]): BranchTarget {
+  const item = requireRecord(value);
+  if (
+    item.kind !== expectedKind
+    || typeof item.id !== "string"
+    || typeof item.displayName !== "string"
+    || typeof item.fullRef !== "string"
+    || typeof item.current !== "boolean"
+    || (item.disabledReason !== null && item.disabledReason !== "current_branch")
+    || (expectedKind === "local" && (
+      item.remoteName !== null
+      || item.remoteBranchName !== null
+      || item.proposedLocalName !== null
+    ))
+    || (expectedKind === "remote" && (
+      typeof item.remoteName !== "string"
+      || typeof item.remoteBranchName !== "string"
+      || typeof item.proposedLocalName !== "string"
+    ))
+  ) {
+    throw new ApiError(502, "invalid_response", "Ungültige Branch-Antwort.", null);
+  }
+  return item as unknown as BranchTarget;
+}
+
 export async function gitAction(
   csrfToken: string, repositoryId: string, action: string,
-  options: { files?: string[]; message?: string; branch?: string } = {},
+  options: {
+    files?: string[];
+    message?: string;
+    branch?: string;
+    branchTargetId?: string;
+    localBranchName?: string;
+  } = {},
 ): Promise<Record<string, unknown>> {
   return requireRecord(await requestJson(
     `/api/repositories/${encodeURIComponent(repositoryId)}/git`,
-    { method: "POST", body: JSON.stringify({ action, files: options.files ?? [], message: options.message ?? null, branch: options.branch ?? null }) }, csrfToken,
+    { method: "POST", body: JSON.stringify({
+      action,
+      files: options.files ?? [],
+      message: options.message ?? null,
+      branch: options.branch ?? null,
+      branchTargetId: options.branchTargetId ?? null,
+      localBranchName: options.localBranchName ?? null,
+    }) }, csrfToken,
   ));
 }
 

@@ -55,6 +55,29 @@ def turn(status: str = "inProgress", items: list[dict[str, Any]] | None = None) 
     }
 
 
+def synthetic_title(text: str) -> str | None:
+    """Return deterministic semantic titles for the synthetic title-contract matrix."""
+
+    return {
+        "Analysiere eine synthetische Warteschlange, härte ihren Worker und ergänze "
+        "deterministische Regressionstests.": (
+            "Resiliente Warteschlangenverarbeitung absichern"
+        ),
+        "Inspect a synthetic queue, harden worker recovery, and add deterministic "
+        "regression coverage.": "Harden queue recovery and regression coverage",
+        "Prüfe ./fixture-workspace/config/settings.toml und dokumentiere eine sichere "
+        "Validierung.": "Sichere Konfigurationsvalidierung dokumentieren",
+        "Plane einen vollständig synthetischen Reliability-Sprint mit mehreren voneinander "
+        "abhängigen Prüfschritten, klaren Sicherheitsgrenzen, reproduzierbaren Browserfällen "
+        "und einem abschließenden Release-Gate, ohne dabei externe Systeme zu verwenden.": (
+            "Mehrstufigen Reliability-Sprint strukturiert abschließen"
+        ),
+        "Ändere den Schwerpunkt auf die Prüfung der Release-Readiness nach der Recovery.": (
+            "Release-Readiness nach Recovery prüfen"
+        ),
+    }.get(text)
+
+
 def main() -> int:
     if sys.argv[1:] == ["--version"]:
         print("codex-cli 0.146.0")
@@ -207,6 +230,9 @@ def main() -> int:
             )
         elif method == "thread/read":
             send({"id": request_id, "result": {"thread": active_thread}})
+        elif method == "thread/name/set":
+            active_thread["name"] = params.get("name")
+            send({"id": request_id, "result": {}})
         elif method == "thread/delete":
             active_thread = thread(active_cwd, "deleted-thread")
             send({"id": request_id, "result": {}})
@@ -237,8 +263,26 @@ def main() -> int:
                 }
             )
         elif method == "turn/start":
+            if scenario == "title_contract":
+                raw_input = params.get("input")
+                first_input = raw_input[0] if isinstance(raw_input, list) and raw_input else None
+                text = first_input.get("text") if isinstance(first_input, dict) else None
+                title = synthetic_title(text) if isinstance(text, str) else None
+                if title is not None:
+                    active_thread["name"] = title
+                    active_thread["updatedAt"] += 1
             current_turn = turn()
             send({"id": request_id, "result": {"turn": current_turn}})
+            if scenario == "title_contract" and active_thread["name"] != "Fake thread":
+                send(
+                    {
+                        "method": "thread/name/updated",
+                        "params": {
+                            "threadId": active_thread["id"],
+                            "threadName": active_thread["name"],
+                        },
+                    }
+                )
             send(
                 {
                     "method": "turn/started",

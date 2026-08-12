@@ -10,7 +10,12 @@ from codex_workbench.app_server.correlation import (
     AppServerRequestTimeoutError,
     RequestCorrelator,
 )
-from codex_workbench.app_server.protocol import EnvelopeKind, ProtocolAdapter
+from codex_workbench.app_server.protocol import (
+    SERVER_NOTIFICATION_METHODS,
+    WORKBENCH_SERVER_REQUEST_METHODS,
+    EnvelopeKind,
+    ProtocolAdapter,
+)
 from codex_workbench.app_server.transport import (
     AppServerProtocolError,
     AppServerTransport,
@@ -24,6 +29,7 @@ logger = logging.getLogger("codex_workbench.app_server.client")
 type NotificationHandler = Callable[[int, str, JsonObject], Awaitable[None]]
 type ServerRequestHandler = Callable[[int, JsonScalar, str, JsonObject], Awaitable[None]]
 type DisconnectHandler = Callable[[int, BaseException], Awaitable[None]]
+type ProtocolActivityHandler = Callable[[int], None]
 
 
 class AppServerClient:
@@ -39,6 +45,7 @@ class AppServerClient:
         notification_handler: NotificationHandler,
         server_request_handler: ServerRequestHandler,
         disconnect_handler: DisconnectHandler,
+        activity_handler: ProtocolActivityHandler | None = None,
     ) -> None:
         self.transport = transport
         self.generation = generation
@@ -47,6 +54,7 @@ class AppServerClient:
         self._notification_handler = notification_handler
         self._server_request_handler = server_request_handler
         self._disconnect_handler = disconnect_handler
+        self._activity_handler = activity_handler
         self._adapter = ProtocolAdapter()
         self._correlator = RequestCorrelator(generation)
         self._send_lock = asyncio.Lock()
@@ -128,11 +136,14 @@ class AppServerClient:
                 except ValueError as exc:
                     raise AppServerProtocolError("app-server emitted a malformed envelope") from exc
                 if classified.kind is EnvelopeKind.RESPONSE:
-                    if not self._correlator.resolve(envelope):
+                    resolved = self._correlator.resolve(envelope)
+                    if not resolved:
                         logger.warning(
                             "app_server_unknown_response_id",
                             extra={"generation": self.generation},
                         )
+                    elif "result" in envelope and "error" not in envelope:
+                        self._note_protocol_activity()
                 elif classified.kind is EnvelopeKind.NOTIFICATION:
                     if classified.method is None:
                         continue
@@ -142,6 +153,8 @@ class AppServerClient:
                             classified.method,
                             classified.params,
                         )
+                        if classified.method in SERVER_NOTIFICATION_METHODS:
+                            self._note_protocol_activity()
                     except Exception as exc:
                         # Projection/application failures are not transport failures.  A broken
                         # notification must not fail unrelated requests or consume restart budget.
@@ -170,6 +183,8 @@ class AppServerClient:
                             classified.method,
                             classified.params,
                         )
+                        if classified.method in WORKBENCH_SERVER_REQUEST_METHODS:
+                            self._note_protocol_activity()
                     except Exception as exc:
                         logger.error(
                             "app_server_request_handler_failed",
@@ -188,3 +203,7 @@ class AppServerClient:
             self._correlator.fail_all(type(exc).__name__)
             if not self._intentional_stop:
                 await self._disconnect_handler(self.generation, exc)
+
+    def _note_protocol_activity(self) -> None:
+        if self._activity_handler is not None:
+            self._activity_handler(self.generation)

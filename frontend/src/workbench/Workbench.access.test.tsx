@@ -56,6 +56,7 @@ vi.mock("./realtime", () => ({
     missedEvents: false,
     timeline: {},
     jobs: [],
+    recoveryEpisodes: { runtime: null, realtime: null, nextOrdinal: 1 },
   }, mocks.dispatch],
 }));
 

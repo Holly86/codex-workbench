@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import shutil
 import signal
@@ -24,6 +25,7 @@ from codex_workbench.app_server.client import (
     NotificationHandler,
     ServerRequestHandler,
 )
+from codex_workbench.app_server.correlation import AppServerRequestError
 from codex_workbench.app_server.transport import SubprocessJsonlTransport
 from codex_workbench.config import Settings
 
@@ -39,6 +41,8 @@ APP_SERVER_ARGUMENTS = ("app-server", "--stdio")
 _VERSION_PATTERN = re.compile(
     r"codex-cli ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
 )
+
+_WATCHDOG_ERROR_CODES = frozenset({"watchdog_probe_rejected", "watchdog_unresponsive"})
 
 
 class VersionCheckReason(StrEnum):
@@ -151,6 +155,11 @@ class ProcessStatus:
     version: str | None
     restart_attempts: int
     error_code: str | None
+    last_ready_at: int | None
+    last_recovery_at: int | None
+    last_activity_at: int | None
+    next_recovery_at: int | None
+    consecutive_probe_failures: int
 
 
 class AppServerSupervisor:
@@ -187,8 +196,16 @@ class AppServerSupervisor:
         self._restart_task: asyncio.Task[None] | None = None
         self._restart_requested = False
         self._stability_task: asyncio.Task[None] | None = None
+        self._watchdog_task: asyncio.Task[None] | None = None
+        self._watchdog_probe_task: asyncio.Task[None] | None = None
         self._stopping = False
         self._lifecycle_lock = asyncio.Lock()
+        self._last_activity_monotonic = time.monotonic()
+        self._last_activity_at: int | None = None
+        self._last_ready_at: int | None = None
+        self._last_recovery_at: int | None = None
+        self._next_recovery_at: int | None = None
+        self._consecutive_probe_failures = 0
 
     @property
     def client(self) -> AppServerClient:
@@ -204,6 +221,11 @@ class AppServerSupervisor:
             version=self._version,
             restart_attempts=len(self._restart_times),
             error_code=self._error_code,
+            last_ready_at=self._last_ready_at,
+            last_recovery_at=self._last_recovery_at,
+            last_activity_at=self._last_activity_at,
+            next_recovery_at=self._next_recovery_at,
+            consecutive_probe_failures=self._consecutive_probe_failures,
         )
 
     def client_for_generation(self, generation: int) -> AppServerClient:
@@ -220,6 +242,8 @@ class AppServerSupervisor:
             self._restart_requested = False
             self._version = None
             self._error_code = None
+            self._next_recovery_at = None
+            self._consecutive_probe_failures = 0
             self._state = ProcessState.CHECKING
             try:
                 executable = self._resolve_executable(self._configured_executable)
@@ -276,6 +300,16 @@ class AppServerSupervisor:
             stability.cancel()
             await asyncio.gather(stability, return_exceptions=True)
         self._stability_task = None
+        watchdog = self._watchdog_task
+        if watchdog is not None and not watchdog.done():
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
+        self._watchdog_task = None
+        probe = self._watchdog_probe_task
+        if probe is not None and not probe.done():
+            probe.cancel()
+            await asyncio.gather(probe, return_exceptions=True)
+        self._watchdog_probe_task = None
         client = self._client
         transport = self._transport
         self._client = None
@@ -285,6 +319,7 @@ class AppServerSupervisor:
         if transport is not None:
             await transport.stop()
         self._state = ProcessState.STOPPED
+        self._next_recovery_at = None
 
     async def _start_generation(self) -> None:
         self._generation += 1
@@ -302,6 +337,7 @@ class AppServerSupervisor:
             notification_handler=self._notification_handler,
             server_request_handler=self._server_request_handler,
             disconnect_handler=self._on_disconnect,
+            activity_handler=self.note_activity,
         )
         self._client = client
         try:
@@ -314,6 +350,20 @@ class AppServerSupervisor:
             raise
         self._state = ProcessState.READY
         self._error_code = None
+        self._next_recovery_at = None
+        self._consecutive_probe_failures = 0
+        self.note_activity(generation)
+        self._last_ready_at = int(time.time())
+        if generation > 1:
+            self._last_recovery_at = self._last_ready_at
+            logger.info(
+                "recovery_succeeded",
+                extra={
+                    "component": "codex_app_server",
+                    "generation": generation,
+                    "state": "healthy",
+                },
+            )
         logger.info(
             "app_server_ready",
             extra={"generation": generation, "codex_version": self._version},
@@ -325,6 +375,14 @@ class AppServerSupervisor:
             self._reset_restart_budget_after_stable_window(generation),
             name="app-server-stability-window",
         )
+        if self._settings.app_server_watchdog_enabled:
+            old_watchdog = self._watchdog_task
+            if old_watchdog is not None and not old_watchdog.done():
+                old_watchdog.cancel()
+            self._watchdog_task = asyncio.create_task(
+                self._watchdog_loop(generation),
+                name="app-server-watchdog",
+            )
 
     async def _on_disconnect(self, generation: int, exc: BaseException) -> None:
         if generation != self._generation or self._stopping:
@@ -335,47 +393,114 @@ class AppServerSupervisor:
         if stability is not None and not stability.done():
             stability.cancel()
         self._stability_task = None
+        watchdog = self._watchdog_task
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
+        self._watchdog_task = None
         await self._external_disconnect_handler(generation, exc)
-        await self._schedule_restart()
+        await self._schedule_restart(request_followup=True)
 
-    async def _schedule_restart(self) -> None:
-        if self._stopping:
-            return
+    async def request_restart(self) -> str:
+        """Request one bounded restart and coalesce concurrent operator requests."""
+
+        if self._stopping or self._state in {ProcessState.STOPPED, ProcessState.DRAINING}:
+            raise RuntimeError("app-server is stopping")
+        if self._error_code in {reason.value for reason in VersionCheckReason}:
+            raise RuntimeError("app-server configuration failure is permanent")
         if self._restart_task is not None and not self._restart_task.done():
-            self._restart_requested = True
-            logger.warning(
-                "app_server_restart_requested_during_recovery",
-                extra={"generation": self._generation, "error_code": self._error_code},
-            )
+            return "coalesced"
+        scheduled = await self._schedule_restart(immediate=True, request_followup=False)
+        return "started" if scheduled else "blocked"
+
+    def note_activity(self, generation: int) -> None:
+        """Record one validated, successful generation-scoped protocol interaction."""
+
+        if generation != self._generation:
             return
+        self._last_activity_monotonic = time.monotonic()
+        self._last_activity_at = int(time.time())
+        self._consecutive_probe_failures = 0
+        if self._error_code in _WATCHDOG_ERROR_CODES:
+            self._error_code = None
+
+    def watchdog_probe_due(self, generation: int, *, now: float | None = None) -> bool:
+        """Return whether the one idle watchdog is allowed to start a probe."""
+
+        observed = time.monotonic() if now is None else now
+        return (
+            not self._stopping
+            and generation == self._generation
+            and self._state is ProcessState.READY
+            and observed - self._last_activity_monotonic
+            >= self._settings.app_server_watchdog_idle_seconds
+            and (
+                self._watchdog_probe_task is None
+                or self._watchdog_probe_task.done()
+            )
+        )
+
+    async def _schedule_restart(
+        self, *, immediate: bool = False, request_followup: bool = True
+    ) -> bool:
+        if self._stopping:
+            return False
+        if self._restart_task is not None and not self._restart_task.done():
+            if request_followup:
+                self._restart_requested = True
+            logger.warning(
+                "recovery_suppressed",
+                extra={
+                    "component": "codex_app_server",
+                    "generation": self._generation,
+                    "error_code": "recovery_in_progress",
+                    "state": "recovering",
+                },
+            )
+            return False
         now = time.monotonic()
         cutoff = now - self._settings.app_server_restart_window_seconds
         while self._restart_times and self._restart_times[0] < cutoff:
             self._restart_times.popleft()
         if len(self._restart_times) >= self._settings.app_server_restart_limit:
-            failure_error_code = self._error_code
             self._state = ProcessState.FAILED
             self._error_code = "restart_limit_reached"
             logger.error(
-                "app_server_restart_limit_reached",
+                "recovery_failed",
                 extra={
+                    "component": "codex_app_server",
                     "generation": self._generation,
-                    "error_code": failure_error_code,
-                    "restart_attempts": len(self._restart_times),
+                    "error_code": "restart_limit_reached",
+                    "attempt": len(self._restart_times),
+                    "state": "failed",
                 },
             )
             await self._notify_terminal_failure()
-            return
+            return False
         self._restart_times.append(now)
         attempt = len(self._restart_times)
-        delay = min(
-            self._settings.app_server_backoff_initial_seconds * (2 ** (attempt - 1)),
-            self._settings.app_server_backoff_max_seconds,
-        )
+        delay = 0.0
+        if not immediate:
+            base_delay = min(
+                self._settings.app_server_backoff_initial_seconds * (2 ** (attempt - 1)),
+                self._settings.app_server_backoff_max_seconds,
+            )
+            jitter = self._settings.app_server_backoff_jitter_ratio
+            delay = base_delay * random.uniform(1.0 - jitter, 1.0 + jitter)
         self._state = ProcessState.RESTARTING
+        self._next_recovery_at = int(time.time() + delay)
         self._restart_task = asyncio.create_task(
             self._restart_after(delay), name="app-server-restart"
         )
+        logger.warning(
+            "recovery_started",
+            extra={
+                "component": "codex_app_server",
+                "generation": self._generation,
+                "attempt": attempt,
+                "state": "recovering",
+            },
+        )
+        return True
 
     async def _reset_restart_budget_after_stable_window(self, generation: int) -> None:
         try:
@@ -398,6 +523,7 @@ class AppServerSupervisor:
         if self._stopping:
             return
         async with self._lifecycle_lock:
+            self._next_recovery_at = None
             old_client = self._client
             old_transport = self._transport
             self._client = None
@@ -412,14 +538,121 @@ class AppServerSupervisor:
                 self._state = ProcessState.FAILED
                 self._error_code = type(exc).__name__
                 logger.error(
-                    "app_server_restart_failed",
-                    extra={"error_type": type(exc).__name__},
+                    "recovery_failed",
+                    extra={
+                        "component": "codex_app_server",
+                        "generation": self._generation,
+                        "error_code": type(exc).__name__,
+                        "state": "failed",
+                    },
                 )
                 self._restart_requested = True
             self._restart_task = None
             if self._restart_requested and not self._stopping:
                 self._restart_requested = False
-                await self._schedule_restart()
+                await self._schedule_restart(request_followup=True)
+
+    async def _watchdog_loop(self, generation: int) -> None:
+        interval = self._settings.app_server_watchdog_idle_seconds
+        try:
+            while not self._stopping and generation == self._generation:
+                jitter = self._settings.app_server_backoff_jitter_ratio
+                await asyncio.sleep(interval * random.uniform(1.0 - jitter, 1.0 + jitter))
+                if self._stopping or generation != self._generation:
+                    return
+                if not self.watchdog_probe_due(generation):
+                    continue
+                probe = asyncio.create_task(
+                    self._run_watchdog_probe(generation),
+                    name="app-server-watchdog-probe",
+                )
+                self._watchdog_probe_task = probe
+                await probe
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._watchdog_task is asyncio.current_task():
+                self._watchdog_task = None
+
+    async def _run_watchdog_probe(self, generation: int) -> None:
+        """Execute the documented, side-effect-free Codex 0.146.0 core probe once."""
+
+        try:
+            client = self.client_for_generation(generation)
+            await asyncio.wait_for(
+                client.call(
+                    "thread/loaded/list",
+                    {"cursor": None, "limit": 1},
+                    owner="__workbench_watchdog__",
+                ),
+                timeout=self._settings.app_server_watchdog_timeout_seconds,
+            )
+            prior_failures = self._consecutive_probe_failures
+            self.note_activity(generation)
+            if prior_failures > 0:
+                logger.info(
+                    "runtime_probe_recovered",
+                    extra={
+                        "component": "codex_app_server",
+                        "generation": generation,
+                        "attempt": prior_failures + 1,
+                        "state": "healthy",
+                    },
+                )
+        except asyncio.CancelledError:
+            raise
+        except AppServerRequestError as exc:
+            if self._stopping or generation != self._generation:
+                return
+            self._consecutive_probe_failures += 1
+            self._error_code = "watchdog_probe_rejected"
+            logger.warning(
+                "runtime_probe_failed",
+                extra={
+                    "component": "codex_app_server",
+                    "generation": generation,
+                    "attempt": self._consecutive_probe_failures,
+                    "error_code": f"json_rpc_{exc.code}",
+                    "state": "degraded",
+                },
+            )
+            if (
+                self._consecutive_probe_failures
+                == self._settings.app_server_watchdog_failure_threshold
+            ):
+                logger.warning(
+                    "recovery_suppressed",
+                    extra={
+                        "component": "codex_app_server",
+                        "generation": generation,
+                        "error_code": "watchdog_probe_rejected",
+                        "state": "degraded",
+                    },
+                )
+        except Exception as exc:
+            if self._stopping or generation != self._generation:
+                return
+            self._consecutive_probe_failures += 1
+            logger.warning(
+                "runtime_probe_failed",
+                extra={
+                    "component": "codex_app_server",
+                    "generation": generation,
+                    "attempt": self._consecutive_probe_failures,
+                    "error_code": type(exc).__name__,
+                    "state": "degraded",
+                },
+            )
+            if (
+                self._consecutive_probe_failures
+                == self._settings.app_server_watchdog_failure_threshold
+            ):
+                self._error_code = "watchdog_unresponsive"
+                await self._external_disconnect_handler(generation, exc)
+                await self._schedule_restart(request_followup=False)
+        finally:
+            if self._watchdog_probe_task is asyncio.current_task():
+                self._watchdog_probe_task = None
 
     async def _notify_terminal_failure(self) -> None:
         if self._terminal_failure_handler is not None:

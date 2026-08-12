@@ -45,7 +45,9 @@ async def test_background_job_survives_caller_lifetime_and_is_reconnect_projecte
     snapshot = (await registry.list_for_session("session"))[0]
     assert snapshot["id"] == job.id
     assert snapshot["status"] == "succeeded"
-    assert snapshot["output"] == "done"
+    assert "output" not in snapshot
+    assert "command" not in snapshot
+    assert snapshot["operationLabel"] == "Remote-Stand abrufen"
     assert [update["status"] for update in updates] == ["queued", "running", "succeeded"]
 
 
@@ -76,7 +78,7 @@ async def test_background_job_failure_logs_only_safe_structured_diagnostics(
         for _ in range(20):
             await asyncio.sleep(0)
             snapshot = (await registry.list_for_session("session-sensitive"))[0]
-            if snapshot["status"] == "failed":
+            if snapshot["status"] == "timed_out":
                 break
 
     failure = next(record for record in caplog.records if record.message == "background_job_failed")
@@ -88,6 +90,104 @@ async def test_background_job_failure_logs_only_safe_structured_diagnostics(
     assert "/var/lib/" not in caplog.text
     assert snapshot["error"] == "Die native Operation konnte nicht abgeschlossen werden."
     assert sensitive not in str(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_historical_job_failure_does_not_degrade_registry_health() -> None:
+    completed = asyncio.Event()
+
+    async def updated(_session_id: str, payload: JsonObject) -> None:
+        if payload["status"] == "failed":
+            completed.set()
+
+    registry = BackgroundJobRegistry(update_handler=updated)
+
+    async def failed_fetch() -> GitResult:
+        return GitResult("git fetch --prune", 1, "", 8, False)
+
+    await registry.start(
+        owner_session_id="session",
+        repository_id="0123456789abcdef",
+        repository_name="repo",
+        job_type="git_fetch",
+        operation=failed_fetch,
+    )
+    await completed.wait()
+    status = await registry.status_counts()
+
+    assert status.failed == 1
+    assert status.infrastructure_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_successful_retry_keeps_history_without_degrading_health() -> None:
+    completions: asyncio.Queue[str] = asyncio.Queue()
+
+    async def updated(_session_id: str, payload: JsonObject) -> None:
+        status = payload["status"]
+        if isinstance(status, str) and status in {"failed", "succeeded"}:
+            await completions.put(status)
+
+    registry = BackgroundJobRegistry(update_handler=updated)
+
+    async def failed_fetch() -> GitResult:
+        return GitResult("git fetch --prune", 1, "", 8, False)
+
+    async def successful_fetch() -> GitResult:
+        return GitResult("git fetch --prune", 0, "", 7, False)
+
+    for operation in (failed_fetch, successful_fetch):
+        await registry.start(
+            owner_session_id="session",
+            repository_id="0123456789abcdef",
+            repository_name="repo",
+            job_type="git_fetch",
+            operation=operation,
+        )
+        assert await completions.get() in {"failed", "succeeded"}
+
+    status = await registry.status_counts()
+    assert status.failed == 1
+    assert status.infrastructure_error_code is None
+
+
+@pytest.mark.asyncio
+async def test_realtime_projection_failure_degrades_until_a_successful_update() -> None:
+    reject_updates = True
+    failed_update = asyncio.Event()
+    successful_completion = asyncio.Event()
+
+    async def updated(_session_id: str, payload: JsonObject) -> None:
+        if reject_updates:
+            failed_update.set()
+            raise RuntimeError("private broker detail")
+        if payload["status"] == "succeeded":
+            successful_completion.set()
+
+    registry = BackgroundJobRegistry(update_handler=updated)
+    release = asyncio.Event()
+
+    async def operation() -> GitResult:
+        await release.wait()
+        return GitResult("git fetch --prune", 0, "", 7, False)
+
+    await registry.start(
+        owner_session_id="session",
+        repository_id="0123456789abcdef",
+        repository_name="repo",
+        job_type="git_fetch",
+        operation=operation,
+    )
+    await failed_update.wait()
+    assert (await registry.status_counts()).infrastructure_error_code == (
+        "job_realtime_update_failed"
+    )
+
+    reject_updates = False
+    release.set()
+    await successful_completion.wait()
+    status = await registry.status_counts()
+    assert status.infrastructure_error_code is None
 
 
 @pytest.mark.asyncio
@@ -120,6 +220,34 @@ async def test_background_job_timeout_logs_specific_safe_error_type(
     assert sensitive not in caplog.text
     assert "github.com" not in caplog.text
     assert "/secret/" not in caplog.text
+    assert snapshot["status"] == "timed_out"
+    assert snapshot["errorCode"] == "git_operation_timeout"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_marks_a_running_job_interrupted_without_output() -> None:
+    registry = BackgroundJobRegistry()
+    entered = asyncio.Event()
+
+    async def operation() -> GitResult:
+        entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    await registry.start(
+        owner_session_id="session-shutdown",
+        repository_id="0123456789abcdef",
+        repository_name="repo",
+        job_type="git_pull",
+        operation=operation,
+    )
+    await entered.wait()
+    await registry.stop()
+    snapshot = (await registry.list_for_session("session-shutdown"))[0]
+    assert snapshot["status"] == "interrupted"
+    assert snapshot["errorCode"] == "service_shutdown"
+    assert snapshot["retryable"] is True
+    assert "output" not in snapshot
 
 
 @pytest.mark.asyncio

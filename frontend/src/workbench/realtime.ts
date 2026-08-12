@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 
 import type {
   Activity,
@@ -10,6 +10,11 @@ import type {
   ThreadView,
   Turn,
 } from "./types";
+import {
+  advanceRecoveryEpisodes,
+  initialRecoveryEpisodeState,
+} from "./recoveryEpisodes";
+import type { RecoveryEpisodeState } from "./recoveryEpisodes";
 
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
 
@@ -32,6 +37,7 @@ export interface RealtimeState {
   missedEvents: boolean;
   timeline: Record<string, TimelineEntry[]>;
   jobs: NativeJob[];
+  recoveryEpisodes: RecoveryEpisodeState;
 }
 
 const unavailableRates: RateLimits = { available: false, observedAt: 0 };
@@ -47,6 +53,7 @@ export const initialRealtimeState: RealtimeState = {
   missedEvents: false,
   timeline: {},
   jobs: [],
+  recoveryEpisodes: initialRecoveryEpisodeState,
 };
 
 export type Action =
@@ -68,6 +75,12 @@ export interface EventEnvelope {
   threadId: string | null;
   turnId: string | null;
   itemId: string | null;
+}
+
+export function reconnectDelay(attempt: number, randomValue = Math.random()): number {
+  const base = Math.min(1_000 * 2 ** Math.max(0, attempt - 1), 15_000);
+  const boundedRandom = Math.max(0, Math.min(1, randomValue));
+  return Math.round(base * (0.85 + boundedRandom * 0.3));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -361,7 +374,19 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   } else if (event.type === "thread.name") {
     const name = event.payload.name;
     if (typeof name === "string" || name === null) {
-      threads = updateThread(threads, event.threadId, (thread) => ({ ...thread, name }));
+      threads = updateThread(threads, event.threadId, (thread) => ({
+        ...thread,
+        name,
+        titleSource: typeof event.payload.titleSource === "string"
+          ? event.payload.titleSource as ThreadView["titleSource"] : thread.titleSource,
+        titleUpdatedAt: typeof event.payload.titleUpdatedAt === "number"
+          ? event.payload.titleUpdatedAt : thread.titleUpdatedAt,
+        titleGenerationState: typeof event.payload.titleGenerationState === "string"
+          ? event.payload.titleGenerationState as ThreadView["titleGenerationState"]
+          : thread.titleGenerationState,
+        titleErrorCode: typeof event.payload.titleErrorCode === "string"
+          ? event.payload.titleErrorCode : null,
+      }));
     }
   }
 
@@ -384,6 +409,11 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
     };
   }
 
+  const recoveryEpisodes = advanceRecoveryEpisodes(
+    state.recoveryEpisodes,
+    { runtime: state.processConnection, realtime: state.connection },
+    { runtime: processConnection, realtime: state.connection },
+  );
   return {
     ...state,
     threads,
@@ -392,13 +422,22 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
     processConnection,
     generation,
     jobs,
+    recoveryEpisodes,
     timeline,
     lastSequence: event.sequence,
   };
 }
 
 export function reducer(state: RealtimeState, action: Action): RealtimeState {
-  if (action.type === "socket") return { ...state, connection: action.state };
+  if (action.type === "socket") return {
+    ...state,
+    connection: action.state,
+    recoveryEpisodes: advanceRecoveryEpisodes(
+      state.recoveryEpisodes,
+      { runtime: state.processConnection, realtime: state.connection },
+      { runtime: state.processConnection, realtime: action.state },
+    ),
+  };
   if (action.type === "threads") return { ...state, threads: action.threads };
   if (action.type === "repositoryThreads") return {
     ...state,
@@ -419,17 +458,24 @@ export function reducer(state: RealtimeState, action: Action): RealtimeState {
   }
   if (action.type === "jobs") return { ...state, jobs: action.jobs };
   if (action.type === "snapshot") {
+    const processConnection = action.snapshot.connection.state;
+    const connection = "connected";
     return {
       ...state,
       threads: action.snapshot.threads,
       approvals: action.snapshot.pendingApprovals,
       rateLimits: action.snapshot.rateLimits,
-      processConnection: action.snapshot.connection.state,
+      processConnection,
       generation: action.snapshot.connection.generation,
-      connection: "connected",
+      connection,
       lastSequence: action.latest,
       missedEvents: action.missed,
       jobs: action.snapshot.jobs ?? [],
+      recoveryEpisodes: advanceRecoveryEpisodes(
+        state.recoveryEpisodes,
+        { runtime: state.processConnection, realtime: state.connection },
+        { runtime: processConnection, realtime: connection },
+      ),
     };
   }
   if (action.type === "events") {
@@ -477,9 +523,11 @@ function parseSnapshot(value: unknown): { snapshot: Snapshot; latest: number; mi
 export function useRealtime(
   csrfToken: string,
   onSessionExpired: () => void,
-): [RealtimeState, React.Dispatch<Action>] {
+): [RealtimeState, React.Dispatch<Action>, () => void] {
   const [state, dispatch] = useReducer(reducer, initialRealtimeState);
+  const [reconnectKey, requestReconnect] = useReducer((value: number) => value + 1, 0);
   const lastSequence = useRef(0);
+  const reconnect = useCallback(() => requestReconnect(), []);
 
   useEffect(() => {
     lastSequence.current = state.lastSequence;
@@ -511,8 +559,20 @@ export function useRealtime(
       frame ??= window.requestAnimationFrame(flush);
     };
 
+    const scheduleReconnect = () => {
+      if (stopped || reconnectTimer !== null || !navigator.onLine) return;
+      attempt += 1;
+      dispatch({ type: "socket", state: "reconnecting" });
+      reconnectTimer = window.setTimeout(connect, reconnectDelay(attempt));
+    };
+
     const connect = () => {
-      if (stopped) return;
+      reconnectTimer = null;
+      if (stopped || socket !== null) return;
+      if (!navigator.onLine) {
+        dispatch({ type: "socket", state: "disconnected" });
+        return;
+      }
       dispatch({ type: "socket", state: attempt === 0 ? "connecting" : "reconnecting" });
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       socket = new WebSocket(`${protocol}//${window.location.host}/ws/events`);
@@ -556,20 +616,39 @@ export function useRealtime(
           onSessionExpired();
           return;
         }
-        attempt += 1;
-        dispatch({ type: "socket", state: "reconnecting" });
-        reconnectTimer = window.setTimeout(connect, Math.min(1_000 * 2 ** (attempt - 1), 15_000));
+        scheduleReconnect();
       });
       socket.addEventListener("error", () => socket?.close());
     };
+
+    const online = () => {
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      connect();
+    };
+    const offline = () => {
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      dispatch({ type: "socket", state: "disconnected" });
+      socket?.close(1001, "browser offline");
+    };
+    const visibility = () => {
+      if (document.visibilityState === "visible" && socket === null) connect();
+    };
+    window.addEventListener("online", online);
+    window.addEventListener("offline", offline);
+    document.addEventListener("visibilitychange", visibility);
     connect();
     return () => {
       stopped = true;
+      window.removeEventListener("online", online);
+      window.removeEventListener("offline", offline);
+      document.removeEventListener("visibilitychange", visibility);
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (frame !== null) window.cancelAnimationFrame(frame);
       socket?.close(1000, "component unmounted");
     };
-  }, [csrfToken, onSessionExpired]);
+  }, [csrfToken, onSessionExpired, reconnectKey]);
 
-  return [state, dispatch];
+  return [state, dispatch, reconnect];
 }

@@ -85,6 +85,15 @@ def check_release_compose() -> None:
         fail("backend-net must remain external")
     if "docker.sock" in read("compose.release.yaml"):
         fail("release compose must not mount the Docker socket")
+    source = mapping(yaml.safe_load(read("compose.yaml")), "source compose")
+    source_backend = mapping(
+        mapping(source.get("services"), "source services").get("backend"),
+        "source backend",
+    )
+    source_environment = mapping(source_backend.get("environment"), "source environment")
+    release_environment = mapping(backend.get("environment"), "release environment")
+    if set(source_environment) != set(release_environment):
+        fail("source and release backend environment keys must remain in parity")
 
 
 def check_build_context() -> None:
@@ -179,6 +188,8 @@ def check_workflows() -> None:
         fail("Docker release workflow has an unsafe trigger or build args")
     if release.count("secrets.DOCKERHUB_TOKEN") != 1:
         fail("Docker Hub token must be used only by the login action")
+    if release.count("flavor: latest=false") != 2:
+        fail("both image metadata steps must disable implicit latest tags")
     for label in (
         "org.opencontainers.image.source",
         "org.opencontainers.image.revision",
