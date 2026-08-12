@@ -15,6 +15,7 @@ import type {
   NativeJob,
   DeployKeyRemotePreview,
   DeployKeyView,
+  SystemStatus,
 } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -129,6 +130,35 @@ export async function listRepositories(signal?: AbortSignal): Promise<Repository
   return parseRepositories(await requestJson("/api/repositories", { method: "GET", signal }));
 }
 
+export async function readSystemStatus(signal?: AbortSignal): Promise<SystemStatus> {
+  const value = requireRecord(await requestJson("/api/system/status", { method: "GET", signal }));
+  if (typeof value.status !== "string" || !Array.isArray(value.components)) {
+    throw new ApiError(502, "invalid_response", "Ungültige Systemstatus-Antwort.", null);
+  }
+  return value as unknown as SystemStatus;
+}
+
+export async function updateThreadTitle(
+  csrfToken: string, threadId: string, name: string,
+): Promise<ThreadView> {
+  return parseThreadBody(await requestJson(
+    `/api/threads/${encodeURIComponent(threadId)}/title`,
+    { method: "PATCH", body: JSON.stringify({ name }) }, csrfToken,
+  ));
+}
+
+export async function restartRuntime(csrfToken: string): Promise<"started" | "coalesced"> {
+  const value = requireRecord(await requestJson(
+    "/api/system/runtime/restart",
+    { method: "POST", body: JSON.stringify({ confirmation: "CODEX RUNTIME NEU STARTEN" }) },
+    csrfToken,
+  ));
+  if (value.result !== "started" && value.result !== "coalesced") {
+    throw new ApiError(502, "invalid_response", "Ungültige Recovery-Antwort.", null);
+  }
+  return value.result;
+}
+
 export async function readCapabilities(
   repositoryId: string, tools: "none" | "skills" | "plugins" | "all" = "none",
 ): Promise<WorkbenchCapabilities> {
@@ -146,6 +176,21 @@ export async function gitStatus(repositoryId: string): Promise<GitStatus> {
   return requireRecord(await requestJson(
     `/api/repositories/${encodeURIComponent(repositoryId)}/git/status`, { method: "GET" },
   )) as unknown as GitStatus;
+}
+
+export async function gitBranches(
+  repositoryId: string,
+): Promise<{ local: Array<{ name: string; current: boolean }>; remote: Array<{ name: string; current: boolean }> }> {
+  const body = requireRecord(await requestJson(
+    `/api/repositories/${encodeURIComponent(repositoryId)}/git/branches`, { method: "GET" },
+  ));
+  if (!Array.isArray(body.local) || !Array.isArray(body.remote)) {
+    throw new ApiError(502, "invalid_response", "Ungültige Branch-Antwort.", null);
+  }
+  return body as unknown as {
+    local: Array<{ name: string; current: boolean }>;
+    remote: Array<{ name: string; current: boolean }>;
+  };
 }
 
 export async function gitAction(

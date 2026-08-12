@@ -1,6 +1,6 @@
-/* eslint-disable react-hooks/set-state-in-effect, jsx-a11y-x/no-autofocus */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
+import { ApiError } from "../auth/api";
 import {
   clonePrivateRepository,
   connectPrivateRepository,
@@ -16,6 +16,7 @@ import {
 } from "../workbench/api";
 import type { DeployKeyRemotePreview, DeployKeyView, Repository } from "../workbench/types";
 import { CopyButton } from "./CopyButton";
+import { DialogShell } from "./ui";
 
 interface DeployKeyDialogProps {
   mode: "repository" | "private-clone" | null;
@@ -34,43 +35,53 @@ export function DeployKeyDialog({
   onClose,
   onCloneStarted,
 }: DeployKeyDialogProps) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
+  if (mode === null) return null;
+  return <DeployKeyDialogContent
+    key={`${mode}:${repository?.id ?? "unbound"}`}
+    mode={mode}
+    repository={repository}
+    repositoryNames={repositoryNames}
+    csrfToken={csrfToken}
+    onClose={onClose}
+    onCloneStarted={onCloneStarted}
+  />;
+}
+
+type ActiveDeployKeyDialogProps = Omit<DeployKeyDialogProps, "mode"> & {
+  mode: Exclude<DeployKeyDialogProps["mode"], null>;
+};
+
+function DeployKeyDialogContent({
+  mode,
+  repository,
+  repositoryNames,
+  csrfToken,
+  onClose,
+  onCloneStarted,
+}: ActiveDeployKeyDialogProps) {
   const [deployKey, setDeployKey] = useState<DeployKeyView | null>(null);
   const [githubRepository, setGithubRepository] = useState("");
-  const [localName, setLocalName] = useState("");
+  const [localName, setLocalName] = useState(repository?.directoryName ?? "");
   const [remotePreview, setRemotePreview] = useState<DeployKeyRemotePreview | null>(null);
   const [remoteConfirmation, setRemoteConfirmation] = useState("");
   const [removeConfirmed, setRemoveConfirmed] = useState(false);
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState(mode === "repository" && repository !== null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const showError = (caught: unknown) => {
-    setError(caught instanceof Error ? caught.message : "Die Deploy-Key-Aktion ist fehlgeschlagen.");
+    setError(deployKeyError(caught));
   };
 
   useEffect(() => {
-    const dialog = dialogRef.current;
-    if (mode !== null && dialog !== null && !dialog.open) dialog.showModal();
-    if (mode === null && dialog?.open) dialog.close();
-    setDeployKey(null);
-    setGithubRepository("");
-    setLocalName(repository?.directoryName ?? "");
-    setRemotePreview(null);
-    setRemoteConfirmation("");
-    setRemoveConfirmed(false);
-    setMessage(null);
-    setError(null);
-    if (mode === "repository" && repository !== null) {
-      setPending(true);
-      void readRepositoryDeployKey(repository.id)
-        .then(setDeployKey)
-        .catch(showError)
-        .finally(() => setPending(false));
-    }
+    if (mode !== "repository" || repository === null) return;
+    let active = true;
+    void readRepositoryDeployKey(repository.id)
+      .then((value) => { if (active) setDeployKey(value); })
+      .catch((caught: unknown) => { if (active) setError(deployKeyError(caught)); })
+      .finally(() => { if (active) setPending(false); });
+    return () => { active = false; };
   }, [mode, repository]);
-
-  if (mode === null) return null;
 
   const trimmedLocalName = localName.trim();
   const knownNameConflict = mode === "private-clone"
@@ -109,18 +120,18 @@ export function DeployKeyDialog({
       : "Zugriff fehlgeschlagen. Prüfe den Deploy Key in den GitHub-Einstellungen.");
   });
 
-  return <dialog
-    ref={dialogRef}
-    className="decision-dialog deploy-key-dialog"
-    aria-labelledby="deploy-key-heading"
-    onCancel={(event) => { event.preventDefault(); onClose(); }}
+  return <DialogShell
+    open
+    className="deploy-key-dialog"
+    title={mode === "repository" ? "SSH / Deploy Key" : "Privates GitHub-Repository verbinden"}
+    description="Die Workbench zeigt ausschließlich Public-Key-Material und sichere Statusinformationen."
     onClose={onClose}
+    footer={<><button type="button" className="secondary-action" onClick={onClose}>Schließen</button>{deployKey === null ? <button type="button" className="primary-action" disabled={pending || (mode === "private-clone" && !githubRepository.trim())} onClick={() => void create()}>{pending ? "Wird erzeugt …" : "Deploy Key erzeugen"}</button> : null}</>}
   >
-    <h2 id="deploy-key-heading">{mode === "repository" ? "SSH / Deploy Key" : "Privates GitHub-Repository verbinden"}</h2>
     {mode === "private-clone" && deployKey === null ? <>
       <p>Erzeuge einen dedizierten Ed25519 Deploy Key für genau ein Repository auf github.com.</p>
       <label>GitHub Repository URL oder OWNER/REPO
-        <input autoFocus value={githubRepository} onChange={(event) => setGithubRepository(event.target.value)} placeholder="owner/private-repository" />
+        <input data-dialog-initial-focus value={githubRepository} onChange={(event) => setGithubRepository(event.target.value)} placeholder="owner/private-repository" />
       </label>
     </> : null}
     {mode === "repository" && deployKey === null && !pending ? <p>Für dieses Repository ist noch kein Workbench Deploy Key eingerichtet.</p> : null}
@@ -172,11 +183,7 @@ export function DeployKeyDialog({
     </> : null}
     {message !== null ? <p role="status" className="auth-notice">{message}</p> : null}
     {error !== null ? <p role="alert" className="inline-error">{error}</p> : null}
-    <div className="dialog-actions">
-      <button type="button" className="secondary-action" onClick={onClose}>Schließen</button>
-      {deployKey === null ? <button type="button" className="primary-action" disabled={pending || (mode === "private-clone" && !githubRepository.trim())} onClick={() => void create()}>{pending ? "Wird erzeugt …" : "Deploy Key erzeugen"}</button> : null}
-    </div>
-  </dialog>;
+  </DialogShell>;
 }
 
 function statusLabel(status: DeployKeyView["status"]): string {
@@ -188,4 +195,17 @@ function statusLabel(status: DeployKeyView["status"]): string {
 
 function formatTime(value: number | null): string {
   return value === null ? "nicht geprüft" : new Date(value * 1000).toLocaleString();
+}
+
+function deployKeyError(caught: unknown): string {
+  if (caught instanceof ApiError) {
+    return ({
+      repository_name_conflict: "Ein Repository mit diesem lokalen Namen existiert bereits.",
+      operation_conflict: "Eine andere Repository-Aktion läuft noch. Bitte erneut versuchen.",
+      deploy_key_unavailable: "Der Deploy Key ist nicht mehr verfügbar.",
+      rate_limited: "Zu viele Deploy-Key-Anfragen. Bitte kurz warten.",
+    } as Record<string, string>)[caught.code]
+      ?? "Die Deploy-Key-Aktion wurde vom Backend sicher abgelehnt.";
+  }
+  return "Die Deploy-Key-Aktion ist fehlgeschlagen. Es wurden keine privaten Schlüsseldaten angezeigt.";
 }

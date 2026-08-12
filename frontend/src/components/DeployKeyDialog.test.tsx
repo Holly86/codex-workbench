@@ -89,8 +89,8 @@ test("keeps a resumed key and local name visible after a server conflict, then r
     .mockRejectedValueOnce(new ApiError(409, "repository_name_conflict", "Ein Repository mit diesem lokalen Namen existiert bereits.", null))
     .mockResolvedValueOnce({
       id: "job_retry", repositoryId: null, repositoryName: "private-smoke", type: "git_clone",
-      status: "queued", startedAt: 1, endedAt: null, exitCode: null, output: "", error: null,
-      command: "", durationMs: null,
+      status: "queued", startedAt: 1, endedAt: null, exitCode: null, error: null,
+      errorCode: null, retryable: false, operationLabel: "Repository klonen", durationMs: null,
     });
   render(<DeployKeyDialog mode="private-clone" repository={null} csrfToken="csrf"
     repositoryNames={[]} onClose={onClose} onCloneStarted={onCloneStarted} />);

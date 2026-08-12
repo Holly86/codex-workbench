@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type { Repository, ThreadView } from "../workbench/types";
+import { clampHeight, readUiPreferences, writeSidebarPreferences } from "../workbench/uiPreferences";
 import { AnchoredMenu } from "./AnchoredMenu";
 
 export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "fetch" | "pull" | "push" | "commit" | "branches" | "remote" | "deploy-key" | "publish" | "github" | "rename" | "settings" | "remove" | "delete" | "create" | "clone" | "connect-private";
@@ -14,6 +16,8 @@ interface RepositorySidebarProps {
   onSelectThread: (thread: ThreadView) => void;
   onNewThread: () => void;
   onDeleteThread: (thread: ThreadView) => void;
+  onEditThread?: (thread: ThreadView) => void;
+  onRegenerateThread?: (thread: ThreadView) => void;
   onRepositoryAction: (action: RepositoryAction, repository: Repository | null) => void;
 }
 
@@ -57,25 +61,26 @@ export function RepositorySidebar({
   onSelectThread,
   onNewThread,
   onDeleteThread,
+  onEditThread,
+  onRegenerateThread,
   onRepositoryAction,
 }: RepositorySidebarProps) {
   const [query, setQuery] = useState("");
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [openThreadMenu, setOpenThreadMenu] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(() => {
-    const saved = localStorage.getItem("workbench.sidebar.collapsed");
-    if (saved !== null) return saved === "true";
-    return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
-  });
+  const [preferences, setPreferences] = useState(readUiPreferences);
+  const collapsed = preferences.sidebar.collapsed;
   const searchRef = useRef<HTMLInputElement>(null);
   const menuAnchorRef = useRef<HTMLButtonElement>(null);
   const threadMenuAnchorRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => writeSidebarPreferences(preferences.sidebar), [preferences.sidebar]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        if (collapsed) setCollapsed(false);
+        if (collapsed) setPreferences((current) => ({ ...current, sidebar: { ...current.sidebar, collapsed: false } }));
         window.setTimeout(() => searchRef.current?.focus());
       }
       if (event.key === "Escape") { setOpenMenu(null); setOpenThreadMenu(null); }
@@ -88,7 +93,7 @@ export function RepositorySidebar({
     if (typeof window.matchMedia !== "function") return;
     const narrow = window.matchMedia("(max-width: 760px)");
     const closeForNarrowViewport = (event: MediaQueryListEvent | MediaQueryList) => {
-      if (event.matches) setCollapsed(true);
+      if (event.matches) setPreferences((current) => ({ ...current, sidebar: { ...current.sidebar, collapsed: true } }));
     };
     closeForNarrowViewport(narrow);
     narrow.addEventListener("change", closeForNarrowViewport);
@@ -96,8 +101,21 @@ export function RepositorySidebar({
   }, []);
 
   const setSidebarCollapsed = (next: boolean) => {
-    setCollapsed(next);
-    localStorage.setItem("workbench.sidebar.collapsed", String(next));
+    setPreferences((current) => ({ ...current, sidebar: { ...current.sidebar, collapsed: next } }));
+  };
+  const updateSidebar = (values: Partial<typeof preferences.sidebar>) => {
+    setPreferences((current) => ({ ...current, sidebar: { ...current.sidebar, ...values } }));
+  };
+  const resize = (value: number) => updateSidebar({ projectsHeight: clampHeight(value) });
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = preferences.sidebar.projectsHeight;
+    const move = (moveEvent: PointerEvent) => resize(startHeight + moveEvent.clientY - startY);
+    const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
   };
   const closeOnNarrow = () => {
     if (typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches) {
@@ -111,6 +129,9 @@ export function RepositorySidebar({
     !normalized || (thread.name ?? thread.preview).toLocaleLowerCase().includes(normalized));
   const menuRepository = repositories.find((repository) => repository.id === openMenu) ?? null;
   const menuThread = threads.find((thread) => thread.id === openThreadMenu) ?? null;
+  const revealProjects = normalized.length > 0 || !preferences.sidebar.projectsCollapsed;
+  const revealThreads = normalized.length > 0 || !preferences.sidebar.threadsCollapsed;
+  const sidebarStyle = { "--projects-height": `${String(preferences.sidebar.projectsHeight)}px` } as CSSProperties;
 
   return (
     <>
@@ -125,7 +146,7 @@ export function RepositorySidebar({
         <span aria-hidden="true">{collapsed ? "☰" : "×"}</span>
       </button>
       {!collapsed ? <button type="button" className="sidebar-scrim" aria-label="Navigation schließen" onClick={() => setSidebarCollapsed(true)} /> : null}
-      <nav id="repository-sidebar" className={`repository-panel ${collapsed ? "is-collapsed" : ""}`} aria-label="Repositories">
+      <nav id="repository-sidebar" className={`repository-panel ${collapsed ? "is-collapsed" : ""}`} aria-label="Repositories" style={sidebarStyle}>
         <div className="sidebar-header">
           <div className="sidebar-heading"><span className="sidebar-heading-icon" aria-hidden="true">⌁</span><strong>Workspace</strong></div>
           <button type="button" className="sidebar-collapse" aria-label={collapsed ? "Sidebar erweitern" : "Sidebar einklappen"} aria-expanded={!collapsed} onClick={() => setSidebarCollapsed(!collapsed)}>
@@ -147,8 +168,9 @@ export function RepositorySidebar({
           <kbd>Ctrl K</kbd>
         </label>
 
-        <section className="repository-navigation" aria-labelledby="projects-heading">
-          <div className="panel-heading"><h2 id="projects-heading">Projekte</h2><span>{filteredRepositories.length}</span></div>
+        <section className={`repository-navigation ${revealProjects ? "" : "is-section-collapsed"}`} aria-labelledby="projects-heading">
+          <div className="panel-heading"><button type="button" aria-expanded={revealProjects} aria-controls="project-list" onClick={() => updateSidebar({ projectsCollapsed: !preferences.sidebar.projectsCollapsed })}><span aria-hidden="true">{revealProjects ? "▾" : "▸"}</span><h2 id="projects-heading">Projekte</h2></button><span>{filteredRepositories.length}</span></div>
+          <div id="project-list" hidden={!revealProjects}>
           {repositories.length === 0 && !loading ? <p className="sidebar-empty">Keine Repositories gefunden.</p> : null}
           {repositories.length > 0 && filteredRepositories.length === 0 ? <p className="sidebar-empty">Keine passenden Projekte.</p> : null}
           <ul className="repository-list">
@@ -187,11 +209,34 @@ export function RepositorySidebar({
               );
             })}
           </ul>
+          </div>
         </section>
 
         {selectedRepositoryId !== null ? (
-          <section className="thread-navigation" aria-labelledby="threads-heading">
-            <div className="panel-heading"><h2 id="threads-heading">Threads</h2><span>{threads.length}</span></div>
+          <>{/* The ARIA separator is intentionally keyboard-interactive; the lint rule does not model this APG pattern. */}
+          {/* eslint-disable jsx-a11y-x/no-noninteractive-element-interactions, jsx-a11y-x/no-noninteractive-tabindex */}
+          <div
+            className="sidebar-splitter"
+            role="separator"
+            aria-label="Höhe der Projektliste"
+            aria-orientation="horizontal"
+            aria-valuemin={140}
+            aria-valuemax={520}
+            aria-valuenow={preferences.sidebar.projectsHeight}
+            tabIndex={0}
+            onPointerDown={startResize}
+            onDoubleClick={() => resize(280)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowUp") { event.preventDefault(); resize(preferences.sidebar.projectsHeight - 16); }
+              if (event.key === "ArrowDown") { event.preventDefault(); resize(preferences.sidebar.projectsHeight + 16); }
+              if (event.key === "Home") { event.preventDefault(); resize(140); }
+              if (event.key === "End") { event.preventDefault(); resize(520); }
+            }}
+          />
+          {/* eslint-enable jsx-a11y-x/no-noninteractive-element-interactions, jsx-a11y-x/no-noninteractive-tabindex */}
+          <section className={`thread-navigation ${revealThreads ? "" : "is-section-collapsed"}`} aria-labelledby="threads-heading">
+            <div className="panel-heading"><button type="button" aria-expanded={revealThreads} aria-controls="thread-list" onClick={() => updateSidebar({ threadsCollapsed: !preferences.sidebar.threadsCollapsed })}><span aria-hidden="true">{revealThreads ? "▾" : "▸"}</span><h2 id="threads-heading">Threads</h2></button><span>{threads.length}</span></div>
+            <div id="thread-list" hidden={!revealThreads}>
             {loading ? <div className="thread-skeleton" role="status" aria-label="Threads werden geladen"><span /><span /><span /></div> : null}
             {!loading && threads.length === 0 ? <p className="sidebar-empty">Noch keine Threads.</p> : null}
             {!loading && threads.length > 0 && filteredThreads.length === 0 ? <p className="sidebar-empty">Keine passenden Threads.</p> : null}
@@ -225,7 +270,8 @@ export function RepositorySidebar({
                 );
               })}
             </ul>
-          </section>
+            </div>
+          </section></>
         ) : null}
       </nav>
       <AnchoredMenu anchorRef={menuAnchorRef} open={menuRepository !== null} onClose={() => setOpenMenu(null)} ariaLabel={menuRepository === null ? "Repository-Menü" : `${menuRepository.name} Aktionen`} width={272} align="end">
@@ -251,10 +297,10 @@ export function RepositorySidebar({
         ))}
       </AnchoredMenu>
       <AnchoredMenu anchorRef={threadMenuAnchorRef} open={menuThread !== null} onClose={() => setOpenThreadMenu(null)} ariaLabel="Thread-Aktionen" width={210} align="end">
-        {menuThread === null ? null : <button type="button" role="menuitem" onClick={() => {
+        {menuThread === null ? null : <><button type="button" role="menuitem" onClick={() => { onEditThread?.(menuThread); setOpenThreadMenu(null); }}>Titel bearbeiten …</button><button type="button" role="menuitem" onClick={() => { onRegenerateThread?.(menuThread); setOpenThreadMenu(null); }}>KI-Titel neu generieren …</button><div className="menu-separator" role="separator" /><button type="button" role="menuitem" onClick={() => {
           onDeleteThread(menuThread);
           setOpenThreadMenu(null);
-        }}>Thread löschen …</button>}
+        }}>Thread löschen …</button></>}
       </AnchoredMenu>
     </>
   );

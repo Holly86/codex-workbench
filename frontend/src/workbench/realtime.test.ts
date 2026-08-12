@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialRealtimeState, reducer, type EventEnvelope } from "./realtime";
+import { initialRealtimeState, reconnectDelay, reducer, type EventEnvelope } from "./realtime";
 import type { ThreadView } from "./types";
 
 const thread: ThreadView = {
@@ -46,5 +46,36 @@ describe("realtime streaming reducer", () => {
     });
     expect(next.threads).toEqual([keep]);
     expect(next.timeline).toEqual({ [keep.id]: [] });
+  });
+
+  it("keeps 100 reconnect delays jittered and bounded without a retry loop", () => {
+    const values = Array.from({ length: 100 }, (_, index) => reconnectDelay(index + 1, index / 99));
+    expect(values.every((value) => value >= 850 && value <= 17_250)).toBe(true);
+    expect(new Set(values.slice(-20)).size).toBeGreaterThan(1);
+  });
+
+  it("projects a reproducible long conversation batch without losing final text", () => {
+    const state = { ...initialRealtimeState, threads: [thread] };
+    const events = Array.from({ length: 5_000 }, (_, index) => delta(index + 1, "x"));
+    const started = performance.now();
+    const next = reducer(state, { type: "events", events });
+    const duration = performance.now() - started;
+    expect(next.lastSequence).toBe(5_000);
+    expect(next.threads[0]?.turns[0]?.items[0]?.text).toHaveLength(5_000);
+    expect(duration).toBeLessThan(2_000);
+  });
+
+  it("applies a persisted thread title update in realtime", () => {
+    const next = reducer({ ...initialRealtimeState, threads: [thread] }, {
+      type: "event",
+      event: {
+        sequence: 1, occurredAt: "2026-01-01T00:00:00Z", type: "thread.name",
+        payload: { name: "Runtime Recovery absichern", titleSource: "manual",
+          titleUpdatedAt: 2, titleGenerationState: "succeeded", titleErrorCode: null },
+        threadId: thread.id, turnId: null, itemId: null,
+      },
+    });
+    expect(next.threads[0]?.name).toBe("Runtime Recovery absichern");
+    expect(next.threads[0]?.titleSource).toBe("manual");
   });
 });

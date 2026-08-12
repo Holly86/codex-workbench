@@ -306,8 +306,8 @@ test("refreshes repositories once after a clone job succeeds", async () => {
     type: "jobs",
     jobs: [{
       id: "job-clone", repositoryId: null, repositoryName: "recreated", type: "git_clone",
-      status: "succeeded", startedAt: 1, endedAt: 2, exitCode: 0, output: "",
-      error: null, command: "git clone", durationMs: 1,
+      status: "succeeded", startedAt: 1, endedAt: 2, exitCode: 0,
+      error: null, errorCode: null, retryable: false, operationLabel: "Repository klonen", durationMs: 1,
     }],
   }));
 
@@ -318,8 +318,8 @@ test("refreshes repositories once after a clone job succeeds", async () => {
     type: "jobs",
     jobs: [{
       id: "job-clone", repositoryId: null, repositoryName: "recreated", type: "git_clone",
-      status: "succeeded", startedAt: 1, endedAt: 2, exitCode: 0, output: "",
-      error: null, command: "git clone", durationMs: 1,
+      status: "succeeded", startedAt: 1, endedAt: 2, exitCode: 0,
+      error: null, errorCode: null, retryable: false, operationLabel: "Repository klonen", durationMs: 1,
     }],
   }));
   await Promise.resolve();

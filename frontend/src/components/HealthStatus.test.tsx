@@ -11,7 +11,7 @@ test("distinguishes an available backend from an unavailable Codex runtime", asy
       .mockResolvedValueOnce(new Response(null, { status: 503 })),
   );
 
-  render(<HealthStatus processConnection="failed" />);
+  render(<HealthStatus processConnection="failed" onOpen={() => undefined} />);
 
   expect(await screen.findByText("Backend verbunden")).toBeInTheDocument();
   expect(screen.getByText("Codex Runtime derzeit nicht verfügbar")).toBeInTheDocument();
@@ -22,7 +22,7 @@ test("keeps optional tool discovery out of global health", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
 
   render(
-    <HealthStatus processConnection="connected" />,
+    <HealthStatus processConnection="connected" onOpen={() => undefined} />,
   );
 
   expect(await screen.findByText("Codex Runtime bereit")).toBeInTheDocument();
