@@ -198,8 +198,8 @@ class DomainProjection:
         else:
             item_id = self._optional_text(params.get("itemId"), 200)
 
-        event_type, payload = self._apply_notification(thread, method, params)
         if method == "thread/name/updated":
+            observed_at = int(time.time())
             title = await asyncio.to_thread(
                 self._metadata.resolve_thread_title,
                 thread.id,
@@ -207,20 +207,30 @@ class DomainProjection:
                     self._optional_text(params.get("threadName"), 200)
                 ),
                 fallback_title=self._fallback_title(thread.preview),
-                observed_at=int(time.time()),
+                observed_at=observed_at,
             )
-            thread.name = title.display_title
-            thread.title_source = title.source
-            thread.title_updated_at = title.updated_at
-            thread.title_generation_state = title.generation_state
-            thread.title_error_code = title.error_code
-            payload = {
-                "name": thread.name,
-                "titleSource": thread.title_source,
-                "titleUpdatedAt": thread.title_updated_at,
-                "titleGenerationState": thread.title_generation_state,
-                "titleErrorCode": thread.title_error_code,
-            }
+            async with self._lock:
+                current = self._threads.get(thread_id)
+                if current is None:
+                    return
+                current.name = title.display_title
+                current.title_source = title.source
+                current.title_updated_at = title.updated_at
+                current.title_generation_state = title.generation_state
+                current.title_error_code = title.error_code
+                current.updated_at = max(current.updated_at, observed_at)
+                thread = current
+                session_id = current.session_id
+                event_type: str | None = "thread.name"
+                payload: JsonObject = {
+                    "name": current.name,
+                    "titleSource": current.title_source,
+                    "titleUpdatedAt": current.title_updated_at,
+                    "titleGenerationState": current.title_generation_state,
+                    "titleErrorCode": current.title_error_code,
+                }
+        else:
+            event_type, payload = self._apply_notification(thread, method, params)
         activity = self._activity.notification(thread_id, method, params)
         if event_type is not None:
             await self.broker.publish(
@@ -593,10 +603,6 @@ class DomainProjection:
         elif method == "thread/status/changed":
             thread.status = self._thread_status(params.get("status"))
             return "thread.status", {"status": thread.status}
-        elif method == "thread/name/updated":
-            thread.name = self._optional_text(params.get("threadName"), 200)
-            thread.updated_at = int(time.time())
-            return "thread.name", {"name": thread.name}
         elif method == "thread/compacted":
             return "context.compacted", {"status": "completed"}
         return "compatibility.unknown", {"protocolMethod": method}

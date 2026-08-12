@@ -212,7 +212,7 @@ export function RepositorySidebar({
         </label>
 
         <section className={`repository-navigation ${revealProjects ? "" : "is-section-collapsed"}`} aria-labelledby="projects-heading">
-          <div className="panel-heading"><button type="button" aria-expanded={revealProjects} aria-controls="project-list" onClick={() => updateSidebar({ projectsCollapsed: !preferences.sidebar.projectsCollapsed })}><span aria-hidden="true">{revealProjects ? "▾" : "▸"}</span><h2 id="projects-heading">Projekte</h2></button><span>{filteredRepositories.length}</span></div>
+          <div className="panel-heading"><h2 id="projects-heading"><button type="button" aria-expanded={revealProjects} aria-controls="project-list" onClick={() => updateSidebar({ projectsCollapsed: !preferences.sidebar.projectsCollapsed })}><span aria-hidden="true">{revealProjects ? "▾" : "▸"}</span><span>Projekte</span></button></h2><span>{filteredRepositories.length}</span></div>
           <div id="project-list" hidden={!revealProjects}>
           {repositories.length === 0 && !loading ? <p className="sidebar-empty">Keine Repositories gefunden.</p> : null}
           {repositories.length > 0 && filteredRepositories.length === 0 ? <p className="sidebar-empty">Keine passenden Projekte.</p> : null}
@@ -282,7 +282,7 @@ export function RepositorySidebar({
           /> : null}
           {/* eslint-enable jsx-a11y-x/no-noninteractive-element-interactions, jsx-a11y-x/no-noninteractive-tabindex */}
           <section className={`thread-navigation ${revealThreads ? "" : "is-section-collapsed"}`} aria-labelledby="threads-heading">
-            <div className="panel-heading"><button type="button" aria-expanded={revealThreads} aria-controls="thread-list" onClick={() => updateSidebar({ threadsCollapsed: !preferences.sidebar.threadsCollapsed })}><span aria-hidden="true">{revealThreads ? "▾" : "▸"}</span><h2 id="threads-heading">Threads</h2></button><span>{threads.length}</span></div>
+            <div className="panel-heading"><h2 id="threads-heading"><button type="button" aria-expanded={revealThreads} aria-controls="thread-list" onClick={() => updateSidebar({ threadsCollapsed: !preferences.sidebar.threadsCollapsed })}><span aria-hidden="true">{revealThreads ? "▾" : "▸"}</span><span>Threads</span></button></h2><span>{threads.length}</span></div>
             <div id="thread-list" hidden={!revealThreads}>
             {loading ? <div className="thread-skeleton" role="status" aria-label="Threads werden geladen"><span /><span /><span /></div> : null}
             {!loading && threads.length === 0 ? <p className="sidebar-empty">Noch keine Threads.</p> : null}

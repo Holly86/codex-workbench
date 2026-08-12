@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from typing import cast
 
@@ -159,6 +161,97 @@ async def test_manual_title_uses_native_set_and_wins_over_later_native_update(
     )
     assert projected["name"] == "Manual release title"
     assert projected["titleSource"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_native_title_resolution_never_exposes_candidate_before_atomic_priority_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _repository_id, _calls = await runtime_with_thread(tmp_path, monkeypatch)
+    await runtime.set_thread_title(
+        "thread-delete-me", "owner-session", "Manual title stays authoritative"
+    )
+    subscription, _replay, _missed, _latest = await runtime.broker.subscribe(
+        "owner-session", None
+    )
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    original = runtime.metadata.resolve_thread_title
+
+    def blocked_resolve(
+        thread_id: str,
+        *,
+        native_title: str | None,
+        fallback_title: str,
+        observed_at: int,
+    ) -> ThreadTitle:
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
+        return original(
+            thread_id,
+            native_title=native_title,
+            fallback_title=fallback_title,
+            observed_at=observed_at,
+        )
+
+    monkeypatch.setattr(runtime.metadata, "resolve_thread_title", blocked_resolve)
+    update = asyncio.create_task(
+        runtime.projection.ingest_notification(
+            1,
+            "thread/name/updated",
+            {"threadId": "thread-delete-me", "threadName": "Transient native candidate"},
+        )
+    )
+    await entered.wait()
+    try:
+        during = runtime.projection.thread_browser_dict(
+            runtime.projection.require_thread("thread-delete-me")
+        )
+        assert during["name"] == "Manual title stays authoritative"
+        assert during["titleSource"] == "manual"
+    finally:
+        release.set()
+    await update
+
+    after = runtime.projection.thread_browser_dict(
+        runtime.projection.require_thread("thread-delete-me")
+    )
+    assert after["name"] == "Manual title stays authoritative"
+    raw_events = [await subscription.queue.get(), await subscription.queue.get()]
+    assert all(isinstance(event, RealtimeEnvelope) for event in raw_events)
+    events = cast(list[RealtimeEnvelope], raw_events)
+    assert [event.type for event in events].count("thread.name") == 1
+    title_event = next(event for event in events if event.type == "thread.name")
+    assert title_event.payload["name"] == "Manual title stays authoritative"
+    await subscription.close()
+
+
+@pytest.mark.asyncio
+async def test_native_title_notification_is_adopted_once_without_manual_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _repository_id, _calls = await runtime_with_thread(tmp_path, monkeypatch)
+    subscription, _replay, _missed, _latest = await runtime.broker.subscribe(
+        "owner-session", None
+    )
+
+    await runtime.projection.ingest_notification(
+        1,
+        "thread/name/updated",
+        {"threadId": "thread-delete-me", "threadName": "Native title adopted atomically"},
+    )
+
+    browser = runtime.projection.thread_browser_dict(
+        runtime.projection.require_thread("thread-delete-me")
+    )
+    assert browser["name"] == "Native title adopted atomically"
+    assert browser["titleSource"] == "native"
+    raw_events = [await subscription.queue.get(), await subscription.queue.get()]
+    assert all(isinstance(event, RealtimeEnvelope) for event in raw_events)
+    events = cast(list[RealtimeEnvelope], raw_events)
+    assert [event.type for event in events].count("thread.name") == 1
+    await subscription.close()
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,21 @@ it("filters repositories and exposes a keyboard-accessible context menu", () => 
   expect(action).toHaveBeenCalledWith("connect-private", null);
 });
 
+it("never nests a heading inside an interactive button", () => {
+  const view = render(<SidebarHarness repositories={[repository]} selectedRepositoryId="r"
+    threads={[thread]} selectedThreadId={thread.id} loading={false}
+    onSelectRepository={vi.fn()} onSelectThread={vi.fn()} onNewThread={vi.fn()}
+    onDeleteThread={vi.fn()} onRepositoryAction={vi.fn()} />);
+  expect(view.container.querySelector("button h1, button h2, button h3, button h4, button h5, button h6"))
+    .toBeNull();
+  expect(screen.getByRole("heading", { name: "Projekte" })).toContainElement(
+    screen.getByRole("button", { name: /Projekte/ }),
+  );
+  expect(screen.getByRole("heading", { name: "Threads" })).toContainElement(
+    screen.getByRole("button", { name: /Threads/ }),
+  );
+});
+
 it("persists independent collapse state and keyboard splitter size", async () => {
   const view = render(<SidebarHarness repositories={[repository]} selectedRepositoryId="r" threads={[thread]} selectedThreadId={thread.id} loading={false} onSelectRepository={vi.fn()} onSelectThread={vi.fn()} onNewThread={vi.fn()} onDeleteThread={vi.fn()} onRepositoryAction={vi.fn()} />);
   const splitter = screen.getByRole("separator", { name: "Höhe der Projektliste" });

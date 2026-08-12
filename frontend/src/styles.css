@@ -980,8 +980,7 @@ input[type="checkbox"], input[type="radio"] {
   .repository-navigation, .thread-navigation { min-height: 0; margin: 0; padding-top: .65rem; }
   .repository-navigation > div:last-child, .thread-navigation > div:last-child { min-height: 0; height: calc(100% - 1.8rem); overflow-y: auto; }
 }
-.panel-heading > button { min-height: 1.8rem; display: flex; align-items: center; gap: .35rem; padding: 0; color: inherit; border: 0; background: transparent; }
-.panel-heading > button h2 { display: inline; }
+.panel-heading > h2 > button { min-height: 1.8rem; display: flex; align-items: center; gap: .35rem; padding: 0; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; border: 0; background: transparent; }
 .sidebar-splitter { position: relative; min-height: .55rem; cursor: row-resize; touch-action: none; }
 .sidebar-splitter::after { content: ""; position: absolute; inset: calc(50% - 1px) .5rem auto; height: 2px; border-radius: 999px; background: var(--border); }
 .sidebar-splitter:hover::after, .sidebar-splitter:focus-visible::after { background: var(--focus); }
