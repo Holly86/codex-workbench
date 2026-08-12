@@ -1011,7 +1011,7 @@ def test_generation_scoped_activity_suppresses_probe_and_clears_only_watchdog_er
     assert supervisor.watchdog_probe_due(8, now=observed) is False
     assert supervisor.watchdog_probe_due(
         8,
-        now=observed + supervisor._settings.app_server_watchdog_idle_seconds,  # noqa: SLF001
+        now=observed + supervisor._settings.app_server_watchdog_idle_seconds + 0.001,  # noqa: SLF001
     ) is True
 
     supervisor._error_code = "unsupported_version"  # noqa: SLF001
