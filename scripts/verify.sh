@@ -17,6 +17,7 @@ cd "$repository_root"
     npm run typecheck
     npm test
     npm run build
+    npm run test:e2e
 )
 
 ./scripts/check-secrets.sh

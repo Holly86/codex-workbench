@@ -37,5 +37,18 @@ jobs:
       - name: Install repository-local dependencies
         run: make bootstrap
 
+      - name: Install pinned Chromium runtime
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
       - name: Run public release verification
         run: make verify
+
+      - name: Upload Playwright failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: playwright-failure-artifacts
+          path: frontend/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
