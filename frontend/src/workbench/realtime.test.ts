@@ -54,6 +54,30 @@ describe("realtime streaming reducer", () => {
     expect(new Set(values.slice(-20)).size).toBeGreaterThan(1);
   });
 
+  it("reconciles 100 separate reconnect snapshots without duplicating state", () => {
+    let state = { ...initialRealtimeState, threads: [thread] };
+    for (let cycle = 1; cycle <= 100; cycle += 1) {
+      state = reducer(state, { type: "socket", state: "reconnecting" });
+      state = reducer(state, {
+        type: "snapshot",
+        snapshot: {
+          connection: { state: "connected", generation: cycle, message: null },
+          threads: [thread],
+          pendingApprovals: [],
+          rateLimits: { available: false, observedAt: cycle },
+          jobs: [],
+        },
+        latest: cycle,
+        missed: true,
+      });
+    }
+    expect(state.connection).toBe("connected");
+    expect(state.generation).toBe(100);
+    expect(state.lastSequence).toBe(100);
+    expect(state.threads).toEqual([thread]);
+    expect(state.jobs).toEqual([]);
+  });
+
   it("projects a reproducible long conversation batch without losing final text", () => {
     const state = { ...initialRealtimeState, threads: [thread] };
     const events = Array.from({ length: 5_000 }, (_, index) => delta(index + 1, "x"));

@@ -820,6 +820,35 @@ async def test_manual_restart_is_single_flight_and_shutdown_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_manual_recovery_stress_100_separate_runs_complete_without_overlap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completed = 0
+
+    for run in range(100):
+        supervisor = _unit_supervisor(tmp_path / str(run))
+        supervisor._state = ProcessState.READY  # noqa: SLF001
+
+        async def complete_restart(
+            _delay: float, current: AppServerSupervisor = supervisor
+        ) -> None:
+            nonlocal completed
+            completed += 1
+            current._state = ProcessState.READY  # noqa: SLF001
+            current._restart_task = None  # noqa: SLF001
+
+        monkeypatch.setattr(supervisor, "_restart_after", complete_restart)
+        assert await supervisor.request_restart() == "started"
+        restart = supervisor._restart_task  # noqa: SLF001
+        assert restart is not None
+        await restart
+        assert supervisor.status.state is ProcessState.READY
+        await supervisor.stop()
+
+    assert completed == 100
+
+
+@pytest.mark.asyncio
 async def test_watchdog_stress_100_successful_probes_do_not_schedule_recovery(
     tmp_path: Path,
 ) -> None:
