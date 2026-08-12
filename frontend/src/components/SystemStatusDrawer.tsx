@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { ApiError } from "../auth/api";
 import { readSystemStatus, restartRuntime } from "../workbench/api";
 import type { ComponentStatus, SystemStatus } from "../workbench/types";
 import { DefinitionList, EmptyState, InlineAlert, StatusBadge } from "./ui";
+import { useDrawerLifecycle } from "./useDrawerLifecycle";
 
 const COMPONENT_LABELS: Record<ComponentStatus["component"], string> = {
   backend_http: "Backend HTTP API",
@@ -25,7 +26,7 @@ export function SystemStatusDrawer({ open, csrfToken, realtimeState, onClose, on
   const [error, setError] = useState<string | null>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const [restartPending, setRestartPending] = useState(false);
-  const closeRef = useRef<HTMLButtonElement>(null);
+  const { mobile, drawerRef, closeRef } = useDrawerLifecycle(open, onClose);
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setLoading(true); setError(null);
     try { setStatus(await readSystemStatus(signal)); }
@@ -35,12 +36,15 @@ export function SystemStatusDrawer({ open, csrfToken, realtimeState, onClose, on
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
-    const loadTimer = window.setTimeout(() => void refresh(controller.signal), 0);
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", escape);
-    window.setTimeout(() => closeRef.current?.focus());
-    return () => { window.clearTimeout(loadTimer); controller.abort(); window.removeEventListener("keydown", escape); };
-  }, [open, onClose, refresh]);
+    queueMicrotask(() => {
+      if (!controller.signal.aborted) {
+        setConfirmRestart(false);
+        setRestartPending(false);
+      }
+    });
+    queueMicrotask(() => { if (!controller.signal.aborted) void refresh(controller.signal); });
+    return () => controller.abort();
+  }, [open, refresh]);
   const restart = async () => {
     if (!confirmRestart || restartPending) return;
     setRestartPending(true); setError(null);
@@ -49,11 +53,12 @@ export function SystemStatusDrawer({ open, csrfToken, realtimeState, onClose, on
       setError(caught instanceof ApiError && caught.code === "operation_conflict"
         ? "Ein aktiver Turn wird nicht unterbrochen. Beende ihn vor dem Runtime-Neustart."
         : statusError(caught));
-    } finally { setRestartPending(false); }
+    } finally { setRestartPending(false); setConfirmRestart(false); }
   };
+  if (!open) return null;
   return <>
-    {open ? <button type="button" className="drawer-scrim" aria-label="Systemstatus schließen" onClick={onClose} /> : null}
-    <aside className={`system-status-drawer ${open ? "is-open" : ""}`} aria-hidden={!open} aria-label="Systemstatus">
+    {mobile ? <button type="button" className="drawer-scrim" aria-label="Systemstatus schließen" onClick={onClose} /> : null}
+    <aside ref={drawerRef} className="system-status-drawer is-open" aria-label="Systemstatus" role={mobile ? "dialog" : undefined} aria-modal={mobile ? true : undefined} tabIndex={-1}>
       <header><div><p className="eyebrow">Workbench</p><h2>Systemstatus</h2></div><button ref={closeRef} type="button" className="icon-button" aria-label="Systemstatus schließen" onClick={onClose}>×</button></header>
       <div className="drawer-scroll">
         {error ? <InlineAlert tone="danger">{error}</InlineAlert> : null}

@@ -167,3 +167,17 @@ test("logs out through the CSRF-authenticated API and returns to login", async (
     expect(new Headers(logoutHeaders).get("x-csrf-token")).toBe("csrf-test-token");
   });
 });
+
+test("mounts the authenticated Workbench when browser storage is denied", async () => {
+  const get = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("denied"); });
+  const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("quota"); });
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) =>
+    requestPath(input) === "/api/auth/status"
+      ? jsonResponse(authenticated)
+      : jsonResponse([])));
+
+  render(<App />);
+  expect(await screen.findByRole("navigation", { name: "Repositories" })).toBeInTheDocument();
+  get.mockRestore();
+  set.mockRestore();
+});

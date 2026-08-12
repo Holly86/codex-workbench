@@ -50,8 +50,9 @@ import {
   sandboxAvailable,
 } from "./access";
 import { useRealtime } from "./realtime";
+import { selectNotifications } from "./notifications";
 import { parseWorkbenchRoute, repositoryPath, threadPath, writeWorkbenchRoute } from "./routing";
-import { readUiPreferences } from "./uiPreferences";
+import { readUiPreferences, writeUiPreferences } from "./uiPreferences";
 import type {
   ApprovalPolicy,
   FullAccessCapability,
@@ -121,9 +122,8 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const [github, setGithub] = useState<GitHubCapability | null>(null);
   const [removalPreview, setRemovalPreview] = useState<RepositoryRemovalPreview | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
-  const [notificationsOpen, setNotificationsOpen] = useState(
-    () => readUiPreferences().notifications.open,
-  );
+  const [uiPreferences, setUiPreferences] = useState(readUiPreferences);
+  const notificationsOpen = uiPreferences.notifications.open;
   const mainRef = useRef<HTMLElement>(null);
   const hydrationAttempts = useRef(new Set<string>());
   const knownThreads = useRef(new Map<string, ThreadView>());
@@ -134,6 +134,28 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     repositoryId: selectedRepositoryId,
     threadId: selectedThreadId,
   });
+
+  useEffect(() => writeUiPreferences(uiPreferences), [uiPreferences]);
+
+  const closeSystemStatus = useCallback(() => setStatusOpen(false), []);
+  const openSystemStatus = useCallback(() => {
+    setUiPreferences((current) => ({
+      ...current,
+      notifications: { ...current.notifications, open: false },
+    }));
+    setStatusOpen(true);
+  }, []);
+  const closeNotifications = useCallback(() => setUiPreferences((current) => ({
+    ...current,
+    notifications: { ...current.notifications, open: false },
+  })), []);
+  const openNotifications = useCallback(() => {
+    setStatusOpen(false);
+    setUiPreferences((current) => ({
+      ...current,
+      notifications: { ...current.notifications, open: true },
+    }));
+  }, []);
 
   const capabilities =
     realtime.processConnection === "connected" &&
@@ -153,6 +175,13 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
   const selectedThreadApprovalPolicy = selectedThread?.approvalPolicy ?? null;
   const selectedApproval = realtime.approvals.find((approval) => approval.threadId === selectedThreadId) ?? realtime.approvals[0] ?? null;
   const working = selectedThread?.activeTurnId !== null && selectedThread?.activeTurnId !== undefined;
+  const notificationSelection = selectNotifications({
+    jobs,
+    preferences: uiPreferences.notifications,
+    processConnection: realtime.processConnection,
+    realtimeConnection: realtime.connection,
+    generation: realtime.generation,
+  });
   const activeFullAccessIntent =
     capabilities !== null &&
     fullAccessIntent?.repositoryId === selectedRepositoryId &&
@@ -635,6 +664,20 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
     }
   };
 
+  const loadActionBranches = useCallback(() => {
+    if (actionRepository === null) return Promise.reject(new Error("Kein Repository gewählt."));
+    return gitBranches(actionRepository.id);
+  }, [actionRepository]);
+
+  const retryNotification = useCallback(async (job: typeof jobs[number]) => {
+    if (!job.retryable || job.repositoryId === null) return;
+    try {
+      const action = job.type === "git_fetch" ? "fetch" : "pull";
+      await gitAction(session.csrfToken, job.repositoryId, action);
+      dispatch({ type: "jobs", jobs: await listJobs() });
+    } catch (caught: unknown) { handleError(caught); }
+  }, [dispatch, handleError, session.csrfToken]);
+
   return (
     <>
       <a className="skip-link" href="#conversation">Zum Gespräch springen</a>
@@ -648,10 +691,10 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             <HealthStatus
               processConnection={realtime.processConnection}
               realtimeConnection={realtime.connection}
-              onOpen={() => setStatusOpen(true)}
+              onOpen={openSystemStatus}
             />
             <UsagePanel thread={selectedThread} rateLimits={realtime.rateLimits} />
-            <button type="button" className="notification-trigger status-chip" aria-label="Benachrichtigungen öffnen" onClick={() => setNotificationsOpen(true)}><span aria-hidden="true">◌</span><span>Aktivität</span>{jobs.length > 0 ? <strong>{jobs.length > 99 ? "99+" : jobs.length}</strong> : null}</button>
+            <button type="button" className="notification-trigger status-chip" aria-label={notificationSelection.badgeCount > 0 ? `Benachrichtigungen öffnen, ${String(notificationSelection.badgeCount)} neu` : "Benachrichtigungen öffnen, keine neuen Meldungen"} onClick={openNotifications}><span aria-hidden="true">◌</span><span>Aktivität</span>{notificationSelection.badgeCount > 0 ? <strong>{notificationSelection.badgeCount > 99 ? "99+" : notificationSelection.badgeCount}</strong> : null}</button>
             <button type="button" className="secondary-action" disabled={logoutPending} onClick={() => void performLogout()}>{logoutPending ? "Abmelden …" : "Abmelden"}</button>
           </div>
         </header>
@@ -662,6 +705,8 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
             threads={repositoryThreads}
             selectedThreadId={selectedThreadId}
             loading={repositoriesLoading || threadsLoading}
+            preferences={uiPreferences}
+            onPreferencesChange={setUiPreferences}
             onSelectRepository={selectRepository}
             onSelectThread={selectThread}
             onNewThread={requestNewThread}
@@ -841,7 +886,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         open={statusOpen}
         csrfToken={session.csrfToken}
         realtimeState={realtime.connection}
-        onClose={() => setStatusOpen(false)}
+        onClose={closeSystemStatus}
         onReconnect={reconnectRealtime}
         onReloadRepositories={refreshRepositories}
       />
@@ -851,19 +896,14 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         processConnection={realtime.processConnection}
         realtimeConnection={realtime.connection}
         generation={realtime.generation}
-        onClose={() => setNotificationsOpen(false)}
+        preferences={uiPreferences}
+        onPreferencesChange={setUiPreferences}
+        onClose={closeNotifications}
         onReconnectRealtime={reconnectRealtime}
-        onOpenSystemStatus={() => { setNotificationsOpen(false); setStatusOpen(true); }}
-        onRetry={async (job) => {
-          if (!job.retryable || job.repositoryId === null) return;
-          try {
-            const action = job.type === "git_fetch" ? "fetch" : "pull";
-            await gitAction(session.csrfToken, job.repositoryId, action);
-            dispatch({ type: "jobs", jobs: await listJobs() });
-          } catch (caught: unknown) { handleError(caught); }
-        }}
+        onOpenSystemStatus={openSystemStatus}
+        onRetry={retryNotification}
       />
-      <RepositoryTools action={deployKeyMode === null ? repositoryAction : null} repository={actionRepository} github={github} pending={operationPending} removalPreview={removalPreview} onClose={() => setRepositoryAction(null)} onLoadBranches={actionRepository ? () => gitBranches(actionRepository.id) : undefined} onSubmit={async (values) => {
+      <RepositoryTools action={deployKeyMode === null ? repositoryAction : null} repository={actionRepository} github={github} pending={operationPending} removalPreview={removalPreview} onClose={() => setRepositoryAction(null)} onLoadBranches={actionRepository ? loadActionBranches : undefined} onSubmit={async (values) => {
         setOperationPending(true); setError(null);
         try {
           if (typeof values.quickAction === "string" && actionRepository) {

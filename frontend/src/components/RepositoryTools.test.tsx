@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { expect, test, vi } from "vitest";
 import type { Repository, RepositoryRemovalPreview } from "../workbench/types";
 import { RepositoryTools } from "./RepositoryTools";
 
@@ -55,13 +55,20 @@ test("renders Git status as structured semantics with raw data collapsed", () =>
 });
 
 test("uses compact branch choices, searchable groups, and a specific action label", async () => {
+  const submit = vi.fn(() => Promise.resolve());
   render(<RepositoryTools action="branches" repository={repository} github={null}
     pending={false} removalPreview={null} onClose={() => undefined}
     onLoadBranches={() => Promise.resolve({
-      local: [{ name: "main", current: true }, { name: "feature/local", current: false }],
-      remote: [{ name: "origin/release", current: false }],
+      local: [
+        { id: "refs/heads/main", kind: "local", displayName: "main", fullRef: "refs/heads/main", switchTarget: "main", current: true, disabledReason: "current_branch" },
+        { id: "refs/heads/feature/local", kind: "local", displayName: "feature/local", fullRef: "refs/heads/feature/local", switchTarget: "feature/local", current: false, disabledReason: null },
+      ],
+      remote: [
+        { id: "refs/remotes/origin/release", kind: "remote", displayName: "origin/release", fullRef: "refs/remotes/origin/release", switchTarget: "origin/release", current: false, disabledReason: null },
+        { id: "refs/remotes/upstream/release", kind: "remote", displayName: "upstream/release", fullRef: "refs/remotes/upstream/release", switchTarget: "upstream/release", current: false, disabledReason: null },
+      ],
     })}
-    onSubmit={() => Promise.resolve()} />);
+    onSubmit={submit} />);
   expect(screen.getByRole("radio", { name: "Neuen lokalen Branch erstellen" })).toBeChecked();
   expect(screen.getByRole("button", { name: "Branch erstellen" })).toBeDisabled();
   fireEvent.change(screen.getByRole("textbox", { name: "Branchname" }), { target: { value: "feature/new" } });
@@ -70,4 +77,31 @@ test("uses compact branch choices, searchable groups, and a specific action labe
   expect(await screen.findByText("Remote-Branches")).toBeInTheDocument();
   expect(await screen.findByText("origin/release")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Branch wechseln" })).toBeDisabled();
+  const origin = screen.getByRole("radio", { name: /origin\/release/ });
+  const upstream = screen.getByRole("radio", { name: /upstream\/release/ });
+  fireEvent.click(origin);
+  expect(origin).toBeChecked();
+  expect(upstream).not.toBeChecked();
+  fireEvent.click(screen.getByRole("button", { name: "Branch wechseln" }));
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+    branch: "origin/release", branchOperation: "switch",
+  }));
+  expect(screen.getByRole("radio", { name: /main/ })).toBeDisabled();
+});
+
+test("loads branches once across parent rerenders and retries one failed request", async () => {
+  const loader = vi.fn()
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValue({ local: [], remote: [] });
+  const base = <RepositoryTools action="branches" repository={repository} github={null}
+    pending={false} removalPreview={null} onClose={() => undefined}
+    onLoadBranches={loader} onSubmit={() => Promise.resolve()} />;
+  const view = render(base);
+  fireEvent.click(screen.getByRole("radio", { name: "Zu vorhandenem Branch wechseln" }));
+  expect(await screen.findByText("Branches konnten nicht geladen werden.")).toBeInTheDocument();
+  for (let index = 0; index < 100; index += 1) view.rerender(base);
+  expect(loader).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Erneut versuchen" }));
+  await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
+  expect(await screen.findAllByText("Keine passenden Branches.")).toHaveLength(2);
 });

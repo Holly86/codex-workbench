@@ -20,8 +20,8 @@ function ThreadTitleContent({ thread, mode, pending, onClose, onSave }: {
   const valid = title.trim().length > 0 && title.trim().length <= 80;
   return <DialogShell
     open
-    title={mode === "edit" ? "Threadtitel bearbeiten" : "KI-Titel neu generieren"}
-    description={mode === "edit" ? "Ein manueller Titel hat dauerhaft Vorrang vor nativen Titelupdates." : "Sichere Titelgenerierung benötigt einen isolierten Codex-Vertrag ohne Tools und Berechtigungsausweitung."}
+    title={mode === "edit" ? "Threadtitel bearbeiten" : "Status des nativen Titels"}
+    description={mode === "edit" ? "Ein manueller Titel hat dauerhaft Vorrang vor nativen Titelupdates." : "Die Workbench zeigt den nativen Codex-Status an und startet keine vorgetäuschte Titelgenerierung."}
     onClose={onClose}
     footer={<><SecondaryButton onClick={onClose}>Schließen</SecondaryButton>{mode === "edit" ? <PrimaryButton disabled={!valid || pending} onClick={() => void onSave(clean.trim())}>{pending ? "Wird gespeichert …" : "Titel speichern"}</PrimaryButton> : null}</>}
   >

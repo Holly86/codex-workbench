@@ -16,6 +16,15 @@ export interface GitStatus {
   ahead: number; behind: number; staged: number; modified: number; untracked: number;
   conflicts: number; clean: boolean; changes: GitChange[]; observedAt: number;
 }
+export interface BranchTarget {
+  id: string;
+  kind: "local" | "remote";
+  displayName: string;
+  fullRef: string;
+  switchTarget: string;
+  current: boolean;
+  disabledReason: "current_branch" | null;
+}
 export interface NativeJob {
   id: string; repositoryId: string | null; repositoryName: string;
   type: "git_clone" | "git_fetch" | "git_pull" | "git_push" | "github_publish";

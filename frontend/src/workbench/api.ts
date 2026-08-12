@@ -11,6 +11,7 @@ import type {
   WorkbenchCapabilities,
   RepositoryRemovalPreview,
   GitHubCapability,
+  BranchTarget,
   GitStatus,
   NativeJob,
   DeployKeyRemotePreview,
@@ -180,17 +181,33 @@ export async function gitStatus(repositoryId: string): Promise<GitStatus> {
 
 export async function gitBranches(
   repositoryId: string,
-): Promise<{ local: Array<{ name: string; current: boolean }>; remote: Array<{ name: string; current: boolean }> }> {
+): Promise<{ local: BranchTarget[]; remote: BranchTarget[] }> {
   const body = requireRecord(await requestJson(
     `/api/repositories/${encodeURIComponent(repositoryId)}/git/branches`, { method: "GET" },
   ));
   if (!Array.isArray(body.local) || !Array.isArray(body.remote)) {
     throw new ApiError(502, "invalid_response", "Ungültige Branch-Antwort.", null);
   }
-  return body as unknown as {
-    local: Array<{ name: string; current: boolean }>;
-    remote: Array<{ name: string; current: boolean }>;
+  return {
+    local: body.local.map((value) => parseBranchTarget(value, "local")),
+    remote: body.remote.map((value) => parseBranchTarget(value, "remote")),
   };
+}
+
+function parseBranchTarget(value: unknown, expectedKind: BranchTarget["kind"]): BranchTarget {
+  const item = requireRecord(value);
+  if (
+    item.kind !== expectedKind
+    || typeof item.id !== "string"
+    || typeof item.displayName !== "string"
+    || typeof item.fullRef !== "string"
+    || typeof item.switchTarget !== "string"
+    || typeof item.current !== "boolean"
+    || (item.disabledReason !== null && item.disabledReason !== "current_branch")
+  ) {
+    throw new ApiError(502, "invalid_response", "Ungültige Branch-Antwort.", null);
+  }
+  return item as unknown as BranchTarget;
 }
 
 export async function gitAction(

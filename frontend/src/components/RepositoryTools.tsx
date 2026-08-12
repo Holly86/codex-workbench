@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { GitHubCapability, Repository, RepositoryRemovalPreview } from "../workbench/types";
+import type { BranchTarget, GitHubCapability, Repository, RepositoryRemovalPreview } from "../workbench/types";
 import type { RepositoryAction } from "./RepositorySidebar";
 import {
   CheckboxRow,
@@ -16,8 +16,8 @@ import {
 } from "./ui";
 
 interface BranchInventory {
-  local: Array<{ name: string; current: boolean }>;
-  remote: Array<{ name: string; current: boolean }>;
+  local: BranchTarget[];
+  remote: BranchTarget[];
 }
 
 interface RepositoryToolsProps {
@@ -42,8 +42,11 @@ function RepositoryDialog({ action, repository, github, pending, removalPreview,
   const [url, setUrl] = useState("");
   const [message, setMessage] = useState("");
   const [branch, setBranch] = useState("");
+  const [branchTargetId, setBranchTargetId] = useState("");
   const [branchQuery, setBranchQuery] = useState("");
-  const [branches, setBranches] = useState<BranchInventory>({ local: [], remote: [] });
+  const [branches, setBranches] = useState<BranchInventory | null>(null);
+  const [branchLoading, setBranchLoading] = useState(false);
+  const [branchError, setBranchError] = useState<string | null>(null);
   const [branchOperation, setBranchOperation] = useState<"create" | "switch">("create");
   const [selected, setSelected] = useState<string[]>([]);
   const [visibility, setVisibility] = useState<"private" | "public">("private");
@@ -51,13 +54,24 @@ function RepositoryDialog({ action, repository, github, pending, removalPreview,
   const [readme, setReadme] = useState(true);
   const [deleteThreads, setDeleteThreads] = useState(false);
   const title = dialogTitle(action);
+  const branchLoaderRef = useRef(onLoadBranches);
+  useEffect(() => { branchLoaderRef.current = onLoadBranches; }, [onLoadBranches]);
+  const loadBranchInventory = useCallback(async () => {
+    const loader = branchLoaderRef.current;
+    if (loader === undefined) return;
+    setBranchLoading(true);
+    setBranchError(null);
+    try { setBranches(await loader()); }
+    catch { setBranchError("Branches konnten nicht geladen werden."); }
+    finally { setBranchLoading(false); }
+  }, []);
   useEffect(() => {
-    if (action !== "branches" || onLoadBranches === undefined) return;
-    let active = true;
-    void onLoadBranches().then((value) => { if (active) setBranches(value); });
-    return () => { active = false; };
-  }, [action, onLoadBranches]);
-  const values = { name, url, message, branch, selected, visibility, confirmation, repository, github, removalPreview };
+    if (action === "branches") void loadBranchInventory();
+  }, [action, loadBranchInventory]);
+  const selectedBranch = branches === null ? undefined
+    : [...branches.local, ...branches.remote].find((item) => item.id === branchTargetId);
+  const submittedBranch = branchOperation === "switch" ? selectedBranch?.switchTarget ?? "" : branch;
+  const values = { name, url, message, branch: submittedBranch, selected, visibility, confirmation, repository, github, removalPreview };
   const allowed = canSubmit(action, values);
   const buttonLabel = action === "branches"
     ? branchOperation === "create" ? "Branch erstellen" : "Branch wechseln"
@@ -68,12 +82,12 @@ function RepositoryDialog({ action, repository, github, pending, removalPreview,
     description={dialogDescription(action)}
     tone={action === "delete" ? "danger" : "default"}
     onClose={onClose}
-    footer={<><SecondaryButton onClick={onClose}>Schließen</SecondaryButton>{buttonLabel ? action === "delete" ? <DangerButton disabled={pending || !allowed} onClick={() => void onSubmit({ name, url, message, branch, branchOperation, selected, visibility, confirmation, readme, deleteThreads })}>{pending ? "Wird ausgeführt …" : buttonLabel}</DangerButton> : <PrimaryButton disabled={pending || !allowed} onClick={() => void onSubmit({ name, url, message, branch, branchOperation, selected, visibility, confirmation, readme, deleteThreads })}>{pending ? "Wird ausgeführt …" : buttonLabel}</PrimaryButton> : null}</>}
+    footer={<><SecondaryButton onClick={onClose}>Schließen</SecondaryButton>{buttonLabel ? action === "delete" ? <DangerButton disabled={pending || !allowed} onClick={() => void onSubmit({ name, url, message, branch: submittedBranch, branchOperation, selected, visibility, confirmation, readme, deleteThreads })}>{pending ? "Wird ausgeführt …" : buttonLabel}</DangerButton> : <PrimaryButton disabled={pending || !allowed} onClick={() => void onSubmit({ name, url, message, branch: submittedBranch, branchOperation, selected, visibility, confirmation, readme, deleteThreads })}>{pending ? "Wird ausgeführt …" : buttonLabel}</PrimaryButton> : null}</>}
   >
     {action === "create" ? <CreateRepository name={name} readme={readme} onName={setName} onReadme={setReadme} /> : null}
     {action === "clone" ? <CloneRepository name={name} url={url} onName={setName} onUrl={(value) => { setUrl(value); if (!name) setName(deriveName(value)); }} /> : null}
     {action === "commit" ? <CommitChanges repository={repository} selected={selected} message={message} onSelected={setSelected} onMessage={setMessage} /> : null}
-    {action === "branches" ? <Branches repository={repository} operation={branchOperation} branch={branch} query={branchQuery} inventory={branches} onOperation={setBranchOperation} onBranch={setBranch} onQuery={setBranchQuery} /> : null}
+    {action === "branches" ? <Branches repository={repository} operation={branchOperation} branch={branch} targetId={branchTargetId} query={branchQuery} inventory={branches} loading={branchLoading} error={branchError} onRetry={() => void loadBranchInventory()} onOperation={setBranchOperation} onBranch={setBranch} onTarget={setBranchTargetId} onQuery={setBranchQuery} /> : null}
     {action === "rename" ? <FormField label="Anzeigename" description="Verzeichnis und Remote-Repository werden nicht umbenannt."><input value={name} onChange={(event) => setName(event.target.value)} /></FormField> : null}
     {action === "publish" ? <Publish github={github} name={name} visibility={visibility} confirmation={confirmation} onName={setName} onVisibility={setVisibility} onConfirmation={setConfirmation} /> : null}
     {action === "status" || action === "changes" ? <GitStatusView repository={repository} onAction={(quickAction) => onSubmit({ quickAction })} /> : null}
@@ -102,13 +116,16 @@ function SelectAllCheckbox({ checked, indeterminate, onChange }: { checked: bool
   return <label className="checkbox-row"><input ref={ref} type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><strong>Alle Änderungen auswählen</strong></label>;
 }
 
-function Branches({ repository, operation, branch, query, inventory, onOperation, onBranch, onQuery }: { repository: Repository | null; operation: "create" | "switch"; branch: string; query: string; inventory: BranchInventory; onOperation: (value: "create" | "switch") => void; onBranch: (value: string) => void; onQuery: (value: string) => void }) {
+function Branches({ repository, operation, branch, targetId, query, inventory, loading, error, onRetry, onOperation, onBranch, onTarget, onQuery }: { repository: Repository | null; operation: "create" | "switch"; branch: string; targetId: string; query: string; inventory: BranchInventory | null; loading: boolean; error: string | null; onRetry: () => void; onOperation: (value: "create" | "switch") => void; onBranch: (value: string) => void; onTarget: (value: string) => void; onQuery: (value: string) => void }) {
   const normalized = query.trim().toLocaleLowerCase();
-  const filtered = useMemo(() => ({ local: inventory.local.filter((item) => item.name.toLocaleLowerCase().includes(normalized)), remote: inventory.remote.filter((item) => item.name.toLocaleLowerCase().includes(normalized)) }), [inventory, normalized]);
-  const error = branch && !validBranch(branch) ? "Erlaubt sind Git-Ref-Zeichen ohne Leerzeichen, '..', '@{' oder führende Trennzeichen." : null;
-  return <><DefinitionList values={[{ label: "Aktueller Branch", value: repository?.status.detached ? "Detached HEAD – keinem lokalen Branch zugeordnet" : repository?.status.branch ?? "Kein Branch" }]} /><div className="choice-grid"><ChoiceCard checked={operation === "create"} label="Neuen lokalen Branch erstellen" description="Erstellt den Branch am aktuellen Commit und wechselt direkt dorthin." onChange={() => { onOperation("create"); onBranch(""); }} /><ChoiceCard checked={operation === "switch"} label="Zu vorhandenem Branch wechseln" description="Zeigt lokale und bekannte Remote-Branches getrennt an." onChange={() => { onOperation("switch"); onBranch(""); }} /></div>{operation === "create" ? <FormField label="Branchname" error={error}><input value={branch} onChange={(event) => onBranch(event.target.value)} placeholder="feature/beispiel" /></FormField> : <><FormField label="Branches durchsuchen"><input type="search" value={query} onChange={(event) => onQuery(event.target.value)} /></FormField><BranchGroup title="Lokale Branches" branches={filtered.local} selected={branch} onSelect={onBranch} /><BranchGroup title="Remote-Branches" branches={filtered.remote} selected={branch} onSelect={(value) => onBranch(value.replace(/^[^/]+\//, ""))} /></>}</>;
+  const filtered = useMemo(() => ({
+    local: inventory?.local.filter((item) => `${item.displayName} ${item.fullRef}`.toLocaleLowerCase().includes(normalized)) ?? [],
+    remote: inventory?.remote.filter((item) => `${item.displayName} ${item.fullRef}`.toLocaleLowerCase().includes(normalized)) ?? [],
+  }), [inventory, normalized]);
+  const validationError = branch && !validBranch(branch) ? "Erlaubt sind Git-Ref-Zeichen ohne Leerzeichen, '..', '@{' oder führende Trennzeichen." : null;
+  return <><DefinitionList values={[{ label: "Aktueller Branch", value: repository?.status.detached ? "Detached HEAD – keinem lokalen Branch zugeordnet" : repository?.status.branch ?? "Kein Branch" }]} /><div className="choice-grid"><ChoiceCard checked={operation === "create"} label="Neuen lokalen Branch erstellen" description="Erstellt den Branch am aktuellen Commit und wechselt direkt dorthin." onChange={() => { onOperation("create"); onBranch(""); onTarget(""); }} /><ChoiceCard checked={operation === "switch"} label="Zu vorhandenem Branch wechseln" description="Zeigt lokale und bekannte Remote-Branches mit eindeutiger Git-Identität an." onChange={() => { onOperation("switch"); onBranch(""); onTarget(""); }} /></div>{operation === "create" ? <FormField label="Branchname" error={validationError}><input value={branch} onChange={(event) => onBranch(event.target.value)} placeholder="feature/beispiel" /></FormField> : <>{loading ? <p role="status">Branches werden geladen …</p> : null}{error ? <InlineAlert tone="danger">{error}<button type="button" onClick={onRetry}>Erneut versuchen</button></InlineAlert> : null}{!loading && error === null && inventory ? <><FormField label="Branches durchsuchen"><input type="search" value={query} onChange={(event) => onQuery(event.target.value)} /></FormField><BranchGroup title="Lokale Branches" branches={filtered.local} selected={targetId} onSelect={onTarget} /><BranchGroup title="Remote-Branches" branches={filtered.remote} selected={targetId} onSelect={onTarget} /></> : null}</>}</>;
 }
-function BranchGroup({ title, branches, selected, onSelect }: { title: string; branches: Array<{ name: string; current: boolean }>; selected: string; onSelect: (value: string) => void }) { return <section className="branch-group"><h3>{title}</h3>{branches.length === 0 ? <p>Keine passenden Branches.</p> : <ul>{branches.map((item) => <li key={item.name}><label><input type="radio" name="branch-target" checked={selected === item.name} disabled={item.current} onChange={() => onSelect(item.name)} /><span>{item.name}{item.current ? " · aktuell" : ""}</span></label></li>)}</ul>}</section>; }
+function BranchGroup({ title, branches, selected, onSelect }: { title: string; branches: BranchTarget[]; selected: string; onSelect: (value: string) => void }) { return <section className="branch-group"><h3>{title}</h3>{branches.length === 0 ? <p>Keine passenden Branches.</p> : <ul>{branches.map((item) => <li key={item.id}><label title={item.fullRef}><input type="radio" name="branch-target" checked={selected === item.id} disabled={item.disabledReason !== null} onChange={() => onSelect(item.id)} /><span>{item.displayName}{item.current ? " · aktuell" : ""}<small>{item.fullRef}</small></span></label></li>)}</ul>}</section>; }
 
 function GitStatusView({ repository, onAction }: { repository: Repository | null; onAction: (action: string) => Promise<void> }) {
   if (!repository) return <p>Kein Repository gewählt.</p>;

@@ -972,7 +972,11 @@ input[type="checkbox"], input[type="radio"] {
 .empty-state { margin: 0; padding: 1rem; color: var(--text-muted); text-align: center; }
 
 @media (min-width: 761px) {
-  .repository-panel:not(.is-collapsed) { grid-template-rows: auto auto auto auto minmax(0, var(--projects-height)) .55rem minmax(8rem, 1fr); overflow: hidden; }
+  .repository-panel:not(.is-collapsed) { display: grid; overflow: hidden; }
+  .repository-panel.sections-projects-open-threads-open:not(.is-collapsed) { grid-template-rows: auto auto auto auto minmax(0, var(--projects-height)) .55rem minmax(8rem, 1fr); }
+  .repository-panel.sections-projects-closed-threads-open:not(.is-collapsed) { grid-template-rows: auto auto auto auto auto minmax(8rem, 1fr); }
+  .repository-panel.sections-projects-open-threads-closed:not(.is-collapsed) { grid-template-rows: auto auto auto auto minmax(8rem, 1fr) auto; }
+  .repository-panel.sections-projects-closed-threads-closed:not(.is-collapsed) { grid-template-rows: auto auto auto auto auto auto; }
   .repository-navigation, .thread-navigation { min-height: 0; margin: 0; padding-top: .65rem; }
   .repository-navigation > div:last-child, .thread-navigation > div:last-child { min-height: 0; height: calc(100% - 1.8rem); overflow-y: auto; }
 }
@@ -986,6 +990,8 @@ input[type="checkbox"], input[type="radio"] {
 .branch-group h3, .status-change-group h3 { margin: 0 0 .45rem; color: var(--text-secondary); font-size: .72rem; }
 .branch-group ul, .status-change-group ul { display: grid; gap: .25rem; margin: 0; padding: 0; list-style: none; }
 .branch-group label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: .5rem; min-height: 2rem; }
+.branch-group label span, .branch-group label small { min-width: 0; display: block; overflow-wrap: anywhere; }
+.branch-group label small { margin-top: .15rem; color: var(--text-muted); font: .62rem ui-monospace, monospace; }
 .git-status-summary { position: relative; }
 .git-status-summary > .status-badge { position: absolute; top: 0; right: 0; }
 .status-change-group { padding: .65rem; border: 1px solid var(--border); border-radius: var(--radius-control); }
