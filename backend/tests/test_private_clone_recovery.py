@@ -9,7 +9,12 @@ from fastapi import Request
 
 import codex_workbench.api.workbench as workbench_api
 from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError
-from codex_workbench.git_service import GitOperationTimeoutError, RepositoryNameConflictError
+from codex_workbench.git_service import (
+    BranchLocalNameConflictError,
+    BranchTargetUnavailableError,
+    GitOperationTimeoutError,
+    RepositoryNameConflictError,
+)
 from codex_workbench.runtime import WorkbenchRuntime
 from codex_workbench.security.sessions import AuthenticatedSession
 
@@ -87,4 +92,22 @@ def test_git_timeout_has_a_stable_browser_safe_error() -> None:
             "message": "Der Git-Vorgang hat das zulässige Zeitlimit überschritten.",
         }
     }
+    assert "sensitive" not in bytes(response.body).decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (BranchLocalNameConflictError("sensitive branch details"), "branch_local_name_conflict"),
+        (BranchTargetUnavailableError("sensitive ref details"), "branch_target_unavailable"),
+    ],
+)
+def test_branch_switch_conflicts_have_stable_browser_safe_codes(
+    error: Exception, code: str
+) -> None:
+    response = workbench_api._safe_error(error)  # noqa: SLF001
+    body = json.loads(bytes(response.body))
+
+    assert response.status_code == 409
+    assert body["error"]["code"] == code
     assert "sensitive" not in bytes(response.body).decode("utf-8")

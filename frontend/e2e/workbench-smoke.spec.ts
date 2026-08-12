@@ -6,7 +6,8 @@ const threadId = "thread_synthetic";
 
 class SyntheticBackend {
   statusRequests = 0;
-  submittedBranch: string | null = null;
+  submittedBranchTarget: string | null = null;
+  submittedLocalBranch: string | null = null;
   jobs = [job("job_terminal", "failed")];
   private sequence = 0;
   private socket: WebSocketRoute | null = null;
@@ -45,8 +46,9 @@ class SyntheticBackend {
       } else if (url.pathname.endsWith("/git/branches")) {
         response = branches;
       } else if (url.pathname.endsWith("/git") && request.method() === "POST") {
-        const body = request.postDataJSON() as { branch?: unknown };
-        this.submittedBranch = typeof body.branch === "string" ? body.branch : null;
+        const body = request.postDataJSON() as { branchTargetId?: unknown; localBranchName?: unknown };
+        this.submittedBranchTarget = typeof body.branchTargetId === "string" ? body.branchTargetId : null;
+        this.submittedLocalBranch = typeof body.localBranchName === "string" ? body.localBranchName : null;
         response = { exitCode: 0 };
       } else if (url.pathname === "/api/github/capability") {
         response = { available: false, authenticated: false, reason: "not_configured" };
@@ -172,7 +174,8 @@ test("9 remote branch selection stays checked and submits its explicit target", 
   await expect(origin).toBeChecked();
   await expect(upstream).not.toBeChecked();
   await page.getByRole("button", { name: "Branch wechseln" }).click();
-  await expect.poll(() => backend.submittedBranch).toBe("origin/release");
+  await expect.poll(() => backend.submittedBranchTarget).toBe("refs/remotes/origin/release");
+  await expect.poll(() => backend.submittedLocalBranch).toBe("release");
 });
 
 test("10 runtime restart confirmation resets after reopen", async ({ page }) => {
@@ -267,12 +270,15 @@ const capabilities = {
 };
 const branches = {
   local: [{ id: "refs/heads/main", kind: "local", displayName: "main", fullRef: "refs/heads/main",
-    switchTarget: "main", current: true, disabledReason: "current_branch" }],
+    remoteName: null, remoteBranchName: null, proposedLocalName: null,
+    current: true, disabledReason: "current_branch" }],
   remote: [
     { id: "refs/remotes/origin/release", kind: "remote", displayName: "origin/release",
-      fullRef: "refs/remotes/origin/release", switchTarget: "origin/release", current: false, disabledReason: null },
+      fullRef: "refs/remotes/origin/release", remoteName: "origin", remoteBranchName: "release",
+      proposedLocalName: "release", current: false, disabledReason: null },
     { id: "refs/remotes/upstream/release", kind: "remote", displayName: "upstream/release",
-      fullRef: "refs/remotes/upstream/release", switchTarget: "upstream/release", current: false, disabledReason: null },
+      fullRef: "refs/remotes/upstream/release", remoteName: "upstream", remoteBranchName: "release",
+      proposedLocalName: "release", current: false, disabledReason: null },
   ],
 };
 const systemStatus = {

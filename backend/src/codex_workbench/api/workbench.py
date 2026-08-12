@@ -19,6 +19,8 @@ from codex_workbench.app_server.protocol import (
 from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError, DeployKeyError
 from codex_workbench.domain.capabilities import FullAccessConfirmationError
 from codex_workbench.git_service import (
+    BranchLocalNameConflictError,
+    BranchTargetUnavailableError,
     GitOperationError,
     GitOperationTimeoutError,
     RepositoryNameConflictError,
@@ -115,6 +117,8 @@ class GitOperationRequest(StrictModel):
     files: Annotated[list[str], Field(max_length=500)] = Field(default_factory=list)
     message: Annotated[str | None, Field(max_length=10_000)] = None
     branch: Annotated[str | None, Field(max_length=200)] = None
+    branchTargetId: Annotated[str | None, Field(max_length=500)] = None
+    localBranchName: Annotated[str | None, Field(max_length=200)] = None
 
 
 class RepositoryCreateRequest(StrictModel):
@@ -193,6 +197,21 @@ def _mutation_allowed(runtime: WorkbenchRuntime, session_id: str) -> JSONRespons
 
 
 def _safe_error(exc: BaseException) -> JSONResponse:
+    if isinstance(exc, BranchLocalNameConflictError):
+        return api_error(
+            HTTPStatus.CONFLICT,
+            "branch_local_name_conflict",
+            (
+                "Ein lokaler Branch mit diesem Namen existiert bereits. "
+                "Wähle ihn aus oder verwende einen anderen lokalen Namen."
+            ),
+        )
+    if isinstance(exc, BranchTargetUnavailableError):
+        return api_error(
+            HTTPStatus.CONFLICT,
+            "branch_target_unavailable",
+            "Der ausgewählte Branch ist nicht mehr verfügbar. Lade die Branchliste neu.",
+        )
     if isinstance(exc, RepositoryNameConflictError):
         return api_error(
             HTTPStatus.CONFLICT,
@@ -532,6 +551,10 @@ async def git_operation(
     if limited is not None:
         return limited
     try:
+        if payload.action == "status":
+            return JSONResponse(await runtime.git.status(repository_id))
+        if payload.action == "branches":
+            return JSONResponse(await runtime.git.branches(repository_id))
         if payload.action in {"fetch", "pull", "push"}:
             summary, _path = await asyncio.to_thread(
                 runtime.repositories.resolve_repository_id, repository_id
@@ -544,13 +567,20 @@ async def git_operation(
                 operation=lambda: runtime.git.run(repository_id, payload.action),
             )
             return JSONResponse(job.browser_dict(), status_code=HTTPStatus.ACCEPTED)
-        result = await runtime.git.run(
-            repository_id,
-            payload.action,
-            files=tuple(payload.files),
-            message=payload.message,
-            branch=payload.branch,
-        )
+        if payload.action == "branch-switch":
+            result = await runtime.git.switch_branch(
+                repository_id,
+                payload.branchTargetId or "",
+                local_branch_name=payload.localBranchName,
+            )
+        else:
+            result = await runtime.git.run(
+                repository_id,
+                payload.action,
+                files=tuple(payload.files),
+                message=payload.message,
+                branch=payload.branch,
+            )
         return JSONResponse(result.browser_dict())
     except Exception as exc:
         return _safe_error(exc)

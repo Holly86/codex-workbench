@@ -265,64 +265,6 @@ async def test_git_status_projects_branch_counts_and_conflicts(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_branch_inventory_preserves_unique_remote_switch_targets(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "repositories"
-    root.mkdir()
-    service = GitService(RepositoryDiscovery(root), root, output_limit=4096)
-
-    async def run(_repository_id: str, _action: str, **_kwargs: object) -> GitResult:
-        return GitResult(
-            "git for-each-ref",
-            0,
-            "main\trefs/heads/main\t*\n"
-            "origin/HEAD\trefs/remotes/origin/HEAD\t\n"
-            "origin/release\trefs/remotes/origin/release\t\n"
-            "upstream/release\trefs/remotes/upstream/release\t\n",
-            3,
-            False,
-        )
-
-    monkeypatch.setattr(service, "run", run)
-    inventory = await service.branches("0123456789abcdef")
-    assert inventory["local"] == [{
-        "id": "refs/heads/main",
-        "kind": "local",
-        "displayName": "main",
-        "fullRef": "refs/heads/main",
-        "switchTarget": "main",
-        "current": True,
-        "disabledReason": "current_branch",
-    }]
-    assert inventory["remote"] == [
-        {
-            "id": "refs/remotes/origin/release",
-            "kind": "remote",
-            "displayName": "origin/release",
-            "fullRef": "refs/remotes/origin/release",
-            "switchTarget": "origin/release",
-            "current": False,
-            "disabledReason": None,
-        },
-        {
-            "id": "refs/remotes/upstream/release",
-            "kind": "remote",
-            "displayName": "upstream/release",
-            "fullRef": "refs/remotes/upstream/release",
-            "switchTarget": "upstream/release",
-            "current": False,
-            "disabledReason": None,
-        },
-    ]
-    args, mutating = service._arguments(  # noqa: SLF001
-        "branch-switch", files=(), message=None, branch="upstream/release",
-    )
-    assert args == ("switch", "upstream/release")
-    assert mutating is True
-
-
-@pytest.mark.asyncio
 async def test_public_github_publish_requires_exact_repository_confirmation(tmp_path: Path) -> None:
     root = tmp_path / "repositories"
     root.mkdir()

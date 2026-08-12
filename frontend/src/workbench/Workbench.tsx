@@ -929,7 +929,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
           } else if (repositoryAction === "commit" && actionRepository) {
             await gitAction(session.csrfToken, actionRepository.id, "add", { files: values.selected as string[] });
             await gitAction(session.csrfToken, actionRepository.id, "commit", { message: String(values.message) });
-          } else if (repositoryAction === "branches" && actionRepository) await gitAction(session.csrfToken, actionRepository.id, values.branchOperation === "switch" ? "branch-switch" : "branch-create", { branch: String(values.branch) });
+          } else if (repositoryAction === "branches" && actionRepository) await gitAction(session.csrfToken, actionRepository.id, values.branchOperation === "switch" ? "branch-switch" : "branch-create", values.branchOperation === "switch" ? { branchTargetId: String(values.branchTargetId), localBranchName: String(values.localBranchName) } : { branch: String(values.branch) });
           else if (repositoryAction === "publish" && actionRepository && github?.account) await publishGithub(session.csrfToken, actionRepository.id, { owner: github.account, name: String(values.name), visibility: values.visibility as "private" | "public", initialPush: true, publicConfirmation: values.visibility === "public" ? String(values.confirmation) : null });
           else if ((repositoryAction === "remove" || repositoryAction === "delete") && actionRepository) {
             await removeRepository(session.csrfToken, actionRepository.id, repositoryAction, String(values.confirmation), Boolean(values.deleteThreads));

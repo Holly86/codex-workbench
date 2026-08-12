@@ -201,9 +201,18 @@ function parseBranchTarget(value: unknown, expectedKind: BranchTarget["kind"]): 
     || typeof item.id !== "string"
     || typeof item.displayName !== "string"
     || typeof item.fullRef !== "string"
-    || typeof item.switchTarget !== "string"
     || typeof item.current !== "boolean"
     || (item.disabledReason !== null && item.disabledReason !== "current_branch")
+    || (expectedKind === "local" && (
+      item.remoteName !== null
+      || item.remoteBranchName !== null
+      || item.proposedLocalName !== null
+    ))
+    || (expectedKind === "remote" && (
+      typeof item.remoteName !== "string"
+      || typeof item.remoteBranchName !== "string"
+      || typeof item.proposedLocalName !== "string"
+    ))
   ) {
     throw new ApiError(502, "invalid_response", "Ungültige Branch-Antwort.", null);
   }
@@ -212,11 +221,24 @@ function parseBranchTarget(value: unknown, expectedKind: BranchTarget["kind"]): 
 
 export async function gitAction(
   csrfToken: string, repositoryId: string, action: string,
-  options: { files?: string[]; message?: string; branch?: string } = {},
+  options: {
+    files?: string[];
+    message?: string;
+    branch?: string;
+    branchTargetId?: string;
+    localBranchName?: string;
+  } = {},
 ): Promise<Record<string, unknown>> {
   return requireRecord(await requestJson(
     `/api/repositories/${encodeURIComponent(repositoryId)}/git`,
-    { method: "POST", body: JSON.stringify({ action, files: options.files ?? [], message: options.message ?? null, branch: options.branch ?? null }) }, csrfToken,
+    { method: "POST", body: JSON.stringify({
+      action,
+      files: options.files ?? [],
+      message: options.message ?? null,
+      branch: options.branch ?? null,
+      branchTargetId: options.branchTargetId ?? null,
+      localBranchName: options.localBranchName ?? null,
+    }) }, csrfToken,
   ));
 }
 

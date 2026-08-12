@@ -60,12 +60,13 @@ test("uses compact branch choices, searchable groups, and a specific action labe
     pending={false} removalPreview={null} onClose={() => undefined}
     onLoadBranches={() => Promise.resolve({
       local: [
-        { id: "refs/heads/main", kind: "local", displayName: "main", fullRef: "refs/heads/main", switchTarget: "main", current: true, disabledReason: "current_branch" },
-        { id: "refs/heads/feature/local", kind: "local", displayName: "feature/local", fullRef: "refs/heads/feature/local", switchTarget: "feature/local", current: false, disabledReason: null },
+        { id: "refs/heads/main", kind: "local", displayName: "main", fullRef: "refs/heads/main", remoteName: null, remoteBranchName: null, proposedLocalName: null, current: true, disabledReason: "current_branch" },
+        { id: "refs/heads/feature/local", kind: "local", displayName: "feature/local", fullRef: "refs/heads/feature/local", remoteName: null, remoteBranchName: null, proposedLocalName: null, current: false, disabledReason: null },
+        { id: "refs/heads/release", kind: "local", displayName: "release", fullRef: "refs/heads/release", remoteName: null, remoteBranchName: null, proposedLocalName: null, current: false, disabledReason: null },
       ],
       remote: [
-        { id: "refs/remotes/origin/release", kind: "remote", displayName: "origin/release", fullRef: "refs/remotes/origin/release", switchTarget: "origin/release", current: false, disabledReason: null },
-        { id: "refs/remotes/upstream/release", kind: "remote", displayName: "upstream/release", fullRef: "refs/remotes/upstream/release", switchTarget: "upstream/release", current: false, disabledReason: null },
+        { id: "refs/remotes/origin/release", kind: "remote", displayName: "origin/release", fullRef: "refs/remotes/origin/release", remoteName: "origin", remoteBranchName: "release", proposedLocalName: "release", current: false, disabledReason: null },
+        { id: "refs/remotes/upstream/release", kind: "remote", displayName: "upstream/release", fullRef: "refs/remotes/upstream/release", remoteName: "upstream", remoteBranchName: "release", proposedLocalName: "release", current: false, disabledReason: null },
       ],
     })}
     onSubmit={submit} />);
@@ -82,11 +83,44 @@ test("uses compact branch choices, searchable groups, and a specific action labe
   fireEvent.click(origin);
   expect(origin).toBeChecked();
   expect(upstream).not.toBeChecked();
+  expect(screen.getByText(/lokaler Tracking-Branch/)).toBeInTheDocument();
+  expect(screen.getByText(/lokaler Branch mit diesem Namen existiert bereits/)).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("textbox", { name: "Lokaler Branchname" }), { target: { value: "origin-release" } });
   fireEvent.click(screen.getByRole("button", { name: "Branch wechseln" }));
   expect(submit).toHaveBeenCalledWith(expect.objectContaining({
-    branch: "origin/release", branchOperation: "switch",
+    branchTargetId: "refs/remotes/origin/release",
+    localBranchName: "origin-release",
+    branchOperation: "switch",
   }));
   expect(screen.getByRole("radio", { name: /main/ })).toBeDisabled();
+});
+
+test("passes special repository paths unchanged to the commit action", () => {
+  const submit = vi.fn(() => Promise.resolve());
+  const specialRepository: Repository = {
+    ...repository,
+    status: {
+      ...repository.status,
+      staged: 2,
+      modified: 1,
+      changes: [
+        { path: "folder/space name.txt", staged: true, unstaged: false, kind: "modified" },
+        { path: "tab\tunicodé.txt", staged: false, unstaged: true, kind: "modified" },
+      ],
+    },
+  };
+  render(<RepositoryTools action="commit" repository={specialRepository} github={null}
+    pending={false} removalPreview={null} onClose={() => undefined}
+    onSubmit={submit} />);
+
+  fireEvent.click(screen.getByRole("checkbox", { name: /folder\/space name\.txt/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /tab\s+unicodé\.txt/ }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Commit-Nachricht" }), { target: { value: "Exact paths" } });
+  fireEvent.click(screen.getByRole("button", { name: "Commit erstellen" }));
+
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+    selected: ["folder/space name.txt", "tab\tunicodé.txt"],
+  }));
 });
 
 test("loads branches once across parent rerenders and retries one failed request", async () => {

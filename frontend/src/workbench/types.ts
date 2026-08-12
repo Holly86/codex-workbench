@@ -10,7 +10,7 @@ export interface Repository {
   renameCapabilities: { displayName: boolean; directory: boolean; remote: boolean };
 }
 
-export interface GitChange { path: string; staged: boolean; kind: string }
+export interface GitChange { path: string; staged: boolean; unstaged: boolean; kind: string }
 export interface GitStatus {
   branch: string | null; detached: boolean; upstream: string | null; upstreamMissing: boolean;
   ahead: number; behind: number; staged: number; modified: number; untracked: number;
@@ -21,7 +21,9 @@ export interface BranchTarget {
   kind: "local" | "remote";
   displayName: string;
   fullRef: string;
-  switchTarget: string;
+  remoteName: string | null;
+  remoteBranchName: string | null;
+  proposedLocalName: string | null;
   current: boolean;
   disabledReason: "current_branch" | null;
 }
