@@ -16,7 +16,14 @@ from codex_workbench.app_server.protocol import (
     SUPPORTED_APPROVAL_POLICIES,
     SUPPORTED_SANDBOX_MODES,
 )
-from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError, DeployKeyError
+from codex_workbench.deploy_keys import (
+    DeployKeyAccessError,
+    DeployKeyAlreadyBoundError,
+    DeployKeyError,
+    DeployKeyGenerationError,
+    DeployKeyRuntimeUnavailableError,
+    InvalidGitHubRepositoryError,
+)
 from codex_workbench.domain.capabilities import FullAccessConfirmationError
 from codex_workbench.git_service import (
     BranchLocalNameConflictError,
@@ -223,6 +230,30 @@ def _safe_error(exc: BaseException) -> JSONResponse:
             HTTPStatus.CONFLICT,
             "deploy_key_already_bound",
             "Der Deploy Key ist bereits an ein lokales Repository gebunden.",
+        )
+    if isinstance(exc, InvalidGitHubRepositoryError):
+        return api_error(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "deploy_key_invalid_repository",
+            "Gib ein gültiges GitHub-Repository als OWNER/REPO oder GitHub-URL an.",
+        )
+    if isinstance(exc, DeployKeyRuntimeUnavailableError):
+        return api_error(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "deploy_key_runtime_unavailable",
+            "Die lokale Deploy-Key-Laufzeit ist momentan nicht verfügbar.",
+        )
+    if isinstance(exc, DeployKeyGenerationError):
+        return api_error(
+            HTTPStatus.BAD_GATEWAY,
+            "deploy_key_generation_failed",
+            "Der Deploy Key konnte nicht sicher erzeugt werden.",
+        )
+    if isinstance(exc, DeployKeyAccessError):
+        return api_error(
+            HTTPStatus.BAD_GATEWAY,
+            "deploy_key_access_failed",
+            "Der Zugriffstest für den Deploy Key konnte nicht gestartet werden.",
         )
     if isinstance(exc, GitOperationTimeoutError):
         return api_error(

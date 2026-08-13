@@ -27,6 +27,22 @@ class DeployKeyError(RuntimeError):
     """Safe deploy-key failure whose message is never returned to the browser."""
 
 
+class DeployKeyRuntimeUnavailableError(DeployKeyError):
+    """The local OpenSSH runtime cannot execute safely."""
+
+
+class DeployKeyGenerationError(DeployKeyError):
+    """A deploy-key pair could not be generated."""
+
+
+class DeployKeyAccessError(DeployKeyError):
+    """A deploy-key access probe could not be started."""
+
+
+class InvalidGitHubRepositoryError(ValueError):
+    """A repository identifier is not a supported GitHub repository."""
+
+
 class DeployKeyAlreadyBoundError(ValueError):
     """A private-connect credential already belongs to a local repository."""
 
@@ -44,31 +60,33 @@ def normalize_github_repository(value: str) -> GitHubRepository:
     """Accept only github.com repository identifiers without embedded credentials."""
     candidate = value.strip()
     if not candidate or len(candidate) > 2048 or any(char in candidate for char in "\x00\r\n"):
-        raise ValueError("invalid GitHub repository")
+        raise InvalidGitHubRepositoryError("invalid GitHub repository")
     path = candidate
     if "://" in candidate:
         parsed = urlsplit(candidate)
         if parsed.scheme not in {"https", "ssh"} or parsed.hostname != "github.com":
-            raise ValueError("only github.com repositories are supported")
+            raise InvalidGitHubRepositoryError("only github.com repositories are supported")
         if parsed.password is not None or (
             parsed.scheme == "https" and parsed.username is not None
         ):
-            raise ValueError("credentials must not be embedded in repository URLs")
+            raise InvalidGitHubRepositoryError(
+                "credentials must not be embedded in repository URLs"
+            )
         if parsed.query or parsed.fragment:
-            raise ValueError("repository URL data is not supported")
+            raise InvalidGitHubRepositoryError("repository URL data is not supported")
         if parsed.scheme == "ssh" and parsed.username not in {None, "git"}:
-            raise ValueError("GitHub SSH user must be git")
+            raise InvalidGitHubRepositoryError("GitHub SSH user must be git")
         path = unquote(parsed.path).strip("/")
     else:
         scp = re.fullmatch(r"git@github\.com:([^\s]+)", candidate)
         if scp is not None:
             path = scp.group(1)
         elif ":" in candidate or "@" in candidate:
-            raise ValueError("only github.com repositories are supported")
+            raise InvalidGitHubRepositoryError("only github.com repositories are supported")
     path = path.removesuffix(".git").strip("/")
     parts = path.split("/")
     if len(parts) != 2 or not all(_SLUG_PART.fullmatch(part) for part in parts):
-        raise ValueError("GitHub repository must be OWNER/REPO")
+        raise InvalidGitHubRepositoryError("GitHub repository must be OWNER/REPO")
     return GitHubRepository(f"{parts[0].casefold()}/{parts[1].casefold()}")
 
 
@@ -172,16 +190,19 @@ class DeployKeyService:
             raise ValueError("no deploy key rotation is pending")
         identity = self._key_path(record, key_kind)
         environment = self._ssh_environment(identity)
-        process = await asyncio.create_subprocess_exec(
-            "git",
-            "ls-remote",
-            "--",
-            GitHubRepository(record.github_slug).ssh_url,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=environment,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "ls-remote",
+                "--",
+                GitHubRepository(record.github_slug).ssh_url,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                env=environment,
+            )
+        except OSError as exc:
+            raise DeployKeyAccessError("deploy key access probe unavailable") from exc
         try:
             await asyncio.wait_for(process.wait(), timeout=30)
         except TimeoutError:
@@ -370,32 +391,35 @@ class DeployKeyService:
             raise DeployKeyError("deploy key material already exists")
         executable = shutil.which("ssh-keygen")
         if executable is None:
-            raise DeployKeyError("ssh-keygen is unavailable")
-        process = await asyncio.create_subprocess_exec(
-            executable,
-            "-q",
-            "-t",
-            "ed25519",
-            "-N",
-            "",
-            "-C",
-            f"codex-workbench:{slug}",
-            "-f",
-            str(private_path),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+            raise DeployKeyRuntimeUnavailableError("ssh-keygen is unavailable")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                executable,
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                f"codex-workbench:{slug}",
+                "-f",
+                str(private_path),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise DeployKeyRuntimeUnavailableError("ssh-keygen is unavailable") from exc
         try:
             await asyncio.wait_for(process.wait(), timeout=15)
         except TimeoutError:
             process.kill()
             await process.wait()
             self._unlink_pair(private_path)
-            raise DeployKeyError("deploy key generation timed out") from None
+            raise DeployKeyGenerationError("deploy key generation timed out") from None
         if process.returncode != 0:
             self._unlink_pair(private_path)
-            raise DeployKeyError("deploy key generation failed")
+            raise DeployKeyGenerationError("deploy key generation failed")
         public_path = private_path.with_suffix(".pub")
         if private_path.is_symlink() or public_path.is_symlink():
             self._unlink_pair(private_path)
@@ -439,6 +463,10 @@ class DeployKeyService:
         home = os.environ.get("HOME")
         if home:
             environment["HOME"] = home
+        for name in ("LD_PRELOAD", "NSS_WRAPPER_PASSWD", "NSS_WRAPPER_GROUP"):
+            value = os.environ.get(name)
+            if value:
+                environment[name] = value
         return environment
 
     def _remove_slot(self, slot: Path) -> None:

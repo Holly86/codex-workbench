@@ -980,7 +980,15 @@ class GitService:
         }
         if optional_locks:
             env["GIT_OPTIONAL_LOCKS"] = "0"
-        for key in ("HOME", "XDG_CONFIG_HOME", "GH_CONFIG_DIR", "SSH_AUTH_SOCK"):
+        for key in (
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "GH_CONFIG_DIR",
+            "SSH_AUTH_SOCK",
+            "LD_PRELOAD",
+            "NSS_WRAPPER_PASSWD",
+            "NSS_WRAPPER_GROUP",
+        ):
             value = os.environ.get(key)
             if value:
                 env[key] = value

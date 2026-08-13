@@ -37,6 +37,25 @@ from tests.helpers import build_settings, executable_fixture
 _FIXTURE = Path(__file__).parent / "fixtures" / "fake_codex.py"
 
 
+def test_app_server_environment_preserves_runtime_nss_identity() -> None:
+    source = {
+        "HOME": "/home/workbench",
+        "LD_PRELOAD": "/usr/local/lib/libnss_wrapper.so",
+        "NSS_WRAPPER_PASSWD": "/tmp/workbench-nss/passwd",
+        "NSS_WRAPPER_GROUP": "/tmp/workbench-nss/group",
+        "SECRET_TOKEN": "must-not-propagate",
+    }
+
+    environment = AppServerSupervisor._minimal_environment(source)  # noqa: SLF001
+
+    assert environment == {
+        "HOME": "/home/workbench",
+        "LD_PRELOAD": "/usr/local/lib/libnss_wrapper.so",
+        "NSS_WRAPPER_PASSWD": "/tmp/workbench-nss/passwd",
+        "NSS_WRAPPER_GROUP": "/tmp/workbench-nss/group",
+    }
+
+
 @pytest.mark.parametrize(
     "stdout",
     [

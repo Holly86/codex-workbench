@@ -1,7 +1,7 @@
 services:
   backend:
     platform: linux/amd64
-    image: "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/codex-workbench-backend:${WORKBENCH_VERSION:-0.1.0}"
+    image: "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/codex-workbench-backend:${WORKBENCH_VERSION:-0.2.1}"
     user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       HOME: /home/workbench
@@ -113,7 +113,7 @@ services:
 
   frontend:
     platform: linux/amd64
-    image: "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/codex-workbench-frontend:${WORKBENCH_VERSION:-0.1.0}"
+    image: "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/codex-workbench-frontend:${WORKBENCH_VERSION:-0.2.1}"
     user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
       backend:

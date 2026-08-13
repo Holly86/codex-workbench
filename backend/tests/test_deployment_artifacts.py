@@ -50,6 +50,9 @@ def test_backend_image_preserves_the_complete_pinned_codex_layout() -> None:
     )
     assert "COPY --from=codex-cli /usr/local/bin/codex" not in dockerfile
     assert "libstdc++6" in dockerfile
+    assert "libnss-wrapper" in dockerfile
+    assert "COPY --chmod=755 deploy/runtime-identity-entrypoint.sh" in dockerfile
+    assert 'ENTRYPOINT ["/usr/local/sbin/workbench-runtime-entrypoint"]' in dockerfile
     assert "ln -s ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex" in dockerfile
     assert not re.search(r"@openai/codex@latest(?:\s|\"|$)", dockerfile)
     verifier_call = '/usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"'
@@ -76,3 +79,16 @@ def test_synology_compose_boundaries_remain_unchanged() -> None:
     assert compose.count('    user: "${PUID:-1000}:${PGID:-1000}"') == 2
     assert "  backend-net:\n    external: true" in compose
     assert "  workbench-private:\n    driver: bridge" in compose
+
+
+def test_runtime_identity_entrypoint_is_non_root_and_tmpfs_only() -> None:
+    entrypoint = _read("deploy/runtime-identity-entrypoint.sh")
+
+    assert "set -eu" in entrypoint
+    assert 'mktemp -d "${TMPDIR:-/tmp}/workbench-nss.XXXXXX"' in entrypoint
+    assert "NSS_WRAPPER_PASSWD" in entrypoint
+    assert "NSS_WRAPPER_GROUP" in entrypoint
+    assert "LD_PRELOAD=/usr/local/lib/libnss_wrapper.so" in entrypoint
+    assert 'exec "$@"' in entrypoint
+    for forbidden in ("sudo", "chmod 777", "/etc/passwd.tmp", "> /etc/passwd"):
+        assert forbidden not in entrypoint

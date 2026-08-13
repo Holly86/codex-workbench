@@ -10,6 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  runtime-identity:
+    name: Runtime identity (arbitrary UID/GID)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Build backend image
+        run: docker build --file deploy/backend.Dockerfile --tag codex-workbench-runtime-identity:test .
+
+      - name: Verify UID 1000, Synology UID 1026, and a foreign UID
+        run: sh scripts/test-runtime-identity.sh codex-workbench-runtime-identity:test
+
   websocket-lifecycle:
     name: WebSocket lifecycle (Python ${{ matrix.python-version }})
     runs-on: ubuntu-24.04

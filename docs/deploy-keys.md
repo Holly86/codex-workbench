@@ -32,6 +32,12 @@ server for the exact repository credential. The wrapper uses the three current `
 keys published in GitHub's official SSH key fingerprint documentation; it does not fall back to a
 user SSH agent or global SSH configuration.
 
+The release image provides a temporary NSS identity for the effective Compose `PUID:PGID`, even
+when that numeric identity is absent from the image's static passwd database. This keeps
+`ssh-keygen`, the OpenSSH client, Python NSS lookups, and Git-over-SSH operational for arbitrary
+non-root Synology identities without changing `/etc/passwd` or weakening the read-only root
+filesystem.
+
 When GitHub rotates a host key, update `backend/src/codex_workbench/security/github_known_hosts`
 from the official GitHub documentation, review the advertised fingerprints, and deploy the
 reviewed application update. Never disable strict host-key checking as a workaround.

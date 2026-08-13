@@ -30,7 +30,7 @@ def test_liveness_is_public_and_minimal(tmp_path: Path) -> None:
         response = client.get("/api/health/live")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.1.0", "checks": None}
+    assert response.json() == {"status": "ok", "version": "0.2.1", "checks": None}
     assert response.headers["cache-control"] == "no-store"
 
 

@@ -202,8 +202,13 @@ function deployKeyError(caught: unknown): string {
     return ({
       repository_name_conflict: "Ein Repository mit diesem lokalen Namen existiert bereits.",
       operation_conflict: "Eine andere Repository-Aktion läuft noch. Bitte erneut versuchen.",
+      deploy_key_invalid_repository: "Gib ein gültiges GitHub-Repository als OWNER/REPO oder GitHub-URL an.",
+      deploy_key_already_bound: "Der Deploy Key ist bereits an ein lokales Repository gebunden.",
       deploy_key_unavailable: "Der Deploy Key ist nicht mehr verfügbar.",
-      rate_limited: "Zu viele Deploy-Key-Anfragen. Bitte kurz warten.",
+      deploy_key_runtime_unavailable: "Die lokale Deploy-Key-Laufzeit ist momentan nicht verfügbar.",
+      deploy_key_generation_failed: "Der Deploy Key konnte nicht sicher erzeugt werden.",
+      deploy_key_access_failed: "Der Zugriffstest für den Deploy Key konnte nicht gestartet werden.",
+      operation_rate_limited: "Zu viele Deploy-Key-Anfragen. Bitte kurz warten.",
     } as Record<string, string>)[caught.code]
       ?? "Die Deploy-Key-Aktion wurde vom Backend sicher abgelehnt.";
   }

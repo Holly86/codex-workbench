@@ -13,6 +13,7 @@ import pytest
 
 from codex_workbench.deploy_keys import (
     DeployKeyAlreadyBoundError,
+    DeployKeyGenerationError,
     DeployKeyService,
     normalize_github_repository,
 )
@@ -181,6 +182,33 @@ async def test_private_key_stays_outside_workspace_and_browser_projection(
 
 
 @pytest.mark.asyncio
+async def test_failed_generation_leaves_no_slot_or_database_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy_keys, metadata, root = await service(tmp_path)
+
+    class Process:
+        returncode = 255
+
+        async def wait(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            raise AssertionError("completed process must not be killed")
+
+    async def failed_generation(*_args: str, **_kwargs: object) -> Process:
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", failed_generation)
+
+    with pytest.raises(DeployKeyGenerationError):
+        await deploy_keys.connect_private("owner/private")
+
+    assert metadata.records == {}
+    assert tuple(root.iterdir()) == ()
+
+
+@pytest.mark.asyncio
 async def test_connection_probe_uses_exact_bound_identity_without_agent_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -220,6 +248,25 @@ async def test_connection_probe_uses_exact_bound_identity_without_agent_fallback
     assert environment["WORKBENCH_SSH_IDENTITY"] == str((expected_slot / "active").resolve())
     assert environment["GIT_SSH_VARIANT"] == "ssh"
     assert "SSH_AUTH_SOCK" not in environment
+
+
+@pytest.mark.asyncio
+async def test_deploy_key_environment_preserves_runtime_nss_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deploy_keys, _metadata, _root = await service(tmp_path)
+    created = await deploy_keys.create("owner/private", repository_id="b" * 16)
+    monkeypatch.setenv("LD_PRELOAD", "/usr/local/lib/libnss_wrapper.so")
+    monkeypatch.setenv("NSS_WRAPPER_PASSWD", "/tmp/workbench-nss/passwd")
+    monkeypatch.setenv("NSS_WRAPPER_GROUP", "/tmp/workbench-nss/group")
+
+    environment = await deploy_keys.repository_environment("b" * 16)
+
+    assert created["credentialId"]
+    assert environment is not None
+    assert environment["LD_PRELOAD"] == "/usr/local/lib/libnss_wrapper.so"
+    assert environment["NSS_WRAPPER_PASSWD"] == "/tmp/workbench-nss/passwd"
+    assert environment["NSS_WRAPPER_GROUP"] == "/tmp/workbench-nss/group"
 
 
 @pytest.mark.asyncio
