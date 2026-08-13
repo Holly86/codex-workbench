@@ -116,3 +116,25 @@ test("keeps a resumed key and local name visible after a server conflict, then r
   expect(onCloneStarted).toHaveBeenCalledOnce();
   expect(onClose).toHaveBeenCalledOnce();
 });
+
+test.each([
+  ["deploy_key_invalid_repository", "Gib ein gültiges GitHub-Repository"],
+  ["deploy_key_runtime_unavailable", "Deploy-Key-Laufzeit ist momentan nicht verfügbar"],
+  ["deploy_key_generation_failed", "Deploy Key konnte nicht sicher erzeugt werden"],
+  ["deploy_key_access_failed", "Zugriffstest für den Deploy Key konnte nicht gestartet werden"],
+  ["operation_rate_limited", "Zu viele Deploy-Key-Anfragen"],
+])("shows a specific safe message for %s", async (code, expected) => {
+  vi.mocked(api.connectPrivateRepository).mockRejectedValue(
+    new ApiError(502, code, "server-safe-message", null),
+  );
+  render(<DeployKeyDialog mode="private-clone" repository={null} csrfToken="csrf"
+    repositoryNames={[]} onClose={vi.fn()} onCloneStarted={vi.fn()} />);
+
+  fireEvent.change(screen.getByRole("textbox", { name: /GitHub Repository/ }), {
+    target: { value: "owner/private" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Deploy Key erzeugen" }));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(expected));
+  expect(screen.getByRole("alert")).not.toHaveTextContent("server-safe-message");
+});

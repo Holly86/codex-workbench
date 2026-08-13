@@ -732,5 +732,8 @@ class AppServerSupervisor:
             "https_proxy",
             "all_proxy",
             "no_proxy",
+            "LD_PRELOAD",
+            "NSS_WRAPPER_PASSWD",
+            "NSS_WRAPPER_GROUP",
         )
         return {name: source[name] for name in allowed if name in source}

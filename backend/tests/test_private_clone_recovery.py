@@ -8,7 +8,13 @@ import pytest
 from fastapi import Request
 
 import codex_workbench.api.workbench as workbench_api
-from codex_workbench.deploy_keys import DeployKeyAlreadyBoundError
+from codex_workbench.deploy_keys import (
+    DeployKeyAccessError,
+    DeployKeyAlreadyBoundError,
+    DeployKeyGenerationError,
+    DeployKeyRuntimeUnavailableError,
+    InvalidGitHubRepositoryError,
+)
 from codex_workbench.git_service import (
     BranchLocalNameConflictError,
     BranchTargetUnavailableError,
@@ -92,6 +98,38 @@ def test_git_timeout_has_a_stable_browser_safe_error() -> None:
             "message": "Der Git-Vorgang hat das zulässige Zeitlimit überschritten.",
         }
     }
+    assert "sensitive" not in bytes(response.body).decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (InvalidGitHubRepositoryError("sensitive URL"), 422, "deploy_key_invalid_repository"),
+        (
+            DeployKeyRuntimeUnavailableError("sensitive runtime path"),
+            503,
+            "deploy_key_runtime_unavailable",
+        ),
+        (
+            DeployKeyGenerationError("sensitive ssh-keygen stderr"),
+            502,
+            "deploy_key_generation_failed",
+        ),
+        (
+            DeployKeyAccessError("sensitive credential and path"),
+            502,
+            "deploy_key_access_failed",
+        ),
+    ],
+)
+def test_deploy_key_failures_have_specific_browser_safe_codes(
+    error: Exception, status: int, code: str
+) -> None:
+    response = workbench_api._safe_error(error)  # noqa: SLF001
+    body = json.loads(bytes(response.body))
+
+    assert response.status_code == status
+    assert body["error"]["code"] == code
     assert "sensitive" not in bytes(response.body).decode("utf-8")
 
 

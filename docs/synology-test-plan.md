@@ -114,6 +114,25 @@ weil der DS918+-Kernel sie nicht unterstützt. Backend-Ports haben keine Hostbin
 stdio-Kindprozess. Frontend veröffentlicht ausschließlich `127.0.0.1:8085->8080/tcp`; weder
 `0.0.0.0` noch eine LAN-IP darf in der Portbindung erscheinen.
 
+Die Runtime-Identity muss für die produktive Synology-UID vollständig auflösbar sein. Die Probe
+erzeugt ausschließlich einen temporären Test-Key im tmpfs und entfernt ihn beim Verlassen:
+
+    docker-compose exec -T backend sh -ec '
+      set -eu
+      uid=$(id -u); gid=$(id -g)
+      test "$(getent passwd "$uid" | cut -d: -f6)" = /home/workbench
+      python -c "import os, pwd; assert pwd.getpwuid(os.getuid()).pw_dir == '\''/home/workbench'\''"
+      key_dir=$(mktemp -d)
+      trap '\''rm -f "$key_dir/key" "$key_dir/key.pub"; rmdir "$key_dir"'\'' EXIT HUP INT TERM
+      ssh-keygen -q -t ed25519 -N "" -C runtime-identity-test -f "$key_dir/key"
+      ssh -G -F /dev/null github.com >/dev/null
+      printf "runtime identity ready: %s:%s\n" "$uid" "$gid"
+    '
+
+Erwartung für `PUID=1026`, `PGID=100`: passwd- und Python-Lookup liefern Home
+`/home/workbench`; `ssh-keygen` und die lokale SSH-Konfigurationsinitialisierung sind erfolgreich.
+Die gleiche Image-Prüfung wird in CI zusätzlich für `1000:1000` und `12345:23456` ausgeführt.
+
 Die folgenden Schreibversuche müssen fehlschlagen:
 
     if docker-compose exec -T backend sh -c ': > /app/rootfs-write-test'; then echo 'FEHLER: Backend-Root beschreibbar'; else echo 'OK: Backend-Root read-only'; fi

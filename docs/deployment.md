@@ -61,6 +61,13 @@ akzeptiert ausschließlich positive non-root Werte, prüft abweichende Eigentüm
 Workspace, ändert diese gemeinsamen Pfade aber nicht. Beide Container laufen mit derselben
 konfigurierten numerischen Identität vollständig non-root.
 
+Das Backend-Image unterstützt dabei auch Laufzeit-UIDs und -GIDs, die nicht bereits im Image
+eingebaut sind. Ein non-root Entrypoint erzeugt pro Containerstart restriktive, temporäre
+passwd-/group-Dateien unter `/tmp` und bindet sie über `libnss-wrapper` ausschließlich für den
+Prozessbaum ein. `/etc/passwd` und `/etc/group` bleiben unverändert; das Verfahren benötigt weder
+Capabilities noch einen beschreibbaren Image-Root. `HOME` bleibt `/home/workbench`. Damit verwenden
+Python, OpenSSH, Git-over-SSH und der Codex-Kindprozess dieselbe effektive numerische Identität.
+
 Workbench-Verzeichnisse und Deploy-Key-Slots sind Modus 0700; Sitzungsschlüssel,
 Passwort-Verifier, SQLite-Dateien, Uploads und private Deploy Keys Modus 0600. Öffentliche Deploy
 Keys sind Modus 0644. Synology-ACLs können POSIX-Modi erweitern; sie müssen zusätzlich in DSM File
@@ -107,7 +114,7 @@ Nach Veröffentlichung der Images wird kein lokaler Build benötigt:
     docker compose -f compose.release.yaml up -d
 
 `compose.release.yaml` enthält für Backend und Frontend kein `build:`. Es verwendet
-`${DOCKERHUB_NAMESPACE}` und `${WORKBENCH_VERSION:-0.1.0}`. Für ein Update wird
+`${DOCKERHUB_NAMESPACE}` und `${WORKBENCH_VERSION:-0.2.1}`. Für ein Update wird
 `WORKBENCH_VERSION=x.y.z` in `.env` gesetzt und anschließend werden dieselben `pull`- und `up -d`-
 Befehle wiederholt. Persistente Bind-Mounts bleiben erhalten; Datenlöschung und globale
 Docker-Prune-Befehle sind kein Bestandteil des Updates.

@@ -9,9 +9,8 @@ This is an independent community open-source project. It is not an official Open
 not affiliated with or endorsed by OpenAI. “OpenAI”, “Codex”, and related names belong to their
 respective owners. The project does not bundle ChatGPT artwork or other proprietary product assets.
 
-> **Early release:** `v0.1.0` is the intended first public version. Before the first release tag is
-> published, GitHub Private Vulnerability Reporting must be enabled for the public repository.
-> Treat interfaces, persistence formats, and operating procedures as subject to change.
+> **Early release:** `v0.2.1` is the next patch release. Treat interfaces, persistence formats,
+> and operating procedures as subject to change.
 
 ## What it is for
 
@@ -70,10 +69,10 @@ Codex authentication material. Use it only for trusted work and review
 
 ## Container distribution
 
-The planned `v0.1.0` release publishes two public, `linux/amd64` images:
+The planned `v0.2.1` release publishes two public, `linux/amd64` images:
 
-- `<your-dockerhub-namespace>/codex-workbench-backend:0.1.0`
-- `<your-dockerhub-namespace>/codex-workbench-frontend:0.1.0`
+- `<your-dockerhub-namespace>/codex-workbench-backend:0.2.1`
+- `<your-dockerhub-namespace>/codex-workbench-frontend:0.2.1`
 
 No ARM64 support is claimed until it is built and tested. `compose.release.yaml` references these
 images and contains no `build:` directives. The source-oriented `compose.yaml` remains available

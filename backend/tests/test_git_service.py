@@ -546,9 +546,15 @@ def test_native_environment_allows_configured_agents_but_not_token_variables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SSH_AUTH_SOCK", "/run/user/agent.sock")
+    monkeypatch.setenv("LD_PRELOAD", "/usr/local/lib/libnss_wrapper.so")
+    monkeypatch.setenv("NSS_WRAPPER_PASSWD", "/tmp/workbench-nss/passwd")
+    monkeypatch.setenv("NSS_WRAPPER_GROUP", "/tmp/workbench-nss/group")
     monkeypatch.setenv("GH_TOKEN", "must-not-propagate")
 
     environment = GitService._native_env(optional_locks=False)  # noqa: SLF001
 
     assert environment["SSH_AUTH_SOCK"] == "/run/user/agent.sock"
+    assert environment["LD_PRELOAD"] == "/usr/local/lib/libnss_wrapper.so"
+    assert environment["NSS_WRAPPER_PASSWD"] == "/tmp/workbench-nss/passwd"
+    assert environment["NSS_WRAPPER_GROUP"] == "/tmp/workbench-nss/group"
     assert "GH_TOKEN" not in environment

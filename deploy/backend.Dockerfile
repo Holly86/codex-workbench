@@ -27,6 +27,7 @@ RUN apt-get update \
         bash \
         ca-certificates \
         git \
+        libnss-wrapper \
         libstdc++6 \
         make \
         openssh-client \
@@ -44,6 +45,8 @@ RUN apt-get update \
         /home/workbench/.cache /home/workbench/.codex /home/workbench/.config \
         /home/workbench/.local /home/workbench/.npm /run/secrets/workbench
 
+RUN ln -s /usr/lib/x86_64-linux-gnu/libnss_wrapper.so /usr/local/lib/libnss_wrapper.so
+
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY --from=codex-cli /usr/local/sbin/verify-codex-runtime /usr/local/sbin/verify-codex-runtime
@@ -59,6 +62,8 @@ RUN python -m pip install --no-cache-dir --root-user-action=ignore /wheels/*
 RUN rm -rf /wheels
 RUN /usr/local/sbin/verify-codex-runtime "${CODEX_VERSION}" "${NODE_VERSION}"
 
+COPY --chmod=755 deploy/runtime-identity-entrypoint.sh /usr/local/sbin/workbench-runtime-entrypoint
+
 WORKDIR /app
 USER workbench
 ENV HOME=/home/workbench \
@@ -70,4 +75,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3)"]
 
+ENTRYPOINT ["/usr/local/sbin/workbench-runtime-entrypoint"]
 CMD ["uvicorn", "codex_workbench.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
