@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useEffect, useState } from "react";
 import type { ComponentProps } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -111,4 +111,38 @@ it("temporarily reveals collapsed search matches and exposes title actions", () 
   expect(edit).toHaveBeenCalledWith(thread);
   fireEvent.change(screen.getByRole("searchbox"), { target: { value: "" } });
   expect(document.getElementById("thread-list")).toHaveAttribute("hidden");
+});
+
+it("shows accessible active-turn state for selected and unselected repositories", () => {
+  const clean = { ...repository, id: "clean", name: "Clean repo",
+    status: { ...repository.status, clean: true, staged: 0, modified: 0, untracked: 0 } };
+  const changed = { ...repository, id: "changed", name: "Changed repo" };
+  render(<SidebarHarness repositories={[clean, changed]} repositoryActivity={{ clean: 2, changed: 1 }}
+    selectedRepositoryId="clean" threads={[]} selectedThreadId={null} loading={false}
+    onSelectRepository={vi.fn()} onSelectThread={vi.fn()} onNewThread={vi.fn()}
+    onDeleteThread={vi.fn()} onRepositoryAction={vi.fn()} />);
+
+  const selected = screen.getByRole("button", { name: "Clean repo, mindestens ein Turn läuft" });
+  const unselected = screen.getByRole("button", { name: "Changed repo, mindestens ein Turn läuft" });
+  expect(selected).toHaveAttribute("aria-current", "page");
+  expect(unselected).not.toHaveAttribute("aria-current");
+  expect(within(selected).getByText("Clean")).toBeInTheDocument();
+  expect(within(selected).getByText("Läuft")).toBeInTheDocument();
+  expect(within(unselected).getByText("3 geändert")).toBeInTheDocument();
+  expect(within(unselected).getByText("Läuft")).toBeInTheDocument();
+});
+
+it("removes the indicator only when the authoritative count reaches zero", () => {
+  const props = {
+    repositories: [repository], selectedRepositoryId: "r", threads: [],
+    selectedThreadId: null, loading: false, onSelectRepository: vi.fn(),
+    onSelectThread: vi.fn<(thread: ThreadView) => void>(), onNewThread: vi.fn(),
+    onDeleteThread: vi.fn(), onRepositoryAction: vi.fn(),
+  };
+  const view = render(<SidebarHarness {...props} repositoryActivity={{ r: 2 }} />);
+  expect(screen.getByText("Läuft")).toBeInTheDocument();
+  view.rerender(<SidebarHarness {...props} repositoryActivity={{ r: 1 }} />);
+  expect(screen.getByText("Läuft")).toBeInTheDocument();
+  view.rerender(<SidebarHarness {...props} repositoryActivity={{ r: 0 }} />);
+  expect(screen.queryByText("Läuft")).not.toBeInTheDocument();
 });

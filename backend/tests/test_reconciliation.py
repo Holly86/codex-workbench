@@ -207,3 +207,87 @@ async def test_unresponsive_active_turn_recovers_without_inventing_completion(
     assert reconciled.status == "running"
     assert reconciled.active_turn_id == "active-turn"
     assert reconciliation_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_repository_activity_snapshot_and_events_aggregate_active_turns(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    repository = settings.repositories_root / "sample"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    repository_id = sha256(b"sample").hexdigest()[:16]
+    references = tuple(
+        ThreadReference(
+            thread_id=f"thread-{index}",
+            repository_id=repository_id,
+            repository_relative_path="sample",
+            last_session_id="owner-session",
+            sandbox_mode="workspace-write",
+            approval_policy="on-request",
+            created_at=1,
+            updated_at=1,
+        )
+        for index in (1, 2)
+    )
+    runtime = WorkbenchRuntime(
+        settings, cast(MetadataRepository, ReconciliationMetadata(references))
+    )
+    for index in (1, 2):
+        await runtime.projection.register_thread(
+            {
+                "id": f"thread-{index}",
+                "cwd": str(repository),
+                "status": {"type": "active"},
+                "createdAt": 1,
+                "updatedAt": 1,
+                "turns": [
+                    {"id": f"turn-{index}", "status": "inProgress", "items": []}
+                ],
+            },
+            repository_id=repository_id,
+            repository_name="sample",
+            repository_path=repository,
+            repository_relative_path="sample",
+            session_id="owner-session",
+            sandbox_mode="workspace-write",
+            approval_policy="on-request",
+        )
+
+    snapshot = runtime.projection.snapshot("new-browser-session", ())
+    assert snapshot["threads"] == []
+    assert snapshot["repositoryActivity"] == [
+        {"repositoryId": repository_id, "activeTurnCount": 2}
+    ]
+
+    await runtime.projection.ingest_notification(
+        1,
+        "turn/completed",
+        {
+            "threadId": "thread-1",
+            "turn": {"id": "turn-1", "status": "failed", "items": []},
+        },
+    )
+    assert runtime.projection.repository_active_turn_count(repository_id) == 1
+    await runtime.projection.ingest_notification(
+        1,
+        "turn/completed",
+        {
+            "threadId": "thread-2",
+            "turn": {"id": "turn-2", "status": "interrupted", "items": []},
+        },
+    )
+    assert runtime.projection.repository_has_active_turn(repository_id) is False
+
+    subscription, events, missed, _latest = await runtime.broker.subscribe(
+        "owner-session", 0
+    )
+    assert missed is False
+    activity_counts = [
+        event.payload["activeTurnCount"]
+        for event in events
+        if event.type == "repository.activity"
+    ]
+    assert activity_counts == [1, 0]
+    await subscription.close()

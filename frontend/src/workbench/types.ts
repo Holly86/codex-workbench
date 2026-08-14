@@ -6,6 +6,7 @@ export interface Repository {
   name: string;
   directoryName: string;
   status: GitStatus;
+  activeTurnCount?: number;
   preferences: { model: string | null; effort: string | null };
   renameCapabilities: { displayName: boolean; directory: boolean; remote: boolean };
 }
@@ -276,10 +277,16 @@ export interface RateLimits {
 export interface Snapshot {
   connection: { state: string; generation: number; message: string | null };
   threads: ThreadView[];
+  repositoryActivity: RepositoryActivity[];
   pendingApprovals: Approval[];
   rateLimits: RateLimits;
   jobs?: NativeJob[];
   unavailableThreads?: Array<{ id: string; repositoryId: string; status: "unavailable"; reason: string }>;
+}
+
+export interface RepositoryActivity {
+  repositoryId: string;
+  activeTurnCount: number;
 }
 
 export interface FullAccessCapability {

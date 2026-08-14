@@ -42,7 +42,7 @@ async def test_system_status_is_typed_safe_and_keeps_optional_plugins_nonfatal(
     status = await runtime.system_status()
     payload = status.model_dump(mode="json")
     assert status.status is ServiceState.HEALTHY
-    assert payload["workbenchVersion"] == "0.2.1"
+    assert payload["workbenchVersion"] == "0.2.2"
     assert payload["codexVersion"] == "0.146.0"
     components = {item["component"]: item for item in payload["components"]}
     assert components["codex_app_server"]["generation"] == 3

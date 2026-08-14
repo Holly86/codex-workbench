@@ -78,6 +78,7 @@ class SyntheticBackend {
       snapshot: {
         connection: { state: "connected", generation: 3, message: null },
         threads: [thread],
+        repositoryActivity: [],
         pendingApprovals: [],
         rateLimits,
         jobs: this.jobs,
@@ -207,6 +208,20 @@ test("12 mobile drawer is a modal bottom sheet with focus trap and inert backgro
   await expect(dialog.getByRole("button", { name: "Systemstatus schließen" })).toBeFocused();
 });
 
+test("13 repository activity follows authoritative realtime counts", async ({ page }) => {
+  backend.emit("repository.activity", { repositoryId, activeTurnCount: 2 });
+  const activeRepository = page.getByRole("button", {
+    name: "Synthetic Repository, mindestens ein Turn läuft",
+  });
+  await expect(activeRepository).toBeVisible();
+  await expect(activeRepository.getByText("Läuft")).toBeVisible();
+
+  backend.emit("repository.activity", { repositoryId, activeTurnCount: 1 });
+  await expect(activeRepository.getByText("Läuft")).toBeVisible();
+  backend.emit("repository.activity", { repositoryId, activeTurnCount: 0 });
+  await expect(page.locator(".repository-active-turn")).toHaveCount(0);
+});
+
 async function openSystemStatus(page: Page): Promise<void> {
   await page.locator(".health-status").click();
   await expect(page.getByText("Codex App Server")).toBeVisible();
@@ -236,6 +251,7 @@ function job(id: string, status: "failed" | "running"): Record<string, unknown> 
 
 const repository = {
   id: repositoryId, name: "Synthetic Repository", directoryName: "synthetic-repository",
+  activeTurnCount: 0,
   status: { branch: "main", detached: false, upstream: "origin/main", upstreamMissing: false,
     ahead: 0, behind: 0, staged: 0, modified: 1, untracked: 0, conflicts: 0,
     clean: false, changes: [{ path: "src/example.ts", staged: false, kind: "modified" }],

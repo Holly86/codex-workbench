@@ -13,11 +13,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_BACKEND_IMAGE = (
     "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/"
-    "codex-workbench-backend:${WORKBENCH_VERSION:-0.2.1}"
+    "codex-workbench-backend:${WORKBENCH_VERSION:-0.2.2}"
 )
 EXPECTED_FRONTEND_IMAGE = (
     "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/"
-    "codex-workbench-frontend:${WORKBENCH_VERSION:-0.2.1}"
+    "codex-workbench-frontend:${WORKBENCH_VERSION:-0.2.2}"
 )
 
 
@@ -203,15 +203,15 @@ def check_workflows() -> None:
 
 def check_versions_and_docs() -> None:
     version_files = {
-        "backend/pyproject.toml": 'version = "0.2.1"',
-        "backend/src/codex_workbench/__init__.py": '__version__ = "0.2.1"',
-        "frontend/package.json": '"version": "0.2.1"',
-        ".env.example": "WORKBENCH_VERSION=0.2.1",
-        "README.md": "`v0.2.1`",
+        "backend/pyproject.toml": 'version = "0.2.2"',
+        "backend/src/codex_workbench/__init__.py": '__version__ = "0.2.2"',
+        "frontend/package.json": '"version": "0.2.2"',
+        ".env.example": "WORKBENCH_VERSION=0.2.2",
+        "README.md": "`v0.2.2`",
     }
     for path, fragment in version_files.items():
         if fragment not in read(path):
-            fail(f"0.2.1 version is inconsistent in {path}")
+            fail(f"0.2.2 version is inconsistent in {path}")
     if read("schemas/codex-app-server/VERSION").strip() != "codex-cli 0.146.0":
         fail("Codex schema pin must remain 0.146.0")
     for path in ("README.md", "SECURITY.md", "CONTRIBUTING.md", "THIRD_PARTY_NOTICES.md"):

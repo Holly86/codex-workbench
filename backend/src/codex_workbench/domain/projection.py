@@ -198,6 +198,7 @@ class DomainProjection:
         else:
             item_id = self._optional_text(params.get("itemId"), 200)
 
+        active_turn_count_before = self.repository_active_turn_count(thread.repository_id)
         if method == "thread/name/updated":
             observed_at = int(time.time())
             title = await asyncio.to_thread(
@@ -250,6 +251,11 @@ class DomainProjection:
             turn_id=turn_id,
             item_id=item_id,
         )
+        if method != "thread/name/updated" and (
+            self.repository_active_turn_count(thread.repository_id)
+            != active_turn_count_before
+        ):
+            await self.publish_repository_activity(thread.repository_id, session_id)
         if method == "turn/completed":
             await self.broker.publish(
                 session_id,
@@ -319,6 +325,7 @@ class DomainProjection:
 
     async def turn_start_failed(self, thread_id: str) -> None:
         thread = self.require_thread(thread_id)
+        was_active = thread.active_turn_id is not None
         activity = self._activity.fail_start(thread_id)
         thread.active_turn_id = None
         thread.status = "failed"
@@ -328,6 +335,8 @@ class DomainProjection:
             self._activity_browser_dict(activity, thread.repository_path),
             thread_id=thread_id,
         )
+        if was_active:
+            await self.publish_repository_activity(thread.repository_id, thread.session_id)
 
     async def set_rate_limits(self, session_id: str, raw: JsonObject) -> JsonObject:
         rate_limits = raw.get("rateLimits")
@@ -369,16 +378,40 @@ class DomainProjection:
                 for thread in self._threads.values()
                 if thread.session_id == session_id
             ],
+            "repositoryActivity": self.repository_activity(),
             "pendingApprovals": list(pending_approvals),
             "rateLimits": self._rate_limits.get(
                 session_id, {"available": False, "observedAt": int(time.time())}
             ),
         }
 
-    def repository_has_active_turn(self, repository_id: str) -> bool:
-        return any(
+    def repository_activity(self) -> list[JsonValue]:
+        repository_ids = {thread.repository_id for thread in self._threads.values()}
+        return [
+            {
+                "repositoryId": repository_id,
+                "activeTurnCount": self.repository_active_turn_count(repository_id),
+            }
+            for repository_id in sorted(repository_ids)
+        ]
+
+    def repository_active_turn_count(self, repository_id: str) -> int:
+        return sum(
             thread.repository_id == repository_id and thread.active_turn_id is not None
             for thread in self._threads.values()
+        )
+
+    def repository_has_active_turn(self, repository_id: str) -> bool:
+        return self.repository_active_turn_count(repository_id) > 0
+
+    async def publish_repository_activity(self, repository_id: str, session_id: str) -> None:
+        await self.broker.publish(
+            session_id,
+            "repository.activity",
+            {
+                "repositoryId": repository_id,
+                "activeTurnCount": self.repository_active_turn_count(repository_id),
+            },
         )
 
     def has_active_turns(self) -> bool:

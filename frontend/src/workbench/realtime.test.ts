@@ -63,6 +63,7 @@ describe("realtime streaming reducer", () => {
         snapshot: {
           connection: { state: "connected", generation: cycle, message: null },
           threads: [thread],
+          repositoryActivity: [{ repositoryId: "repo_1", activeTurnCount: 1 }],
           pendingApprovals: [],
           rateLimits: { available: false, observedAt: cycle },
           jobs: [],
@@ -76,6 +77,57 @@ describe("realtime streaming reducer", () => {
     expect(state.lastSequence).toBe(100);
     expect(state.threads).toEqual([thread]);
     expect(state.jobs).toEqual([]);
+    expect(state.repositoryActivity).toEqual({ repo_1: 1 });
+  });
+
+  it("tracks authoritative activity for multiple repositories and parallel turns", () => {
+    const activityEvent = (
+      sequence: number, repositoryId: string, activeTurnCount: number,
+    ): EventEnvelope => ({
+      sequence,
+      occurredAt: "2026-01-01T00:00:00Z",
+      type: "repository.activity",
+      payload: { repositoryId, activeTurnCount },
+      threadId: null,
+      turnId: null,
+      itemId: null,
+    });
+    let state = reducer(initialRealtimeState, {
+      type: "event", event: activityEvent(1, "repo_1", 2),
+    });
+    state = reducer(state, {
+      type: "event", event: activityEvent(2, "repo_2", 1),
+    });
+    state = reducer(state, {
+      type: "event", event: activityEvent(3, "repo_1", 1),
+    });
+    expect(state.repositoryActivity).toEqual({ repo_1: 1, repo_2: 1 });
+
+    state = reducer(state, {
+      type: "event", event: activityEvent(4, "repo_1", 0),
+    });
+    expect(state.repositoryActivity).toEqual({ repo_1: 0, repo_2: 1 });
+  });
+
+  it("replaces stale repository activity from a reconnect snapshot", () => {
+    const state = reducer(
+      { ...initialRealtimeState, repositoryActivity: { stale: 3 } },
+      {
+        type: "snapshot",
+        snapshot: {
+          connection: { state: "connected", generation: 2, message: null },
+          threads: [],
+          repositoryActivity: [{ repositoryId: "unopened", activeTurnCount: 1 }],
+          pendingApprovals: [],
+          rateLimits: { available: false, observedAt: 2 },
+          jobs: [],
+        },
+        latest: 7,
+        missed: true,
+      },
+    );
+    expect(state.repositoryActivity).toEqual({ unopened: 1 });
+    expect(state.threads).toEqual([]);
   });
 
   it("creates a new realtime recovery episode after reconnect in the same generation", () => {

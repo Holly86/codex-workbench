@@ -20,11 +20,11 @@ def test_release_compose_uses_distribution_images_without_builds() -> None:
     assert "\n    build:" not in compose
     assert (
         "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/"
-        "codex-workbench-backend:${WORKBENCH_VERSION:-0.2.1}"
+        "codex-workbench-backend:${WORKBENCH_VERSION:-0.2.2}"
     ) in compose
     assert (
         "${DOCKERHUB_NAMESPACE:?Set DOCKERHUB_NAMESPACE in .env}/"
-        "codex-workbench-frontend:${WORKBENCH_VERSION:-0.2.1}"
+        "codex-workbench-frontend:${WORKBENCH_VERSION:-0.2.2}"
     ) in compose
     assert compose.count("\n    ports:\n") == 1
     assert '      - "127.0.0.1:8085:8080"' in compose

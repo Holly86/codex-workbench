@@ -37,6 +37,7 @@ export interface RealtimeState {
   missedEvents: boolean;
   timeline: Record<string, TimelineEntry[]>;
   jobs: NativeJob[];
+  repositoryActivity: Record<string, number>;
   recoveryEpisodes: RecoveryEpisodeState;
 }
 
@@ -53,6 +54,7 @@ export const initialRealtimeState: RealtimeState = {
   missedEvents: false,
   timeline: {},
   jobs: [],
+  repositoryActivity: {},
   recoveryEpisodes: initialRecoveryEpisodeState,
 };
 
@@ -113,6 +115,10 @@ function asJob(value: unknown): NativeJob | null {
     return null;
   }
   return value as unknown as NativeJob;
+}
+
+function repositoryActivity(values: Snapshot["repositoryActivity"]): Record<string, number> {
+  return Object.fromEntries(values.map((value) => [value.repositoryId, value.activeTurnCount]));
 }
 
 function replaceThread(threads: ThreadView[], next: ThreadView): ThreadView[] {
@@ -264,6 +270,16 @@ function applyEvent(state: RealtimeState, event: EventEnvelope): RealtimeState {
   } else if (event.type === "job.updated") {
     const job = asJob(event.payload);
     if (job !== null) jobs = [job, ...jobs.filter((item) => item.id !== job.id)];
+  } else if (event.type === "repository.activity") {
+    const repositoryId = event.payload.repositoryId;
+    const activeTurnCount = event.payload.activeTurnCount;
+    if (typeof repositoryId === "string" && typeof activeTurnCount === "number" && activeTurnCount >= 0) {
+      return {
+        ...state,
+        repositoryActivity: { ...state.repositoryActivity, [repositoryId]: activeTurnCount },
+        lastSequence: event.sequence,
+      };
+    }
   } else if (event.type === "turn.started") {
     const turnId = event.payload.turnId;
     if (typeof turnId === "string") {
@@ -471,6 +487,7 @@ export function reducer(state: RealtimeState, action: Action): RealtimeState {
       lastSequence: action.latest,
       missedEvents: action.missed,
       jobs: action.snapshot.jobs ?? [],
+      repositoryActivity: repositoryActivity(action.snapshot.repositoryActivity),
       recoveryEpisodes: advanceRecoveryEpisodes(
         state.recoveryEpisodes,
         { runtime: state.processConnection, realtime: state.connection },
@@ -514,7 +531,12 @@ function parseSnapshot(value: unknown): { snapshot: Snapshot; latest: number; mi
   const snapshot = value.snapshot;
   if (!isRecord(snapshot.connection) || !Array.isArray(snapshot.threads) || !Array.isArray(snapshot.pendingApprovals) || !isRecord(snapshot.rateLimits)) return null;
   return {
-    snapshot: snapshot as unknown as Snapshot,
+    snapshot: {
+      ...snapshot,
+      repositoryActivity: Array.isArray(snapshot.repositoryActivity)
+        ? snapshot.repositoryActivity
+        : [],
+    } as unknown as Snapshot,
     latest: typeof value.latestSequence === "number" ? value.latestSequence : 0,
     missed: value.missedEvents === true,
   };
