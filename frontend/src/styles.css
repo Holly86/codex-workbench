@@ -374,6 +374,10 @@ button { -webkit-tap-highlight-color: transparent; }
 .repository-title .repo-clean, .repository-title .repo-changed { flex: 0 0 auto; padding: .08rem .28rem; border-radius: 999px; font-size: .56rem; }
 .repository-title .repo-clean { color: #90d9b8; background: rgb(68 215 155 / 9%); }
 .repository-title .repo-changed { color: #e3c27a; background: rgb(244 189 75 / 10%); }
+.repository-active-turn { flex: 0 0 auto; display: inline-flex; align-items: center; gap: .22rem; color: #90d9b8; font-size: .59rem; font-weight: 600; }
+.repository-active-turn i { width: .35rem; height: .35rem; flex: 0 0 auto; border-radius: 50%; background: #44d79b; box-shadow: 0 0 0 .14rem rgb(68 215 155 / 10%); }
+.repository-glyph.is-active { position: relative; }
+.repository-glyph.is-active::after { position: absolute; right: -.05rem; bottom: -.05rem; width: .38rem; height: .38rem; border: 2px solid #121416; border-radius: 50%; background: #44d79b; content: ""; }
 .repository-menu-trigger {
   top: .65rem;
   right: .35rem;

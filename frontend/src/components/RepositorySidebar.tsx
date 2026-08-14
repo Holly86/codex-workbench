@@ -9,6 +9,7 @@ export type RepositoryAction = "open" | "new-thread" | "status" | "changes" | "f
 
 interface RepositorySidebarProps {
   repositories: Repository[];
+  repositoryActivity?: Record<string, number>;
   selectedRepositoryId: string | null;
   threads: ThreadView[];
   selectedThreadId: string | null;
@@ -56,6 +57,7 @@ const REPOSITORY_ACTION_GROUPS: Array<Array<{ action: RepositoryAction; label: s
 
 export function RepositorySidebar({
   repositories,
+  repositoryActivity = {},
   selectedRepositoryId,
   threads,
   selectedThreadId,
@@ -219,19 +221,24 @@ export function RepositorySidebar({
           <ul className="repository-list">
             {filteredRepositories.map((repository) => {
               const changeCount = repository.status.staged + repository.status.modified + repository.status.untracked;
+              const activeTurnCount = repositoryActivity[repository.id]
+                ?? repository.activeTurnCount
+                ?? 0;
+              const hasActiveTurn = activeTurnCount > 0;
               return (
                 <li key={repository.id} className="repository-row">
                   <button
                     type="button"
                     className="repository-select"
-                    title={collapsed ? repository.name : undefined}
+                    title={collapsed ? `${repository.name}${hasActiveTurn ? " · Mindestens ein Turn läuft" : ""}` : undefined}
+                    aria-label={hasActiveTurn ? `${repository.name}, mindestens ein Turn läuft` : undefined}
                     aria-current={repository.id === selectedRepositoryId ? "page" : undefined}
                     onClick={() => { onSelectRepository(repository.id); closeOnNarrow(); }}
                   >
-                    <span className="repository-glyph" aria-hidden="true">◇</span>
+                    <span className={`repository-glyph ${hasActiveTurn ? "is-active" : ""}`} aria-hidden="true">◇</span>
                     <span className="repository-title">
                       <strong>{repository.name}</strong>
-                      <small><span>{repository.status.detached ? "Detached HEAD" : repository.status.branch ?? "Kein Branch"}</span><span className={repository.status.clean ? "repo-clean" : "repo-changed"}>{repository.status.clean ? "Clean" : `${String(changeCount)} geändert`}</span></small>
+                      <small><span>{repository.status.detached ? "Detached HEAD" : repository.status.branch ?? "Kein Branch"}</span><span className={repository.status.clean ? "repo-clean" : "repo-changed"}>{repository.status.clean ? "Clean" : `${String(changeCount)} geändert`}</span>{hasActiveTurn ? <span className="repository-active-turn"><i aria-hidden="true" />Läuft</span> : null}</small>
                     </span>
                   </button>
                   <button

@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 
-import { startThread } from "./api";
+import { listRepositories, startThread } from "./api";
 import type { FullAccessCapability, SandboxMode } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -92,4 +92,20 @@ test("does not send Full Access without a capability", async () => {
     null,
   )).rejects.toThrow("Full Access erfordert eine gültige Bestätigung.");
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test("parses authoritative repository activity without requiring thread hydration", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+    repositories: [
+      { id: "active", name: "Active", activeTurnCount: 2 },
+      { id: "idle", name: "Idle" },
+    ],
+  }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+  const repositories = await listRepositories();
+
+  expect(repositories.map(({ id, activeTurnCount }) => ({ id, activeTurnCount }))).toEqual([
+    { id: "active", activeTurnCount: 2 },
+    { id: "idle", activeTurnCount: 0 },
+  ]);
 });

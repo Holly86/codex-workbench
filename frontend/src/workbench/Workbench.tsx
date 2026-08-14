@@ -701,6 +701,7 @@ export function Workbench({ session, performLogout, logoutPending, onSessionExpi
         <div className="workspace-layout">
           <RepositorySidebar
             repositories={repositories}
+            repositoryActivity={realtime.repositoryActivity}
             selectedRepositoryId={selectedRepositoryId}
             threads={repositoryThreads}
             selectedThreadId={selectedThreadId}

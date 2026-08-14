@@ -94,6 +94,8 @@ function parseRepositories(value: unknown): Repository[] {
       staged: 0, modified: 0, untracked: 0, conflicts: 0, clean: true, changes: [], observedAt: 0,
     };
     return [{ ...entry, directoryName: typeof entry.directoryName === "string" ? entry.directoryName : entry.name,
+      activeTurnCount: typeof entry.activeTurnCount === "number" && entry.activeTurnCount >= 0
+        ? entry.activeTurnCount : 0,
       status, preferences: isRecord(entry.preferences) ? entry.preferences : { model: null, effort: null },
       renameCapabilities: isRecord(entry.renameCapabilities) ? entry.renameCapabilities : { displayName: true, directory: false, remote: false },
     } as unknown as Repository];

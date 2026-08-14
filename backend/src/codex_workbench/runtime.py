@@ -329,6 +329,7 @@ class WorkbenchRuntime:
             "name": (preference or {}).get("display_name") or summary.name,
             "directoryName": summary.name,
             "status": self._json_object(await self.git.status(summary.id)),
+            "activeTurnCount": self.projection.repository_active_turn_count(summary.id),
             "preferences": {
                 "model": (preference or {}).get("model"),
                 "effort": (preference or {}).get("reasoning_effort"),
@@ -1286,8 +1287,18 @@ class WorkbenchRuntime:
             turn_id = raw_turn.get("id")
             if not isinstance(turn_id, str):
                 raise RuntimeUnavailableError("turn/start returned no turn id")
+            active_turn_count_before = self.projection.repository_active_turn_count(
+                thread.repository_id
+            )
             thread.active_turn_id = turn_id
             thread.status = "running"
+            if (
+                self.projection.repository_active_turn_count(thread.repository_id)
+                != active_turn_count_before
+            ):
+                await self.projection.publish_repository_activity(
+                    thread.repository_id, thread.session_id
+                )
             await self.projection.set_permission_selection(thread_id, sandbox_mode, approval_policy)
             stored = await asyncio.to_thread(self.metadata.get_thread, thread_id)
             now = int(time.time())
@@ -1696,6 +1707,9 @@ class WorkbenchRuntime:
                     "thread.reconciled",
                     self.projection.thread_browser_dict(thread),
                     thread_id=thread.id,
+                )
+                await self.projection.publish_repository_activity(
+                    thread.repository_id, thread.session_id
                 )
                 self._reconciliation_failures.discard(reference.thread_id)
                 self._unavailable_threads.pop(reference.thread_id, None)
