@@ -12,7 +12,7 @@ requires-python = ">=3.12,<3.15"
 dependencies = [
   "argon2-cffi==25.1.0",
   "fastapi==0.141.1",
-  "pillow==12.3.0",
+  "pillow==13.0.0",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
   "python-multipart==0.0.32",
